@@ -14,18 +14,6 @@ Source0:    %{name}-%{version}.tar.bz2
 Source1:    mesa-llvmpipe-rpmlintrc
 Patch0:     eglplatform_no_x11.patch
 
-%if %{with X11}
-BuildRequires:  pkgconfig(glproto)
-BuildRequires:  pkgconfig(dri2proto) >= 1.1
-BuildRequires:  pkgconfig(xproto)
-BuildRequires:  pkgconfig(xxf86vm)
-BuildRequires:  pkgconfig(xext)
-BuildRequires:  pkgconfig(xfixes)
-BuildRequires:  pkgconfig(xdamage)
-BuildRequires:  pkgconfig(xi)
-BuildRequires:  pkgconfig(xmu)
-BuildRequires:  makedepend
-%endif
 BuildRequires:  pkgconfig(libdrm)
 BuildRequires:  pkgconfig(libxml-2.0)
 BuildRequires:  pkgconfig(talloc)
@@ -155,50 +143,6 @@ Obsoletes:   mesa-llvmpipe-libEGL-compat
 %description libEGL-devel
 Mesa libEGL development packages
 
-%if %{with X11}
-%package libGL
-Summary:    Mesa libGL runtime libraries and DRI drivers
-Group:      System/Libraries
-Requires:   %{name} = %{version}-%{release}
-Requires(post): /sbin/ldconfig
-Requires(postun): /sbin/ldconfig
-Provides:   libGL = %{version}-%{release}
-
-%description libGL
-Mesa libGL runtime library.
-%endif
-
-%package libGL-devel
-Summary:    Mesa libGL development package
-Group:      Development/Libraries
-Requires:   %{name} = %{version}-%{release}
-Requires:   mesa-llvmpipe-libGL = %{version}-%{release}
-%if %{with X11}
-Requires:   libX11-devel
-%endif
-Provides:   libGL-devel
-
-%description libGL-devel
-Mesa libGL development packages
-
-%package dri-drivers-devel
-Summary:    Mesa-based DRI development files
-Group:      Development/Libraries
-Requires:   %{name} = %{version}-%{release}
-
-%description dri-drivers-devel
-Mesa-based DRI driver development files.
-
-%package dri-swrast-driver
-Summary:    Mesa-based DRI drivers
-Group:      Graphics/Display and Graphics Adaptation
-Requires:   %{name} = %{version}-%{release}
-Requires(post): /sbin/ldconfig
-Requires(postun): /sbin/ldconfig
-Provides:   mesa-llvmpipe-dri-drivers = %{version}-%{release}
-
-%description dri-swrast-driver
-Mesa-based swrast DRI driver.
 
 %package libwayland-egl-devel
 Summary:    Mesa libwayland-egl development package
@@ -249,18 +193,11 @@ Mesa-based i965 DRI driver.
 %build
 %autogen --disable-static \
     --enable-dri \
-    --with-dri-drivers=swrast,i915,i965 \
+    --with-dri-drivers=i915,i965 \
     --enable-osmesa=no \
-%if %{with X11}
-    --with-egl-platforms=x11,fbdev,wayland \
-    --with-x \
-    --enable-glx-tls \
-    --enable-glx=yes \
-%else
     --with-egl-platforms=fbdev,wayland \
     --disable-glx \
-    --disable-xlib-glx \
-%endif
+    --disable-xlib-glx 
     --enable-egl=yes \
     --enable-gles1=yes \
     --enable-gles2=yes
