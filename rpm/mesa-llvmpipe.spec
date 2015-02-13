@@ -306,22 +306,6 @@ popd
 %{_includedir}/KHR/khrplatform.h
 %{_libdir}/pkgconfig/egl.pc
 
-
-%files libGL-devel
-%defattr(-,root,root,-)
-%{_includedir}/GL/gl.h
-%{_includedir}/GL/gl_mangle.h
-%{_includedir}/GL/glext.h
-%{_includedir}/GL/glx.h
-%{_includedir}/GL/glx_mangle.h
-%{_includedir}/GL/glxext.h
-%dir %{_includedir}/GL/internal
-%{_includedir}/GL/internal/dri_interface.h
-%if %{with X11}
-%{_libdir}/libGL.so
-%endif
-%{_libdir}/pkgconfig/gl.pc
-
 %files dri-drivers-devel
 %defattr(-,root,root,-)
 %{_libdir}/libdricore%{mesa_version}.so
