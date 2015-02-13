@@ -306,11 +306,6 @@ popd
 %{_includedir}/KHR/khrplatform.h
 %{_libdir}/pkgconfig/egl.pc
 
-%files dri-drivers-devel
-%defattr(-,root,root,-)
-%{_libdir}/libdricore%{mesa_version}.so
-%{_libdir}/pkgconfig/dri.pc
-
 %files libwayland-egl-devel
 %defattr(-,root,root,-)
 %{_libdir}/libwayland-egl.so
