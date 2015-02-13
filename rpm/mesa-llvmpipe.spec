@@ -2,7 +2,7 @@
 %bcond_with X11
 %define mesa_version 9.2.5
 
-Name:       mesa-llvmpipe
+Name:       mesa-x86
 
 Summary:    Mesa graphics libraries built for LLVMpipe
 Version:    9.2.5
@@ -220,6 +220,23 @@ Requires(postun): /sbin/ldconfig
 %description libwayland-egl
 Mesa libwayland-egl runtime libraries
 
+%package dri-i915-driver
+Summary:    Mesa-based DRI drivers
+Group:      Graphics/Display and Graphics Adaptation
+Requires:   %{name} = %{version}-%{release}
+Provides:   mesa-dri-drivers = %{version}-%{release}
+
+%description dri-i915-driver
+Mesa-based i915 DRI driver.
+
+%package dri-i965-driver
+Summary:    Mesa-based DRI drivers
+Group:      Graphics/Display and Graphics Adaptation
+Requires:   %{name} = %{version}-%{release}
+Provides:   mesa-dri-drivers = %{version}-%{release}
+
+%description dri-i965-driver
+Mesa-based i965 DRI driver.
 
 %prep
 %setup -q -n %{name}-%{version}/mesa
@@ -232,11 +249,8 @@ Mesa libwayland-egl runtime libraries
 %build
 %autogen --disable-static \
     --enable-dri \
-    --with-dri-drivers=swrast \
+    --with-dri-drivers=swrast,i915,i965 \
     --enable-osmesa=no \
-    --enable-gallium-egl \
-    --enable-gallium-llvm \
-    --with-gallium-drivers=swrast \
 %if %{with X11}
     --with-egl-platforms=x11,fbdev,wayland \
     --with-x \
@@ -410,3 +424,13 @@ popd
 %defattr(-,root,root,-)
 %{_libdir}/libwayland-egl.so.1
 %{_libdir}/libwayland-egl.so.1.*
+
+%files dri-i965-driver
+%defattr(-,root,root,-)
+# >> files dri-i965-driver
+%{_libdir}/dri/i965_dri.so
+# << files dri-i965-driver
+
+%files dri-i915-driver
+%defattr(-,root,root,-)
+%{_libdir}/dri/i915_dri.so
