@@ -185,11 +185,6 @@ Mesa-based i965 DRI driver.
 %prep
 %setup -q -n %{name}-%{version}/mesa
 
-%if ! %{with X11}
-# eglplatform_no_x11.patch
-%patch0 -p1
-%endif
-
 %build
 %autogen --disable-static \
     --enable-dri \
@@ -197,7 +192,7 @@ Mesa-based i965 DRI driver.
     --enable-osmesa=no \
     --with-egl-platforms=fbdev,wayland \
     --disable-glx \
-    --disable-xlib-glx 
+    --disable-xlib-glx \
     --enable-egl=yes \
     --enable-gles1=yes \
     --enable-gles2=yes
@@ -238,16 +233,6 @@ popd
 %post libEGL-compat -p /sbin/ldconfig
 
 %postun libEGL-compat -p /sbin/ldconfig
-
-%if %{with X11}
-%post libGL -p /sbin/ldconfig
-
-%postun libGL -p /sbin/ldconfig
-%endif
-
-%post dri-swrast-driver -p /sbin/ldconfig
-
-%postun dri-swrast-driver -p /sbin/ldconfig
 
 %post libwayland-egl -p /sbin/ldconfig
 
@@ -321,11 +306,6 @@ popd
 %{_includedir}/KHR/khrplatform.h
 %{_libdir}/pkgconfig/egl.pc
 
-%if %{with X11}
-%files libGL
-%defattr(-,root,root,-)
-%{_libdir}/libGL.so.*
-%endif
 
 %files libGL-devel
 %defattr(-,root,root,-)
@@ -347,11 +327,6 @@ popd
 %{_libdir}/libdricore%{mesa_version}.so
 %{_libdir}/pkgconfig/dri.pc
 
-%files dri-swrast-driver
-%defattr(-,root,root,-)
-%{_libdir}/libdricore%{mesa_version}.so.*
-%{_libdir}/dri/swrast_dri.so
-
 %files libwayland-egl-devel
 %defattr(-,root,root,-)
 %{_libdir}/libwayland-egl.so
@@ -364,9 +339,7 @@ popd
 
 %files dri-i965-driver
 %defattr(-,root,root,-)
-# >> files dri-i965-driver
 %{_libdir}/dri/i965_dri.so
-# << files dri-i965-driver
 
 %files dri-i915-driver
 %defattr(-,root,root,-)
