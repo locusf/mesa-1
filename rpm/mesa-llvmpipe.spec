@@ -212,7 +212,8 @@ pushd $RPM_BUILD_ROOT%{_includedir}/GL
 rm [a-fh-np-wyz]*.h
 rm osmesa.h
 popd
-
+mkdir -p $RPM_BUILD_ROOT/usr/lib/egl
+touch $RPM_BUILD_ROOT/usr/egl/foo
 %post libglapi -p /sbin/ldconfig
 
 %postun libglapi -p /sbin/ldconfig
@@ -243,7 +244,7 @@ popd
 
 %files
 %defattr(-,root,root,-)
-%{_libdir}/egl/libEGL.so.1.0.0
+%{_libdir}/egl/foo
 
 %files libglapi
 %defattr(-,root,root,-)
