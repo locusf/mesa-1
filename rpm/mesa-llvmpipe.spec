@@ -243,7 +243,7 @@ popd
 
 %files
 %defattr(-,root,root,-)
-%{_libdir}/egl/egl_gallium.so
+%{_libdir}/egl/libEGL.so.1.0.0
 
 %files libglapi
 %defattr(-,root,root,-)
