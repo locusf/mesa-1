@@ -359,9 +359,6 @@ touch $RPM_BUILD_ROOT/usr/lib/egl/foo
 %{_includedir}/GL/glxext.h
 %dir %{_includedir}/GL/internal
 %{_includedir}/GL/internal/dri_interface.h
-%if %{with X11}
-%{_libdir}/libGL.so
-%endif
 %{_libdir}/pkgconfig/gl.pc
 
 %files dri-drivers-devel
