@@ -197,7 +197,8 @@ Mesa-based i965 DRI driver.
     --enable-gles1=yes \
     --enable-gles2=yes \
     --disable-gallium-llvm \
-    --disable-gallium-radeon
+    --disable-gallium-radeon \
+    --with-gallium-drivers=""
 
 make %{?jobs:-j%jobs}
 
