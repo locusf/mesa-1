@@ -235,6 +235,7 @@ rm osmesa.h
 popd
 mkdir -p $RPM_BUILD_ROOT/usr/lib/egl
 touch $RPM_BUILD_ROOT/usr/lib/egl/foo
+rm -rf $RPM_BUILD_ROOT/usr/lib/debug
 %post libglapi -p /sbin/ldconfig
 
 %postun libglapi -p /sbin/ldconfig
@@ -364,4 +365,6 @@ touch $RPM_BUILD_ROOT/usr/lib/egl/foo
 %files dri-drivers-devel
 %defattr(-,root,root,-)
 %{_libdir}/libdricore%{mesa_version}.so
+%{_libdir}/libdricore%{mesa_version}.so.1
+%{_libdir}/libdricore%{mesa_version}.so.1.0.0
 %{_libdir}/pkgconfig/dri.pc
