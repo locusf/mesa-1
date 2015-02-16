@@ -213,7 +213,7 @@ rm [a-fh-np-wyz]*.h
 rm osmesa.h
 popd
 mkdir -p $RPM_BUILD_ROOT/usr/lib/egl
-touch $RPM_BUILD_ROOT/usr/egl/foo
+touch $RPM_BUILD_ROOT/usr/lib/egl/foo
 %post libglapi -p /sbin/ldconfig
 
 %postun libglapi -p /sbin/ldconfig
