@@ -182,6 +182,27 @@ Provides:   mesa-dri-drivers = %{version}-%{release}
 %description dri-i965-driver
 Mesa-based i965 DRI driver.
 
+%package dri-drivers-devel
+Summary:    Mesa-based DRI development files
+Group:      Development/Libraries
+Requires:   %{name} = %{version}-%{release}
+
+%description dri-drivers-devel
+Mesa-based DRI driver development files.
+
+%package libGL-devel
+Summary:    Mesa libGL development package
+Group:      Development/Libraries
+Requires:   %{name} = %{version}-%{release}
+Requires:   mesa-llvmpipe-libGL = %{version}-%{release}
+%if %{with X11}
+Requires:   libX11-devel
+%endif
+Provides:   libGL-devel
+
+%description libGL-devel
+Mesa libGL development packages
+
 %prep
 %setup -q -n %{name}-%{version}/mesa
 
@@ -327,3 +348,23 @@ touch $RPM_BUILD_ROOT/usr/lib/egl/foo
 %files dri-i915-driver
 %defattr(-,root,root,-)
 %{_libdir}/dri/i915_dri.so
+
+%files libGL-devel
+%defattr(-,root,root,-)
+%{_includedir}/GL/gl.h
+%{_includedir}/GL/gl_mangle.h
+%{_includedir}/GL/glext.h
+%{_includedir}/GL/glx.h
+%{_includedir}/GL/glx_mangle.h
+%{_includedir}/GL/glxext.h
+%dir %{_includedir}/GL/internal
+%{_includedir}/GL/internal/dri_interface.h
+%if %{with X11}
+%{_libdir}/libGL.so
+%endif
+%{_libdir}/pkgconfig/gl.pc
+
+%files dri-drivers-devel
+%defattr(-,root,root,-)
+%{_libdir}/libdricore%{mesa_version}.so
+%{_libdir}/pkgconfig/dri.pc
