@@ -20,6 +20,7 @@ BuildRequires:  pkgconfig(talloc)
 BuildRequires:  pkgconfig(libudev) >= 160
 BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-server)
+BuildRequires:  pkgconfig(libpthread-stubs)
 BuildRequires:  pkgconfig autoconf automake
 BuildRequires:  expat-devel >= 2.0
 BuildRequires:  python
