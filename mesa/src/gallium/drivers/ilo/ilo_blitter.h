@@ -29,14 +29,65 @@
 #define ILO_BLITTER_H
 
 #include "ilo_common.h"
+#include "ilo_state.h"
 
-struct ilo_context;
+enum ilo_blitter_uses {
+   ILO_BLITTER_USE_DSA           = 1 << 0,
+   ILO_BLITTER_USE_CC            = 1 << 1,
+   ILO_BLITTER_USE_VIEWPORT      = 1 << 2,
+   ILO_BLITTER_USE_FB_DEPTH      = 1 << 3,
+   ILO_BLITTER_USE_FB_STENCIL    = 1 << 4,
+};
+
 struct blitter_context;
+struct pipe_resource;
+struct pipe_surface;
+struct ilo_context;
 
 struct ilo_blitter {
    struct ilo_context *ilo;
-
    struct blitter_context *pipe_blitter;
+
+   /*
+    * A minimal context with the goal to send RECTLISTs down the pipeline.
+    */
+   enum ilo_state_raster_earlyz_op earlyz_op;
+   bool earlyz_stencil_clear;
+   uint32_t uses;
+
+   bool initialized;
+
+   float vertices[3][2];
+   struct gen6_3dprimitive_info draw_info;
+
+   uint32_t vf_data[4];
+   struct ilo_state_vf vf;
+
+   struct ilo_state_vs vs;
+   struct ilo_state_hs hs;
+   struct ilo_state_ds ds;
+   struct ilo_state_gs gs;
+
+   struct ilo_state_sol sol;
+
+   struct ilo_state_viewport vp;
+   uint32_t vp_data[20];
+
+   struct ilo_state_sbe sbe;
+   struct ilo_state_ps ps;
+   struct ilo_state_cc cc;
+
+   uint32_t depth_clear_value;
+
+   struct ilo_state_urb urb;
+
+   struct {
+      struct ilo_surface_cso dst;
+      unsigned width, height;
+      unsigned num_samples;
+
+      struct ilo_state_raster rs;
+   } fb;
 };
 
 struct ilo_blitter *
@@ -98,5 +149,21 @@ ilo_blitter_blt_clear_zs(struct ilo_blitter *blitter,
                          double depth, unsigned stencil,
                          unsigned x, unsigned y,
                          unsigned width, unsigned height);
+
+bool
+ilo_blitter_rectlist_clear_zs(struct ilo_blitter *blitter,
+                              struct pipe_surface *zs,
+                              unsigned clear_flags,
+                              double depth, unsigned stencil);
+
+void
+ilo_blitter_rectlist_resolve_z(struct ilo_blitter *blitter,
+                               struct pipe_resource *res,
+                               unsigned level, unsigned slice);
+
+void
+ilo_blitter_rectlist_resolve_hiz(struct ilo_blitter *blitter,
+                                 struct pipe_resource *res,
+                                 unsigned level, unsigned slice);
 
 #endif /* ILO_BLITTER_H */

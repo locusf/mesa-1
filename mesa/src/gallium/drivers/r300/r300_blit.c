@@ -45,7 +45,7 @@ enum r300_blitter_op /* bitmask */
                          R300_SAVE_TEXTURES | R300_IGNORE_RENDER_COND,
 
     R300_BLIT          = R300_STOP_QUERY | R300_SAVE_FRAMEBUFFER |
-                         R300_SAVE_TEXTURES | R300_IGNORE_RENDER_COND,
+                         R300_SAVE_TEXTURES,
 
     R300_DECOMPRESS    = R300_STOP_QUERY | R300_IGNORE_RENDER_COND,
 };
@@ -118,7 +118,7 @@ static uint32_t r300_depth_clear_cb_value(enum pipe_format format,
     util_pack_color(rgba, format, &uc);
 
     if (util_format_get_blocksizebits(format) == 32)
-        return uc.ui;
+        return uc.ui[0];
     else
         return uc.us | (uc.us << 16);
 }
@@ -130,7 +130,7 @@ static boolean r300_cbzb_clear_allowed(struct r300_context *r300,
         (struct pipe_framebuffer_state*)r300->fb_state.state;
 
     /* Only color clear allowed, and only one colorbuffer. */
-    if (clear_buffers != PIPE_CLEAR_COLOR || fb->nr_cbufs != 1)
+    if ((clear_buffers & ~PIPE_CLEAR_COLOR) != 0 || fb->nr_cbufs != 1 || !fb->cbufs[0])
         return FALSE;
 
     return r300_surface(fb->cbufs[0])->cbzb_allowed;
@@ -193,7 +193,7 @@ static void r300_set_clear_color(struct r300_context *r300,
         r300->color_clear_value_gb = uc.h[0] | ((uint32_t)uc.h[1] << 16);
         r300->color_clear_value_ar = uc.h[2] | ((uint32_t)uc.h[3] << 16);
     } else {
-        r300->color_clear_value = uc.ui;
+        r300->color_clear_value = uc.ui[0];
     }
 }
 
@@ -313,7 +313,7 @@ static void r300_clear(struct pipe_context* pipe,
     /* Use fast color clear for an AA colorbuffer.
      * The CMASK is shared between all colorbuffers, so we use it
      * if there is only one colorbuffer bound. */
-    if ((buffers & PIPE_CLEAR_COLOR) && fb->nr_cbufs == 1 &&
+    if ((buffers & PIPE_CLEAR_COLOR) && fb->nr_cbufs == 1 && fb->cbufs[0] &&
         r300_resource(fb->cbufs[0]->texture)->tex.cmask_dwords) {
         /* Try to obtain the access to the CMASK if we don't have one. */
         if (!r300->cmask_access) {
@@ -365,9 +365,7 @@ static void r300_clear(struct pipe_context* pipe,
     if (buffers) {
         /* Clear using the blitter. */
         r300_blitter_begin(r300, R300_CLEAR);
-        util_blitter_clear(r300->blitter,
-                           width,
-                           height,
+        util_blitter_clear(r300->blitter, width, height, 1,
                            buffers, color, depth, stencil);
         r300_blitter_end(r300);
     } else if (r300->zmask_clear.dirty ||
@@ -384,7 +382,7 @@ static void r300_clear(struct pipe_context* pipe,
             r300_get_num_cs_end_dwords(r300);
 
         /* Reserve CS space. */
-        if (dwords > (RADEON_MAX_CMDBUF_DWORDS - r300->cs->cdw)) {
+        if (!r300->rws->cs_check_space(r300->cs, dwords)) {
             r300_flush(&r300->context, RADEON_FLUSH_ASYNC, NULL);
         }
 
@@ -432,11 +430,13 @@ static void r300_clear_render_target(struct pipe_context *pipe,
                                      struct pipe_surface *dst,
                                      const union pipe_color_union *color,
                                      unsigned dstx, unsigned dsty,
-                                     unsigned width, unsigned height)
+                                     unsigned width, unsigned height,
+                                     bool render_condition_enabled)
 {
     struct r300_context *r300 = r300_context(pipe);
 
-    r300_blitter_begin(r300, R300_CLEAR_SURFACE);
+    r300_blitter_begin(r300, R300_CLEAR_SURFACE |
+                       (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_render_target(r300->blitter, dst, color,
                                      dstx, dsty, width, height);
     r300_blitter_end(r300);
@@ -449,7 +449,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
                                      double depth,
                                      unsigned stencil,
                                      unsigned dstx, unsigned dsty,
-                                     unsigned width, unsigned height)
+                                     unsigned width, unsigned height,
+                                     bool render_condition_enabled)
 {
     struct r300_context *r300 = r300_context(pipe);
     struct pipe_framebuffer_state *fb =
@@ -462,7 +463,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
     }
 
     /* XXX Do not decompress ZMask of the currently-set zbuffer. */
-    r300_blitter_begin(r300, R300_CLEAR_SURFACE);
+    r300_blitter_begin(r300, R300_CLEAR_SURFACE |
+                       (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_depth_stencil(r300->blitter, dst, clear_flags, depth, stencil,
                                      dstx, dsty, width, height);
     r300_blitter_end(r300);
@@ -682,7 +684,9 @@ static boolean r300_is_simple_msaa_resolve(const struct pipe_blit_info *info)
     unsigned dst_width = u_minify(info->dst.resource->width0, info->dst.level);
     unsigned dst_height = u_minify(info->dst.resource->height0, info->dst.level);
 
-    return info->dst.resource->format == info->src.resource->format &&
+    return info->src.resource->nr_samples > 1 &&
+           info->dst.resource->nr_samples <= 1 &&
+           info->dst.resource->format == info->src.resource->format &&
            info->dst.resource->format == info->dst.format &&
            info->src.resource->format == info->src.format &&
            !info->scissor_enable &&
@@ -775,7 +779,7 @@ static void r300_msaa_resolve(struct pipe_context *pipe,
     templ.height0 = info->src.resource->height0;
     templ.depth0 = 1;
     templ.array_size = 1;
-    templ.usage = PIPE_USAGE_STATIC;
+    templ.usage = PIPE_USAGE_DEFAULT;
     templ.flags = R300_RESOURCE_FORCE_MICROTILING;
 
     tmp = screen->resource_create(screen, &templ);
@@ -789,7 +793,7 @@ static void r300_msaa_resolve(struct pipe_context *pipe,
     blit.src.resource = tmp;
     blit.src.box.z = 0;
 
-    r300_blitter_begin(r300, R300_BLIT);
+    r300_blitter_begin(r300, R300_BLIT | R300_IGNORE_RENDER_COND);
     util_blitter_blit(r300->blitter, &blit);
     r300_blitter_end(r300);
 
@@ -804,9 +808,17 @@ static void r300_blit(struct pipe_context *pipe,
         (struct pipe_framebuffer_state*)r300->fb_state.state;
     struct pipe_blit_info info = *blit;
 
+    /* The driver supports sRGB textures but not framebuffers. Blitting
+     * from sRGB to sRGB should be the same as blitting from linear
+     * to linear, so use that, This avoids incorrect linearization.
+     */
+    if (util_format_is_srgb(info.src.format)) {
+      info.src.format = util_format_linear(info.src.format);
+      info.dst.format = util_format_linear(info.dst.format);
+    }
+
     /* MSAA resolve. */
     if (info.src.resource->nr_samples > 1 &&
-        info.dst.resource->nr_samples <= 1 &&
         !util_format_is_depth_or_stencil(info.src.resource->format)) {
         r300_msaa_resolve(pipe, &info);
         return;
@@ -848,9 +860,15 @@ static void r300_blit(struct pipe_context *pipe,
         }
     }
 
-    r300_blitter_begin(r300, R300_BLIT);
+    r300_blitter_begin(r300, R300_BLIT |
+		       (info.render_condition_enable ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_blit(r300->blitter, &info);
     r300_blitter_end(r300);
+}
+
+static void r300_flush_resource(struct pipe_context *ctx,
+				struct pipe_resource *resource)
+{
 }
 
 void r300_init_blit_functions(struct r300_context *r300)
@@ -860,4 +878,5 @@ void r300_init_blit_functions(struct r300_context *r300)
     r300->context.clear_depth_stencil = r300_clear_depth_stencil;
     r300->context.resource_copy_region = r300_resource_copy_region;
     r300->context.blit = r300_blit;
+    r300->context.flush_resource = r300_flush_resource;
 }

@@ -4,11 +4,16 @@
 
 #include "pipe/p_compiler.h"
 #include "util/u_debug.h"
+#include "util/u_tests.h"
 
 
 /* Helper function to wrap a screen with
  * one or more debug driver: rbug, trace.
  */
+
+#ifdef GALLIUM_DDEBUG
+#include "ddebug/dd_public.h"
+#endif
 
 #ifdef GALLIUM_TRACE
 #include "trace/tr_public.h"
@@ -18,17 +23,21 @@
 #include "rbug/rbug_public.h"
 #endif
 
-#ifdef GALLIUM_GALAHAD
-#include "galahad/glhd_public.h"
-#endif
-
 #ifdef GALLIUM_NOOP
 #include "noop/noop_public.h"
 #endif
 
-static INLINE struct pipe_screen *
+/*
+ * TODO: Audit the following *screen_create() - all of
+ * them should return the original screen on failuire.
+ */
+static inline struct pipe_screen *
 debug_screen_wrap(struct pipe_screen *screen)
 {
+#if defined(GALLIUM_DDEBUG)
+   screen = ddebug_screen_create(screen);
+#endif
+
 #if defined(GALLIUM_RBUG)
    screen = rbug_screen_create(screen);
 #endif
@@ -37,13 +46,12 @@ debug_screen_wrap(struct pipe_screen *screen)
    screen = trace_screen_create(screen);
 #endif
 
-#if defined(GALLIUM_GALAHAD)
-   screen = galahad_screen_create(screen);
-#endif
-
 #if defined(GALLIUM_NOOP)
    screen = noop_screen_create(screen);
 #endif
+
+   if (debug_get_bool_option("GALLIUM_TESTS", FALSE))
+      util_run_tests(screen);
 
    return screen;
 }

@@ -28,64 +28,92 @@
 #ifndef ILO_RESOURCE_H
 #define ILO_RESOURCE_H
 
-#include "intel_winsys.h"
+#include "core/intel_winsys.h"
+#include "core/ilo_image.h"
+#include "core/ilo_vma.h"
 
 #include "ilo_common.h"
+#include "ilo_screen.h"
 
-struct ilo_screen;
+enum ilo_texture_flags {
+   /*
+    * Possible writers of a texture.  There can be at most one writer at any
+    * time.
+    *
+    * Wine set in resolve flags (in ilo_blit_resolve_slices()), they indicate
+    * the new writer.  When set in slice flags (ilo_texture_slice::flags),
+    * they indicate the writer since last resolve.
+    */
+   ILO_TEXTURE_RENDER_WRITE   = 1 << 0,
+   ILO_TEXTURE_BLT_WRITE      = 1 << 1,
+   ILO_TEXTURE_CPU_WRITE      = 1 << 2,
 
-struct ilo_buffer {
-   struct pipe_resource base;
+   /*
+    * Possible readers of a texture.  There may be multiple readers at any
+    * time.
+    *
+    * When set in resolve flags, they indicate the new readers.  They are
+    * never set in slice flags.
+    */
+   ILO_TEXTURE_RENDER_READ    = 1 << 3,
+   ILO_TEXTURE_BLT_READ       = 1 << 4,
+   ILO_TEXTURE_CPU_READ       = 1 << 5,
 
-   struct intel_bo *bo;
-   unsigned bo_size;
-   unsigned bo_flags;
+   /*
+    * Set when the texture is cleared.
+    *
+    * When set in resolve flags, the new writer will clear.  When set in slice
+    * flags, the slice has been cleared to ilo_texture_slice::clear_value.
+    */
+   ILO_TEXTURE_CLEAR          = 1 << 6,
+};
+
+/**
+ * A 3D image slice, cube face, or array layer.
+ */
+struct ilo_texture_slice {
+   unsigned flags;
+
+   /*
+    * Slice clear value.  It is served for two purposes
+    *
+    *  - the clear value used in commands such as 3DSTATE_CLEAR_PARAMS
+    *  - the clear value when ILO_TEXTURE_CLEAR is set
+    *
+    * Since commands such as 3DSTATE_CLEAR_PARAMS expect a single clear value
+    * for all slices, ilo_blit_resolve_slices() will silently make all slices
+    * to have the same clear value.
+    */
+   uint32_t clear_value;
 };
 
 struct ilo_texture {
    struct pipe_resource base;
 
    bool imported;
-   unsigned bo_flags;
 
-   enum pipe_format bo_format;
-   struct intel_bo *bo;
+   enum pipe_format image_format;
+   struct ilo_image image;
+   struct ilo_vma vma;
+   struct ilo_vma aux_vma;
 
-   /*
-    * These are the values passed to or returned from winsys for bo
-    * allocation.  As such,
-    *
-    *  - width and height are in blocks,
-    *  - cpp is the block size in bytes, and
-    *  - stride is the distance in bytes between two block rows.
-    */
-   int bo_width, bo_height, bo_cpp, bo_stride;
-   enum intel_tiling_mode tiling;
-
-   bool compressed;
-   unsigned block_width;
-   unsigned block_height;
-
-   /* true if the mip level alignments are stricter */
-   bool halign_8, valign_4;
-   /* true if space is reserved between layers */
-   bool array_spacing_full;
-   /* true if samples are interleaved */
-   bool interleaved;
-
-   /* 2D offsets into a layer/slice/face */
-   struct ilo_texture_slice {
-      unsigned x;
-      unsigned y;
-   } *slice_offsets[PIPE_MAX_TEXTURE_LEVELS];
+   /* XXX thread-safety */
+   struct ilo_texture_slice *slices[PIPE_MAX_TEXTURE_LEVELS];
 
    struct ilo_texture *separate_s8;
 };
 
-static inline struct ilo_buffer *
-ilo_buffer(struct pipe_resource *res)
+struct ilo_buffer_resource {
+   struct pipe_resource base;
+
+   uint32_t bo_size;
+   struct ilo_vma vma;
+};
+
+static inline struct ilo_buffer_resource *
+ilo_buffer_resource(struct pipe_resource *res)
 {
-   return (struct ilo_buffer *)
+   return (struct ilo_buffer_resource *)
       ((res && res->target == PIPE_BUFFER) ? res : NULL);
 }
 
@@ -100,14 +128,60 @@ void
 ilo_init_resource_functions(struct ilo_screen *is);
 
 bool
-ilo_buffer_alloc_bo(struct ilo_buffer *buf);
+ilo_resource_rename_bo(struct pipe_resource *res);
 
-bool
-ilo_texture_alloc_bo(struct ilo_texture *tex);
+/**
+ * Return the VMA of the resource.
+ */
+static inline const struct ilo_vma *
+ilo_resource_get_vma(struct pipe_resource *res)
+{
+   return (res->target == PIPE_BUFFER) ?
+      &((struct ilo_buffer_resource *) res)->vma :
+      &((struct ilo_texture *) res)->vma;
+}
 
-unsigned
-ilo_texture_get_slice_offset(const struct ilo_texture *tex,
-                             int level, int slice,
-                             unsigned *x_offset, unsigned *y_offset);
+static inline struct ilo_texture_slice *
+ilo_texture_get_slice(const struct ilo_texture *tex,
+                      unsigned level, unsigned slice)
+{
+   assert(level <= tex->base.last_level);
+   assert(slice < ((tex->base.target == PIPE_TEXTURE_3D) ?
+         u_minify(tex->base.depth0, level) : tex->base.array_size));
+
+   return &tex->slices[level][slice];
+}
+
+static inline void
+ilo_texture_set_slice_flags(struct ilo_texture *tex, unsigned level,
+                            unsigned first_slice, unsigned num_slices,
+                            unsigned mask, unsigned value)
+{
+   const struct ilo_texture_slice *last =
+      ilo_texture_get_slice(tex, level, first_slice + num_slices - 1);
+   struct ilo_texture_slice *slice =
+      ilo_texture_get_slice(tex, level, first_slice);
+
+   while (slice <= last) {
+      slice->flags = (slice->flags & ~mask) | (value & mask);
+      slice++;
+   }
+}
+
+static inline void
+ilo_texture_set_slice_clear_value(struct ilo_texture *tex, unsigned level,
+                                  unsigned first_slice, unsigned num_slices,
+                                  uint32_t clear_value)
+{
+   const struct ilo_texture_slice *last =
+      ilo_texture_get_slice(tex, level, first_slice + num_slices - 1);
+   struct ilo_texture_slice *slice =
+      ilo_texture_get_slice(tex, level, first_slice);
+
+   while (slice <= last) {
+      slice->clear_value = clear_value;
+      slice++;
+   }
+}
 
 #endif /* ILO_RESOURCE_H */

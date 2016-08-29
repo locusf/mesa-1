@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -50,7 +50,7 @@ static CRITICAL_SECTION g_mutex = {
 static struct stw_tls_data *g_pendingTlsData = NULL;
 
 
-static INLINE struct stw_tls_data *
+static struct stw_tls_data *
 stw_tls_data_create(DWORD dwThreadId);
 
 static struct stw_tls_data *
@@ -111,7 +111,7 @@ stw_tls_init(void)
 /**
  * Install windows hook for a given thread (not necessarily the current one).
  */
-static INLINE struct stw_tls_data *
+static struct stw_tls_data *
 stw_tls_data_create(DWORD dwThreadId)
 {
    struct stw_tls_data *data;
@@ -120,7 +120,7 @@ stw_tls_data_create(DWORD dwThreadId)
       debug_printf("%s(0x%04lx)\n", __FUNCTION__, dwThreadId);
    }
 
-   data = (struct stw_tls_data *)calloc(1, sizeof *data);
+   data = calloc(1, sizeof *data);
    if (!data) {
       goto no_data;
    }

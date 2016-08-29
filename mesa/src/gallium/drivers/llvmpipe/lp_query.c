@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * Copyright 2010 VMware, Inc.
  * All Rights Reserved.
  * 
@@ -50,7 +50,8 @@ static struct llvmpipe_query *llvmpipe_query( struct pipe_query *p )
 
 static struct pipe_query *
 llvmpipe_create_query(struct pipe_context *pipe, 
-                      unsigned type)
+                      unsigned type,
+                      unsigned index)
 {
    struct llvmpipe_query *pq;
 
@@ -154,7 +155,7 @@ llvmpipe_get_query_result(struct pipe_context *pipe,
       *result = pq->num_primitives_written;
       break;
    case PIPE_QUERY_SO_OVERFLOW_PREDICATE:
-      vresult->b = pq->so_has_overflown;
+      vresult->b = pq->num_primitives_generated > pq->num_primitives_written;
       break;
    case PIPE_QUERY_SO_STATISTICS: {
       struct pipe_query_data_so_statistics *stats =
@@ -183,7 +184,7 @@ llvmpipe_get_query_result(struct pipe_context *pipe,
 }
 
 
-static void
+static boolean
 llvmpipe_begin_query(struct pipe_context *pipe, struct pipe_query *q)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
@@ -204,21 +205,18 @@ llvmpipe_begin_query(struct pipe_context *pipe, struct pipe_query *q)
 
    switch (pq->type) {
    case PIPE_QUERY_PRIMITIVES_EMITTED:
-      pq->num_primitives_written = 0;
-      llvmpipe->so_stats.num_primitives_written = 0;
+      pq->num_primitives_written = llvmpipe->so_stats.num_primitives_written;
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
-      pq->num_primitives_generated = 0;
-      llvmpipe->num_primitives_generated = 0;
+      pq->num_primitives_generated = llvmpipe->so_stats.primitives_storage_needed;
       break;
    case PIPE_QUERY_SO_STATISTICS:
-      pq->num_primitives_written = 0;
-      llvmpipe->so_stats.num_primitives_written = 0;
-      pq->num_primitives_generated = 0;
-      llvmpipe->num_primitives_generated = 0;
+      pq->num_primitives_written = llvmpipe->so_stats.num_primitives_written;
+      pq->num_primitives_generated = llvmpipe->so_stats.primitives_storage_needed;
       break;
    case PIPE_QUERY_SO_OVERFLOW_PREDICATE:
-      pq->so_has_overflown = FALSE;
+      pq->num_primitives_written = llvmpipe->so_stats.num_primitives_written;
+      pq->num_primitives_generated = llvmpipe->so_stats.primitives_storage_needed;
       break;
    case PIPE_QUERY_PIPELINE_STATISTICS:
       /* reset our cache */
@@ -237,10 +235,11 @@ llvmpipe_begin_query(struct pipe_context *pipe, struct pipe_query *q)
    default:
       break;
    }
+   return true;
 }
 
 
-static void
+static bool
 llvmpipe_end_query(struct pipe_context *pipe, struct pipe_query *q)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
@@ -251,18 +250,24 @@ llvmpipe_end_query(struct pipe_context *pipe, struct pipe_query *q)
    switch (pq->type) {
 
    case PIPE_QUERY_PRIMITIVES_EMITTED:
-      pq->num_primitives_written = llvmpipe->so_stats.num_primitives_written;
+      pq->num_primitives_written =
+         llvmpipe->so_stats.num_primitives_written - pq->num_primitives_written;
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
-      pq->num_primitives_generated = llvmpipe->num_primitives_generated;
+      pq->num_primitives_generated =
+         llvmpipe->so_stats.primitives_storage_needed - pq->num_primitives_generated;
       break;
    case PIPE_QUERY_SO_STATISTICS:
-      pq->num_primitives_written = llvmpipe->so_stats.num_primitives_written;
-      pq->num_primitives_generated = llvmpipe->num_primitives_generated;
+      pq->num_primitives_written =
+         llvmpipe->so_stats.num_primitives_written - pq->num_primitives_written;
+      pq->num_primitives_generated =
+         llvmpipe->so_stats.primitives_storage_needed - pq->num_primitives_generated;
       break;
    case PIPE_QUERY_SO_OVERFLOW_PREDICATE:
-      pq->so_has_overflown = (llvmpipe->num_primitives_generated >
-                              llvmpipe->so_stats.num_primitives_written);
+      pq->num_primitives_written =
+         llvmpipe->so_stats.num_primitives_written - pq->num_primitives_written;
+      pq->num_primitives_generated =
+         llvmpipe->so_stats.primitives_storage_needed - pq->num_primitives_generated;
       break;
    case PIPE_QUERY_PIPELINE_STATISTICS:
       pq->stats.ia_vertices =
@@ -293,6 +298,8 @@ llvmpipe_end_query(struct pipe_context *pipe, struct pipe_query *q)
    default:
       break;
    }
+
+   return true;
 }
 
 boolean
@@ -310,9 +317,14 @@ llvmpipe_check_render_cond(struct llvmpipe_context *lp)
 
    b = pipe->get_query_result(pipe, lp->render_cond_query, wait, (void*)&result);
    if (b)
-      return (!result == lp->render_cond_cond);
+      return ((!result) == lp->render_cond_cond);
    else
       return TRUE;
+}
+
+static void
+llvmpipe_set_active_query_state(struct pipe_context *pipe, boolean enable)
+{
 }
 
 void llvmpipe_init_query_funcs(struct llvmpipe_context *llvmpipe )
@@ -322,6 +334,7 @@ void llvmpipe_init_query_funcs(struct llvmpipe_context *llvmpipe )
    llvmpipe->pipe.begin_query = llvmpipe_begin_query;
    llvmpipe->pipe.end_query = llvmpipe_end_query;
    llvmpipe->pipe.get_query_result = llvmpipe_get_query_result;
+   llvmpipe->pipe.set_active_query_state = llvmpipe_set_active_query_state;
 }
 
 

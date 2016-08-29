@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -77,7 +77,7 @@ hash_key(const void *key, GLuint key_size)
 
 
 /**
- * Rebuild/expand the hash table to accomodate more entries
+ * Rebuild/expand the hash table to accommodate more entries
  */
 static void
 rehash(struct gl_program_cache *cache)
@@ -143,7 +143,7 @@ _mesa_new_program_cache(void)
    if (cache) {
       cache->size = 17;
       cache->items =
-         calloc(1, cache->size * sizeof(struct cache_item));
+         calloc(cache->size, sizeof(struct cache_item *));
       if (!cache->items) {
          free(cache);
          return NULL;

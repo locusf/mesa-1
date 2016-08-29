@@ -24,12 +24,16 @@
 
 struct glx_screen_vtable fake_glx_screen::vt = {
    indirect_create_context,
-   indirect_create_context_attribs
+   indirect_create_context_attribs,
+   NULL,
+   NULL,
 };
 
 struct glx_screen_vtable fake_glx_screen_direct::vt = {
    fake_glx_context_direct::create,
-   fake_glx_context_direct::create_attribs
+   fake_glx_context_direct::create_attribs,
+   NULL,
+   NULL,
 };
 
 const struct glx_context_vtable fake_glx_context::vt = {
@@ -70,3 +74,26 @@ indirect_create_context_attribs(struct glx_screen *base,
 
    return indirect_create_context(base, config_base, shareList, 0);
 }
+
+/* This is necessary so that we don't have to link with glxcurrent.c
+ * which would require us to link with X libraries and what not.
+ */
+GLubyte dummyBuffer[__GLX_BUFFER_LIMIT_SIZE];
+struct glx_context_vtable dummyVtable;
+struct glx_context dummyContext = {
+   &dummyBuffer[0],
+   &dummyBuffer[0],
+   &dummyBuffer[0],
+   &dummyBuffer[__GLX_BUFFER_LIMIT_SIZE],
+   sizeof(dummyBuffer),
+   &dummyVtable
+};
+__thread void *__glX_tls_Context = &dummyContext;
+
+#if !defined(GLX_USE_TLS)
+extern "C" struct glx_context *
+__glXGetCurrentContext()
+{
+ return (struct glx_context *) __glX_tls_Context;
+}
+#endif

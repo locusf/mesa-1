@@ -349,12 +349,14 @@ void dump::dump_op(node &n, const char *name) {
 			static const char *exp_type[] = {"PIXEL", "POS  ", "PARAM"};
 			sblog << "  " << exp_type[c->bc.type] << " " << c->bc.array_base;
 			has_dst = false;
-		} else if (c->bc.op_ptr->flags & CF_STRM) {
+		} else if (c->bc.op_ptr->flags & (CF_MEM)) {
 			static const char *exp_type[] = {"WRITE", "WRITE_IND", "WRITE_ACK",
 					"WRITE_IND_ACK"};
 			sblog << "  " << exp_type[c->bc.type] << " " << c->bc.array_base
 					<< "   ES:" << c->bc.elem_size;
-			has_dst = false;
+			if (!(c->bc.op_ptr->flags & CF_EMIT)) {
+				has_dst = false;
+			}
 		}
 	}
 

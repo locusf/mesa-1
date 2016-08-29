@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,7 +27,7 @@
 
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   *   Brian Paul
   */
 
@@ -85,14 +85,12 @@ draw_create_vertex_shader(struct draw_context *draw,
                   vs->info.output_semantic_index[i] == 0) {
             found_clipvertex = TRUE;
             vs->clipvertex_output = i;
-         } else if (vs->info.output_semantic_name[i] == TGSI_SEMANTIC_CLIPDIST) {
+         } else if (vs->info.output_semantic_name[i] == TGSI_SEMANTIC_VIEWPORT_INDEX)
+            vs->viewport_index_output = i;
+         else if (vs->info.output_semantic_name[i] == TGSI_SEMANTIC_CLIPDIST) {
             debug_assert(vs->info.output_semantic_index[i] <
                          PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
-            vs->clipdistance_output[vs->info.output_semantic_index[i]] = i;
-         } else if (vs->info.output_semantic_name[i] == TGSI_SEMANTIC_CULLDIST) {
-            debug_assert(vs->info.output_semantic_index[i] <
-                         PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
-            vs->culldistance_output[vs->info.output_semantic_index[i]] = i;
+            vs->ccdistance_output[vs->info.output_semantic_index[i]] = i;
          }
       }
       if (!found_clipvertex)
@@ -117,9 +115,11 @@ draw_bind_vertex_shader(struct draw_context *draw,
       draw->vs.position_output = dvs->position_output;
       draw->vs.edgeflag_output = dvs->edgeflag_output;
       draw->vs.clipvertex_output = dvs->clipvertex_output;
-      draw->vs.clipdistance_output[0] = dvs->clipdistance_output[0];
-      draw->vs.clipdistance_output[1] = dvs->clipdistance_output[1];
+      draw->vs.ccdistance_output[0] = dvs->ccdistance_output[0];
+      draw->vs.ccdistance_output[1] = dvs->ccdistance_output[1];
       dvs->prepare( dvs, draw );
+      draw_update_clip_flags(draw);
+      draw_update_viewport_flags(draw);
    }
    else {
       draw->vs.vertex_shader = NULL;
@@ -149,9 +149,11 @@ draw_vs_init( struct draw_context *draw )
 {
    draw->dump_vs = debug_get_option_gallium_dump_vs();
 
-   draw->vs.tgsi.machine = tgsi_exec_machine_create();
-   if (!draw->vs.tgsi.machine)
-      return FALSE;
+   if (!draw->llvm) {
+      draw->vs.tgsi.machine = tgsi_exec_machine_create(PIPE_SHADER_VERTEX);
+      if (!draw->vs.tgsi.machine)
+         return FALSE;
+   }
 
    draw->vs.emit_cache = translate_cache_create();
    if (!draw->vs.emit_cache) 
@@ -173,7 +175,8 @@ draw_vs_destroy( struct draw_context *draw )
    if (draw->vs.emit_cache)
       translate_cache_destroy(draw->vs.emit_cache);
 
-   tgsi_exec_machine_destroy(draw->vs.tgsi.machine);
+   if (!draw->llvm)
+      tgsi_exec_machine_destroy(draw->vs.tgsi.machine);
 }
 
 
@@ -193,17 +196,17 @@ draw_vs_lookup_variant( struct draw_vertex_shader *vs,
    /* Else have to create a new one: 
     */
    variant = vs->create_variant( vs, key );
-   if (variant == NULL)
+   if (!variant)
       return NULL;
 
    /* Add it to our list, could be smarter: 
     */
-   if (vs->nr_variants < Elements(vs->variant)) {
+   if (vs->nr_variants < ARRAY_SIZE(vs->variant)) {
       vs->variant[vs->nr_variants++] = variant;
    }
    else {
       vs->last_variant++;
-      vs->last_variant %= Elements(vs->variant);
+      vs->last_variant %= ARRAY_SIZE(vs->variant);
       vs->variant[vs->last_variant]->destroy(vs->variant[vs->last_variant]);
       vs->variant[vs->last_variant] = variant;
    }

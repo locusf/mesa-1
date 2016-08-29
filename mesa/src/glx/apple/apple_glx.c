@@ -43,8 +43,6 @@
 static bool initialized = false;
 static int dri_event_base = 0;
 
-const GLuint __glXDefaultPixelStore[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 1 };
-
 int
 apple_get_dri_event_base(void)
 {
@@ -95,7 +93,7 @@ apple_glx_get_client_id(void)
    return id;
 }
 
-/* Return true if an error occured. */
+/* Return true if an error occurred. */
 bool
 apple_init_glx(Display * dpy)
 {

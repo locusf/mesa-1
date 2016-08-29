@@ -42,18 +42,21 @@
 
 #include "draw/draw_vbuf.h"
 #include "util/u_rect.h"
+#include "util/u_pack_color.h"
 
 #define LP_SETUP_NEW_FS          0x01
 #define LP_SETUP_NEW_CONSTANTS   0x02
 #define LP_SETUP_NEW_BLEND_COLOR 0x04
 #define LP_SETUP_NEW_SCISSOR     0x08
+#define LP_SETUP_NEW_VIEWPORTS   0x10
 
 
 struct lp_setup_variant;
 
 
 /** Max number of scenes */
-#define MAX_SCENES 2
+/* XXX: make multiple scenes per context work, see lp_setup_rasterize_scene */
+#define MAX_SCENES 1
 
 
 
@@ -92,7 +95,6 @@ struct lp_setup_context
    struct llvmpipe_query *active_queries[LP_MAX_ACTIVE_BINNED_QUERIES];
    unsigned active_binned_queries;
 
-   boolean subdivide_large_triangles;
    boolean flatshade_first;
    boolean ccw_is_frontface;
    boolean scissor_test;
@@ -103,18 +105,20 @@ struct lp_setup_context
    float pixel_offset;
    float line_width;
    float point_size;
-   float psize;
-   unsigned viewport_index_slot;
-   unsigned layer_slot;
+   int8_t psize_slot;
+   int8_t viewport_index_slot;
+   int8_t layer_slot;
+   int8_t face_slot;
 
    struct pipe_framebuffer_state fb;
    struct u_rect framebuffer;
    struct u_rect scissors[PIPE_MAX_VIEWPORTS];
    struct u_rect draw_regions[PIPE_MAX_VIEWPORTS];   /* intersection of fb & scissor */
+   struct lp_jit_viewport viewports[PIPE_MAX_VIEWPORTS];
 
    struct {
       unsigned flags;
-      union lp_rast_cmd_arg color;    /**< lp_rast_clear_color() cmd */
+      union util_color color_val[PIPE_MAX_COLOR_BUFS];
       uint64_t zsmask;
       uint64_t zsvalue;               /**< lp_rast_clear_zstencil() cmd */
    } clear;
@@ -129,6 +133,7 @@ struct lp_setup_context
       const struct lp_rast_state *stored; /**< what's in the scene */
       struct lp_rast_state current;  /**< currently set state */
       struct pipe_resource *current_tex[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+      unsigned current_tex_num;
    } fs;
 
    /** fragment shader constants */
@@ -162,6 +167,21 @@ struct lp_setup_context
                      const float (*v1)[4],
                      const float (*v2)[4]);
 };
+
+static inline void
+scissor_planes_needed(boolean scis_planes[4], const struct u_rect *bbox,
+                      const struct u_rect *scissor)
+{
+   /* left */
+   scis_planes[0] = (bbox->x0 < scissor->x0);
+   /* right */
+   scis_planes[1] = (bbox->x1 > scissor->x1);
+   /* top */
+   scis_planes[2] = (bbox->y0 < scissor->y0);
+   /* bottom */
+   scis_planes[3] = (bbox->y1 > scissor->y1);
+}
+
 
 void lp_setup_choose_triangle( struct lp_setup_context *setup );
 void lp_setup_choose_line( struct lp_setup_context *setup );

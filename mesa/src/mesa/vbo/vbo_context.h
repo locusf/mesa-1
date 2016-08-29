@@ -56,18 +56,11 @@
 #include "vbo_exec.h"
 #include "vbo_save.h"
 
+#include "main/macros.h"
 
-/** Used to signal when transitioning from one kind of drawing method
- * to another.
- */
-enum draw_method
-{
-   DRAW_NONE,          /**< Initial value only */
-   DRAW_BEGIN_END,
-   DRAW_DISPLAY_LIST,
-   DRAW_ARRAYS
-};
-
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct vbo_context {
    struct gl_client_array currval[VBO_ATTRIB_MAX];
@@ -84,13 +77,17 @@ struct vbo_context {
     */
    vbo_draw_func draw_prims;
 
-   enum draw_method last_draw_method;
+   /* Optional callback for indirect draws. This allows multidraws to not be
+    * broken up, as well as for the actual count to be passed in as a separate
+    * indirect parameter.
+    */
+   vbo_indirect_draw_func draw_indirect_prims;
 };
 
 
 static inline struct vbo_context *vbo_context(struct gl_context *ctx) 
 {
-   return (struct vbo_context *)(ctx->swtnl_im);
+   return ctx->vbo_context;
 }
 
 
@@ -122,11 +119,11 @@ get_program_mode( struct gl_context *ctx )
  * that arrays may be changing.
  */
 static inline void
-vbo_draw_method(struct vbo_context *vbo, enum draw_method method)
+vbo_draw_method(struct vbo_context *vbo, gl_draw_method method)
 {
-   if (vbo->last_draw_method != method) {
-      struct gl_context *ctx = vbo->exec.ctx;
+   struct gl_context *ctx = vbo->exec.ctx;
 
+   if (ctx->Array.DrawMethod != method) {
       switch (method) {
       case DRAW_ARRAYS:
          ctx->Array._DrawArrays = vbo->exec.array.inputs;
@@ -138,11 +135,11 @@ vbo_draw_method(struct vbo_context *vbo, enum draw_method method)
          ctx->Array._DrawArrays = vbo->save.inputs;
          break;
       default:
-         ASSERT(0);
+         assert(0);
       }
 
       ctx->NewDriverState |= ctx->DriverFlags.NewArray;
-      vbo->last_draw_method = method;
+      ctx->Array.DrawMethod = method;
    }
 }
 
@@ -155,38 +152,79 @@ vbo_attrtype_to_integer_flag(GLenum format)
 {
    switch (format) {
    case GL_FLOAT:
+   case GL_DOUBLE:
       return GL_FALSE;
    case GL_INT:
    case GL_UNSIGNED_INT:
       return GL_TRUE;
    default:
-      ASSERT(0);
+      assert(0);
       return GL_FALSE;
    }
 }
 
+static inline GLboolean
+vbo_attrtype_to_double_flag(GLenum format)
+{
+   switch (format) {
+   case GL_FLOAT:
+   case GL_INT:
+   case GL_UNSIGNED_INT:
+      return GL_FALSE;
+   case GL_DOUBLE:
+      return GL_TRUE;
+   default:
+      assert(0);
+      return GL_FALSE;
+   }
+}
 
 /**
  * Return default component values for the given format.
- * The return type is an array of floats, because that's how we declare
- * the vertex storage despite the fact we sometimes store integers in there.
+ * The return type is an array of fi_types, because that's how we declare
+ * the vertex storage : floats , integers or unsigned integers.
  */
-static inline const GLfloat *
-vbo_get_default_vals_as_float(GLenum format)
+static inline const fi_type *
+vbo_get_default_vals_as_union(GLenum format)
 {
    static const GLfloat default_float[4] = { 0, 0, 0, 1 };
    static const GLint default_int[4] = { 0, 0, 0, 1 };
 
    switch (format) {
    case GL_FLOAT:
-      return default_float;
+      return (fi_type *)default_float;
    case GL_INT:
    case GL_UNSIGNED_INT:
-      return (const GLfloat*)default_int;
+      return (fi_type *)default_int;
    default:
-      ASSERT(0);
+      assert(0);
       return NULL;
    }
 }
+
+
+/**
+ * Compute the max number of vertices which can be stored in
+ * a vertex buffer, given the current vertex size, and the amount
+ * of space already used.
+ */
+static inline unsigned
+vbo_compute_max_verts(const struct vbo_exec_context *exec)
+{
+   unsigned n = (VBO_VERT_BUFFER_SIZE - exec->vtx.buffer_used) /
+      (exec->vtx.vertex_size * sizeof(GLfloat));
+   if (n == 0)
+      return 0;
+   /* Subtract one so we're always sure to have room for an extra
+    * vertex for GL_LINE_LOOP -> GL_LINE_STRIP conversion.
+    */
+   n--;
+   return n;
+}
+
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif

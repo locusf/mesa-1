@@ -48,8 +48,8 @@
  *                 drivers!  No changes to the public glapi interface.
  */
 
+#include "c11/threads.h"
 #include "u_current.h"
-#include "u_thread.h"
 
 #ifndef MAPI_MODE_UTIL
 
@@ -103,20 +103,18 @@ __thread struct mapi_table *u_current_table
     __attribute__((tls_model("initial-exec")))
     = (struct mapi_table *) table_noop_array;
 
-__thread void *u_current_user
+__thread void *u_current_context
     __attribute__((tls_model("initial-exec")));
 
 #else
 
 struct mapi_table *u_current_table =
    (struct mapi_table *) table_noop_array;
-void *u_current_user;
+void *u_current_context;
 
-#ifdef THREADS
-struct u_tsd u_current_table_tsd;
-static struct u_tsd u_current_user_tsd;
+tss_t u_current_table_tsd;
+static tss_t u_current_context_tsd;
 static int ThreadSafe;
-#endif /* THREADS */
 
 #endif /* defined(GLX_USE_TLS) */
 /*@}*/
@@ -125,26 +123,63 @@ static int ThreadSafe;
 void
 u_current_destroy(void)
 {
-#if defined(THREADS) && defined(_WIN32)
-   u_tsd_destroy(&u_current_table_tsd);
-   u_tsd_destroy(&u_current_user_tsd);
+#if !defined(GLX_USE_TLS)
+   tss_delete(u_current_table_tsd);
+   tss_delete(u_current_context_tsd);
 #endif
 }
 
 
-#if defined(THREADS) && !defined(GLX_USE_TLS)
+#if !defined(GLX_USE_TLS)
 
 static void
 u_current_init_tsd(void)
 {
-   u_tsd_init(&u_current_table_tsd);
-   u_tsd_init(&u_current_user_tsd);
+   tss_create(&u_current_table_tsd, NULL);
+   tss_create(&u_current_context_tsd, NULL);
 }
 
 /**
  * Mutex for multithread check.
  */
-u_mutex_declare_static(ThreadCheckMutex);
+static mtx_t ThreadCheckMutex = _MTX_INITIALIZER_NP;
+
+
+#ifdef _WIN32
+typedef DWORD thread_id;
+#else
+typedef thrd_t thread_id;
+#endif
+
+
+static inline thread_id
+get_thread_id(void)
+{
+   /*
+    * XXX: Callers of of this function assume it is a lightweight function.
+    * But unfortunately C11's thrd_current() gives no such guarantees.  In
+    * fact, it's pretty hard to have a compliant implementation of
+    * thrd_current() on Windows with such characteristics.  So for now, we
+    * side-step this mess and use Windows thread primitives directly here.
+    */
+#ifdef _WIN32
+   return GetCurrentThreadId();
+#else
+   return thrd_current();
+#endif
+}
+
+
+static inline int
+thread_id_equal(thread_id t1, thread_id t2)
+{
+#ifdef _WIN32
+   return t1 == t2;
+#else
+   return thrd_equal(t1, t2);
+#endif
+}
+
 
 /**
  * We should call this periodically from a function such as glXMakeCurrent
@@ -153,25 +188,25 @@ u_mutex_declare_static(ThreadCheckMutex);
 void
 u_current_init(void)
 {
-   static unsigned long knownID;
+   static thread_id knownID;
    static int firstCall = 1;
 
    if (ThreadSafe)
       return;
 
-   u_mutex_lock(ThreadCheckMutex);
+   mtx_lock(&ThreadCheckMutex);
    if (firstCall) {
       u_current_init_tsd();
 
-      knownID = u_thread_self();
+      knownID = get_thread_id();
       firstCall = 0;
    }
-   else if (knownID != u_thread_self()) {
+   else if (!thread_id_equal(knownID, get_thread_id())) {
       ThreadSafe = 1;
-      u_current_set(NULL);
-      u_current_set_user(NULL);
+      u_current_set_table(NULL);
+      u_current_set_context(NULL);
    }
-   u_mutex_unlock(ThreadCheckMutex);
+   mtx_unlock(&ThreadCheckMutex);
 }
 
 #else
@@ -191,17 +226,15 @@ u_current_init(void)
  * void from the real context pointer type.
  */
 void
-u_current_set_user(const void *ptr)
+u_current_set_context(const void *ptr)
 {
    u_current_init();
 
 #if defined(GLX_USE_TLS)
-   u_current_user = (void *) ptr;
-#elif defined(THREADS)
-   u_tsd_set(&u_current_user_tsd, (void *) ptr);
-   u_current_user = (ThreadSafe) ? NULL : (void *) ptr;
+   u_current_context = (void *) ptr;
 #else
-   u_current_user = (void *) ptr;
+   tss_set(u_current_context_tsd, (void *) ptr);
+   u_current_context = (ThreadSafe) ? NULL : (void *) ptr;
 #endif
 }
 
@@ -211,16 +244,12 @@ u_current_set_user(const void *ptr)
  * void to the real context pointer type.
  */
 void *
-u_current_get_user_internal(void)
+u_current_get_context_internal(void)
 {
 #if defined(GLX_USE_TLS)
-   return u_current_user;
-#elif defined(THREADS)
-   return (ThreadSafe)
-      ? u_tsd_get(&u_current_user_tsd)
-      : u_current_user;
+   return u_current_context;
 #else
-   return u_current_user;
+   return ThreadSafe ? tss_get(u_current_context_tsd) : u_current_context;
 #endif
 }
 
@@ -230,7 +259,7 @@ u_current_get_user_internal(void)
  * table (__glapi_noop_table).
  */
 void
-u_current_set(const struct mapi_table *tbl)
+u_current_set_table(const struct mapi_table *tbl)
 {
    u_current_init();
 
@@ -241,11 +270,9 @@ u_current_set(const struct mapi_table *tbl)
 
 #if defined(GLX_USE_TLS)
    u_current_table = (struct mapi_table *) tbl;
-#elif defined(THREADS)
-   u_tsd_set(&u_current_table_tsd, (void *) tbl);
-   u_current_table = (ThreadSafe) ? NULL : (void *) tbl;
 #else
-   u_current_table = (struct mapi_table *) tbl;
+   tss_set(u_current_table_tsd, (void *) tbl);
+   u_current_table = (ThreadSafe) ? NULL : (void *) tbl;
 #endif
 }
 
@@ -253,14 +280,14 @@ u_current_set(const struct mapi_table *tbl)
  * Return pointer to current dispatch table for calling thread.
  */
 struct mapi_table *
-u_current_get_internal(void)
+u_current_get_table_internal(void)
 {
 #if defined(GLX_USE_TLS)
    return u_current_table;
-#elif defined(THREADS)
-   return (struct mapi_table *) ((ThreadSafe) ?
-         u_tsd_get(&u_current_table_tsd) : (void *) u_current_table);
 #else
-   return u_current_table;
+   if (ThreadSafe)
+      return (struct mapi_table *) tss_get(u_current_table_tsd);
+   else
+      return (struct mapi_table *) u_current_table;
 #endif
 }

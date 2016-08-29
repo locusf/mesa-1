@@ -1,6 +1,6 @@
 /*
  Copyright (C) Intel Corp.  2006.  All Rights Reserved.
- Intel funded Tungsten Graphics (http://www.tungstengraphics.com) to
+ Intel funded Tungsten Graphics to
  develop this 3D driver.
 
  Permission is hereby granted, free of charge, to any person obtaining
@@ -26,12 +26,12 @@
  **********************************************************************/
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
 
 
-#include "main/mtypes.h"
 #include "brw_fs.h"
+#include "brw_wm.h"
 
 
 #undef P                        /* prompted depth */
@@ -120,13 +120,14 @@ static const struct {
  * \param line_aa  AA_NEVER, AA_ALWAYS or AA_SOMETIMES
  * \param lookup  bitmask of IZ_* flags
  */
-void fs_visitor::setup_payload_gen4()
+void fs_visitor::setup_fs_payload_gen4()
 {
+   assert(stage == MESA_SHADER_FRAGMENT);
+   brw_wm_prog_data *prog_data = (brw_wm_prog_data*) this->prog_data;
+   brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
    GLuint reg = 2;
    bool kill_stats_promoted_workaround = false;
-   int lookup = c->key.iz_lookup;
-   bool uses_depth =
-      (fp->Base.InputsRead & (1 << VARYING_SLOT_POS)) != 0;
+   int lookup = key->iz_lookup;
 
    assert(lookup < IZ_BIT_MAX);
 
@@ -135,33 +136,35 @@ void fs_visitor::setup_payload_gen4()
     * statistics are enabled..." paragraph of 11.5.3.2: Early Depth
     * Test Cases [Pre-DevGT] of the 3D Pipeline - Windower B-Spec.
     */
-   if (c->key.stats_wm &&
+   if (key->stats_wm &&
        (lookup & IZ_PS_KILL_ALPHATEST_BIT) &&
        wm_iz_table[lookup].mode == P) {
       kill_stats_promoted_workaround = true;
    }
 
-   if (wm_iz_table[lookup].sd_present || uses_depth ||
+   prog_data->uses_src_depth =
+      (nir->info.inputs_read & (1 << VARYING_SLOT_POS)) != 0;
+   if (wm_iz_table[lookup].sd_present || prog_data->uses_src_depth ||
        kill_stats_promoted_workaround) {
-      c->source_depth_reg = reg;
+      payload.source_depth_reg = reg;
       reg += 2;
    }
 
    if (wm_iz_table[lookup].sd_to_rt || kill_stats_promoted_workaround)
-      c->source_depth_to_render_target = 1;
+      source_depth_to_render_target = true;
 
-   if (wm_iz_table[lookup].ds_present || c->key.line_aa != AA_NEVER) {
-      c->aa_dest_stencil_reg = reg;
-      c->runtime_check_aads_emit = (!wm_iz_table[lookup].ds_present &&
-                                    c->key.line_aa == AA_SOMETIMES);
+   if (wm_iz_table[lookup].ds_present || key->line_aa != AA_NEVER) {
+      payload.aa_dest_stencil_reg = reg;
+      runtime_check_aads_emit =
+         !wm_iz_table[lookup].ds_present && key->line_aa == AA_SOMETIMES;
       reg++;
    }
 
    if (wm_iz_table[lookup].dd_present) {
-      c->dest_depth_reg = reg;
+      payload.dest_depth_reg = reg;
       reg+=2;
    }
 
-   c->nr_payload_regs = reg;
+   payload.num_regs = reg;
 }
 

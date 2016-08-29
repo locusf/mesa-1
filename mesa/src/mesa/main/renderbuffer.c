@@ -38,7 +38,9 @@
 void
 _mesa_init_renderbuffer(struct gl_renderbuffer *rb, GLuint name)
 {
-   _glthread_INIT_MUTEX(rb->Mutex);
+   GET_CURRENT_CONTEXT(ctx);
+
+   mtx_init(&rb->Mutex, mtx_plain);
 
    rb->ClassID = 0;
    rb->Name = name;
@@ -53,7 +55,23 @@ _mesa_init_renderbuffer(struct gl_renderbuffer *rb, GLuint name)
    rb->Width = 0;
    rb->Height = 0;
    rb->Depth = 0;
-   rb->InternalFormat = GL_RGBA;
+
+   /* In GL 3, the initial format is GL_RGBA according to Table 6.26
+    * on page 302 of the GL 3.3 spec.
+    *
+    * In GLES 3, the initial format is GL_RGBA4 according to Table 6.15
+    * on page 258 of the GLES 3.0.4 spec.
+    *
+    * If the context is current, set the initial format based on the
+    * specs. If the context is not current, we cannot determine the
+    * API, so default to GL_RGBA.
+    */
+   if (ctx && _mesa_is_gles3(ctx)) {
+      rb->InternalFormat = GL_RGBA4;
+   } else {
+      rb->InternalFormat = GL_RGBA;
+   }
+
    rb->Format = MESA_FORMAT_NONE;
 }
 
@@ -83,7 +101,8 @@ _mesa_new_renderbuffer(struct gl_context *ctx, GLuint name)
 void
 _mesa_delete_renderbuffer(struct gl_context *ctx, struct gl_renderbuffer *rb)
 {
-   _glthread_DESTROY_MUTEX(rb->Mutex);
+   mtx_destroy(&rb->Mutex);
+   free(rb->Label);
    free(rb);
 }
 
@@ -152,12 +171,11 @@ _mesa_reference_renderbuffer_(struct gl_renderbuffer **ptr,
       GLboolean deleteFlag = GL_FALSE;
       struct gl_renderbuffer *oldRb = *ptr;
 
-      _glthread_LOCK_MUTEX(oldRb->Mutex);
-      ASSERT(oldRb->RefCount > 0);
+      mtx_lock(&oldRb->Mutex);
+      assert(oldRb->RefCount > 0);
       oldRb->RefCount--;
-      /*printf("RB DECR %p (%d) to %d\n", (void*) oldRb, oldRb->Name, oldRb->RefCount);*/
       deleteFlag = (oldRb->RefCount == 0);
-      _glthread_UNLOCK_MUTEX(oldRb->Mutex);
+      mtx_unlock(&oldRb->Mutex);
 
       if (deleteFlag) {
          GET_CURRENT_CONTEXT(ctx);
@@ -170,10 +188,9 @@ _mesa_reference_renderbuffer_(struct gl_renderbuffer **ptr,
 
    if (rb) {
       /* reference new renderbuffer */
-      _glthread_LOCK_MUTEX(rb->Mutex);
+      mtx_lock(&rb->Mutex);
       rb->RefCount++;
-      /*printf("RB INCR %p (%d) to %d\n", (void*) rb, rb->Name, rb->RefCount);*/
-      _glthread_UNLOCK_MUTEX(rb->Mutex);
+      mtx_unlock(&rb->Mutex);
       *ptr = rb;
    }
 }

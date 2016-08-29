@@ -39,6 +39,7 @@
 #include "lp_bld_gather.h"
 #include "lp_bld_debug.h"
 #include "lp_bld_format.h"
+#include "lp_bld_arit.h"
 
 
 void
@@ -47,11 +48,11 @@ lp_build_format_swizzle_soa(const struct util_format_description *format_desc,
                             const LLVMValueRef *unswizzled,
                             LLVMValueRef swizzled_out[4])
 {
-   assert(UTIL_FORMAT_SWIZZLE_0 == PIPE_SWIZZLE_ZERO);
-   assert(UTIL_FORMAT_SWIZZLE_1 == PIPE_SWIZZLE_ONE);
+   assert(PIPE_SWIZZLE_0 == (int)PIPE_SWIZZLE_0);
+   assert(PIPE_SWIZZLE_1 == (int)PIPE_SWIZZLE_1);
 
    if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS) {
-      enum util_format_swizzle swizzle;
+      enum pipe_swizzle swizzle;
       LLVMValueRef depth_or_stencil;
 
       if (util_format_has_stencil(format_desc) &&
@@ -75,7 +76,7 @@ lp_build_format_swizzle_soa(const struct util_format_description *format_desc,
    else {
       unsigned chan;
       for (chan = 0; chan < 4; ++chan) {
-         enum util_format_swizzle swizzle = format_desc->swizzle[chan];
+         enum pipe_swizzle swizzle = format_desc->swizzle[chan];
          swizzled_out[chan] = lp_build_swizzle_soa_channel(bld, unswizzled, swizzle);
       }
    }
@@ -164,13 +165,12 @@ lp_build_unpack_rgba_soa(struct gallivm_state *gallivm,
 
          if (type.floating) {
             if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) {
-               assert(width == 8);
                if (format_desc->swizzle[3] == chan) {
                   input = lp_build_unsigned_norm_to_float(gallivm, width, type, input);
                }
                else {
                   struct lp_type conv_type = lp_uint_type(type);
-                  input = lp_build_srgb_to_linear(gallivm, conv_type, input);
+                  input = lp_build_srgb_to_linear(gallivm, conv_type, width, input);
                }
             }
             else {
@@ -221,6 +221,11 @@ lp_build_unpack_rgba_soa(struct gallivm_state *gallivm,
                double scale = 1.0 / ((1 << (format_desc->channel[chan].size - 1)) - 1);
                LLVMValueRef scale_val = lp_build_const_vec(gallivm, type, scale);
                input = LLVMBuildFMul(builder, input, scale_val, "");
+               /* the formula above will produce value below -1.0 for most negative
+                * value but everything seems happy with that hence disable for now */
+               if (0)
+                  input = lp_build_max(&bld, input,
+                                       lp_build_const_vec(gallivm, type, -1.0f));
             }
          }
          else if (format_desc->channel[chan].pure_integer) {
@@ -341,6 +346,7 @@ lp_build_rgba8_to_fi32_soa(struct gallivm_state *gallivm,
  * \param i, j  the sub-block pixel coordinates.  For non-compressed formats
  *              these will always be (0,0).  For compressed formats, i will
  *              be in [0, block_width-1] and j will be in [0, block_height-1].
+ * \param cache  optional value pointing to a lp_build_format_cache structure
  */
 void
 lp_build_fetch_rgba_soa(struct gallivm_state *gallivm,
@@ -350,6 +356,7 @@ lp_build_fetch_rgba_soa(struct gallivm_state *gallivm,
                         LLVMValueRef offset,
                         LLVMValueRef i,
                         LLVMValueRef j,
+                        LLVMValueRef cache,
                         LLVMValueRef rgba_out[4])
 {
    LLVMBuilderRef builder = gallivm->builder;
@@ -381,6 +388,7 @@ lp_build_fetch_rgba_soa(struct gallivm_state *gallivm,
                                type.length,
                                format_desc->block.bits,
                                type.width,
+                               TRUE,
                                base_ptr, offset, FALSE);
 
       /*
@@ -406,8 +414,8 @@ lp_build_fetch_rgba_soa(struct gallivm_state *gallivm,
 
       packed = lp_build_gather(gallivm, type.length,
                                format_desc->block.bits,
-                               type.width, base_ptr, offset,
-                               FALSE);
+                               type.width, TRUE,
+                               base_ptr, offset, FALSE);
       if (format_desc->format == PIPE_FORMAT_R11G11B10_FLOAT) {
          lp_build_r11g11b10_to_float(gallivm, packed, rgba_out);
       }
@@ -433,15 +441,15 @@ lp_build_fetch_rgba_soa(struct gallivm_state *gallivm,
          unsigned mask = (1 << 8) - 1;
          LLVMValueRef s_offset = lp_build_const_int_vec(gallivm, type, 4);
          offset = LLVMBuildAdd(builder, offset, s_offset, "");
-         packed = lp_build_gather(gallivm, type.length,
-                                  32, type.width, base_ptr, offset, FALSE);
+         packed = lp_build_gather(gallivm, type.length, 32, type.width,
+                                  TRUE, base_ptr, offset, FALSE);
          packed = LLVMBuildAnd(builder, packed,
                                lp_build_const_int_vec(gallivm, type, mask), "");
       }
       else {
          assert (format_desc->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT);
-         packed = lp_build_gather(gallivm, type.length,
-                                  32, type.width, base_ptr, offset, TRUE);
+         packed = lp_build_gather(gallivm, type.length, 32, type.width,
+                                  TRUE, base_ptr, offset, TRUE);
          packed = LLVMBuildBitCast(builder, packed,
                                    lp_build_vec_type(gallivm, type), "");
       }
@@ -467,12 +475,45 @@ lp_build_fetch_rgba_soa(struct gallivm_state *gallivm,
       tmp_type.norm = TRUE;
 
       tmp = lp_build_fetch_rgba_aos(gallivm, format_desc, tmp_type,
-                                    base_ptr, offset, i, j);
+                                    TRUE, base_ptr, offset, i, j, cache);
 
       lp_build_rgba8_to_fi32_soa(gallivm,
                                 type,
                                 tmp,
                                 rgba_out);
+
+      return;
+   }
+
+   if (format_desc->layout == UTIL_FORMAT_LAYOUT_S3TC &&
+       /* non-srgb case is already handled above */
+       format_desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB &&
+       type.floating && type.width == 32 &&
+       (type.length == 1 || (type.length % 4 == 0)) &&
+       cache) {
+      const struct util_format_description *format_decompressed;
+      const struct util_format_description *flinear_desc;
+      LLVMValueRef packed;
+      flinear_desc = util_format_description(util_format_linear(format_desc->format));
+      packed = lp_build_fetch_cached_texels(gallivm,
+                                            flinear_desc,
+                                            type.length,
+                                            base_ptr,
+                                            offset,
+                                            i, j,
+                                            cache);
+      packed = LLVMBuildBitCast(builder, packed,
+                                lp_build_int_vec_type(gallivm, type), "");
+      /*
+       * The values are now packed so they match ordinary srgb RGBA8 format,
+       * hence need to use matching format for unpack.
+       */
+      format_decompressed = util_format_description(PIPE_FORMAT_R8G8B8A8_SRGB);
+
+      lp_build_unpack_rgba_soa(gallivm,
+                               format_decompressed,
+                               type,
+                               packed, rgba_out);
 
       return;
    }
@@ -517,8 +558,8 @@ lp_build_fetch_rgba_soa(struct gallivm_state *gallivm,
 
          /* Get a single float[4]={R,G,B,A} pixel */
          tmp = lp_build_fetch_rgba_aos(gallivm, format_desc, tmp_type,
-                                       base_ptr, offset_elem,
-                                       i_elem, j_elem);
+                                       TRUE, base_ptr, offset_elem,
+                                       i_elem, j_elem, cache);
 
          /*
           * Insert the AoS tmp value channels into the SoA result vectors at

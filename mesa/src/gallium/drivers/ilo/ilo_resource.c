@@ -25,850 +25,233 @@
  *    Chia-I Wu <olv@lunarg.com>
  */
 
+#include "core/ilo_state_vf.h"
+#include "core/ilo_state_sol.h"
+#include "core/ilo_state_surface.h"
+
 #include "ilo_screen.h"
+#include "ilo_format.h"
 #include "ilo_resource.h"
 
-/* use PIPE_BIND_CUSTOM to indicate MCS */
-#define ILO_BIND_MCS PIPE_BIND_CUSTOM
+/*
+ * From the Ivy Bridge PRM, volume 1 part 1, page 105:
+ *
+ *     "In addition to restrictions on maximum height, width, and depth,
+ *      surfaces are also restricted to a maximum size in bytes. This
+ *      maximum is 2 GB for all products and all surface types."
+ */
+static const size_t ilo_max_resource_size = 1u << 31;
 
-struct tex_layout {
-   const struct ilo_dev_info *dev;
-   const struct pipe_resource *templ;
-
-   enum pipe_format format;
-   unsigned block_width, block_height, block_size;
-   bool compressed;
-   bool has_depth, has_stencil, separate_stencil;
-
-   enum intel_tiling_mode tiling;
-   bool can_be_linear;
-
-   bool array_spacing_full;
-   bool interleaved;
-
-   struct {
-      int w, h, d;
-      struct ilo_texture_slice *slices;
-   } levels[PIPE_MAX_TEXTURE_LEVELS];
-
-   int align_i, align_j;
-   int qpitch;
-
-   int width, height;
-};
-
-static void
-tex_layout_init_qpitch(struct tex_layout *layout)
+static const char *
+resource_get_bo_name(const struct pipe_resource *templ)
 {
-   const struct pipe_resource *templ = layout->templ;
-   int h0, h1;
+   static const char *target_names[PIPE_MAX_TEXTURE_TYPES] = {
+      [PIPE_BUFFER] = "buf",
+      [PIPE_TEXTURE_1D] = "tex-1d",
+      [PIPE_TEXTURE_2D] = "tex-2d",
+      [PIPE_TEXTURE_3D] = "tex-3d",
+      [PIPE_TEXTURE_CUBE] = "tex-cube",
+      [PIPE_TEXTURE_RECT] = "tex-rect",
+      [PIPE_TEXTURE_1D_ARRAY] = "tex-1d-array",
+      [PIPE_TEXTURE_2D_ARRAY] = "tex-2d-array",
+      [PIPE_TEXTURE_CUBE_ARRAY] = "tex-cube-array",
+   };
+   const char *name = target_names[templ->target];
 
-   if (templ->array_size <= 1)
-      return;
-
-   h0 = align(layout->levels[0].h, layout->align_j);
-
-   if (!layout->array_spacing_full) {
-      layout->qpitch = h0;
-      return;
-   }
-
-   h1 = align(layout->levels[1].h, layout->align_j);
-
-   /*
-    * From the Sandy Bridge PRM, volume 1 part 1, page 115:
-    *
-    *     "The following equation is used for surface formats other than
-    *      compressed textures:
-    *
-    *        QPitch = (h0 + h1 + 11j)"
-    *
-    *     "The equation for compressed textures (BC* and FXT1 surface formats)
-    *      follows:
-    *
-    *        QPitch = (h0 + h1 + 11j) / 4"
-    *
-    *     "[DevSNB] Errata: Sampler MSAA Qpitch will be 4 greater than the
-    *      value calculated in the equation above, for every other odd Surface
-    *      Height starting from 1 i.e. 1,5,9,13"
-    *
-    * From the Ivy Bridge PRM, volume 1 part 1, page 111-112:
-    *
-    *     "If Surface Array Spacing is set to ARYSPC_FULL (note that the depth
-    *      buffer and stencil buffer have an implied value of ARYSPC_FULL):
-    *
-    *        QPitch = (h0 + h1 + 12j)
-    *        QPitch = (h0 + h1 + 12j) / 4 (compressed)
-    *
-    *      (There are many typos or missing words here...)"
-    *
-    * To access the N-th slice, an offset of (Stride * QPitch * N) is added to
-    * the base address.  The PRM divides QPitch by 4 for compressed formats
-    * because the block height for those formats are 4, and it wants QPitch to
-    * mean the number of memory rows, as opposed to texel rows, between
-    * slices.  Since we use texel rows in tex->slice_offsets, we do not need
-    * to divide QPitch by 4.
-    */
-   layout->qpitch = h0 + h1 +
-      ((layout->dev->gen >= ILO_GEN(7)) ? 12 : 11) * layout->align_j;
-
-   if (layout->dev->gen == ILO_GEN(6) && templ->nr_samples > 1 &&
-       templ->height0 % 4 == 1)
-      layout->qpitch += 4;
-}
-
-static void
-tex_layout_init_alignments(struct tex_layout *layout)
-{
-   const struct pipe_resource *templ = layout->templ;
-
-   /*
-    * From the Sandy Bridge PRM, volume 1 part 1, page 113:
-    *
-    *     "surface format           align_i     align_j
-    *      YUV 4:2:2 formats        4           *see below
-    *      BC1-5                    4           4
-    *      FXT1                     8           4
-    *      all other formats        4           *see below"
-    *
-    *     "- align_j = 4 for any depth buffer
-    *      - align_j = 2 for separate stencil buffer
-    *      - align_j = 4 for any render target surface is multisampled (4x)
-    *      - align_j = 4 for any render target surface with Surface Vertical
-    *        Alignment = VALIGN_4
-    *      - align_j = 2 for any render target surface with Surface Vertical
-    *        Alignment = VALIGN_2
-    *      - align_j = 2 for all other render target surface
-    *      - align_j = 2 for any sampling engine surface with Surface Vertical
-    *        Alignment = VALIGN_2
-    *      - align_j = 4 for any sampling engine surface with Surface Vertical
-    *        Alignment = VALIGN_4"
-    *
-    * From the Sandy Bridge PRM, volume 4 part 1, page 86:
-    *
-    *     "This field (Surface Vertical Alignment) must be set to VALIGN_2 if
-    *      the Surface Format is 96 bits per element (BPE)."
-    *
-    * They can be rephrased as
-    *
-    *                                  align_i        align_j
-    *   compressed formats             block width    block height
-    *   PIPE_FORMAT_S8_UINT            4              2
-    *   other depth/stencil formats    4              4
-    *   4x multisampled                4              4
-    *   bpp 96                         4              2
-    *   others                         4              2 or 4
-    */
-
-   /*
-    * From the Ivy Bridge PRM, volume 1 part 1, page 110:
-    *
-    *     "surface defined by      surface format     align_i     align_j
-    *      3DSTATE_DEPTH_BUFFER    D16_UNORM          8           4
-    *                              not D16_UNORM      4           4
-    *      3DSTATE_STENCIL_BUFFER  N/A                8           8
-    *      SURFACE_STATE           BC*, ETC*, EAC*    4           4
-    *                              FXT1               8           4
-    *                              all others         (set by SURFACE_STATE)"
-    *
-    * From the Ivy Bridge PRM, volume 4 part 1, page 63:
-    *
-    *     "- This field (Surface Vertical Aligment) is intended to be set to
-    *        VALIGN_4 if the surface was rendered as a depth buffer, for a
-    *        multisampled (4x) render target, or for a multisampled (8x)
-    *        render target, since these surfaces support only alignment of 4.
-    *      - Use of VALIGN_4 for other surfaces is supported, but uses more
-    *        memory.
-    *      - This field must be set to VALIGN_4 for all tiled Y Render Target
-    *        surfaces.
-    *      - Value of 1 is not supported for format YCRCB_NORMAL (0x182),
-    *        YCRCB_SWAPUVY (0x183), YCRCB_SWAPUV (0x18f), YCRCB_SWAPY (0x190)
-    *      - If Number of Multisamples is not MULTISAMPLECOUNT_1, this field
-    *        must be set to VALIGN_4."
-    *      - VALIGN_4 is not supported for surface format R32G32B32_FLOAT."
-    *
-    *     "- This field (Surface Horizontal Aligment) is intended to be set to
-    *        HALIGN_8 only if the surface was rendered as a depth buffer with
-    *        Z16 format or a stencil buffer, since these surfaces support only
-    *        alignment of 8.
-    *      - Use of HALIGN_8 for other surfaces is supported, but uses more
-    *        memory.
-    *      - This field must be set to HALIGN_4 if the Surface Format is BC*.
-    *      - This field must be set to HALIGN_8 if the Surface Format is
-    *        FXT1."
-    *
-    * They can be rephrased as
-    *
-    *                                  align_i        align_j
-    *  compressed formats              block width    block height
-    *  PIPE_FORMAT_Z16_UNORM           8              4
-    *  PIPE_FORMAT_S8_UINT             8              8
-    *  other depth/stencil formats     4 or 8         4
-    *  2x or 4x multisampled           4 or 8         4
-    *  tiled Y                         4 or 8         4 (if rt)
-    *  PIPE_FORMAT_R32G32B32_FLOAT     4 or 8         2
-    *  others                          4 or 8         2 or 4
-    */
-
-   if (layout->compressed) {
-      /* this happens to be the case */
-      layout->align_i = layout->block_width;
-      layout->align_j = layout->block_height;
-   }
-   else if (layout->has_depth || layout->has_stencil) {
-      if (layout->dev->gen >= ILO_GEN(7)) {
-         switch (layout->format) {
-         case PIPE_FORMAT_Z16_UNORM:
-            layout->align_i = 8;
-            layout->align_j = 4;
-            break;
-         case PIPE_FORMAT_S8_UINT:
-            layout->align_i = 8;
-            layout->align_j = 8;
-            break;
-         default:
-            /*
-             * From the Ivy Bridge PRM, volume 2 part 1, page 319:
-             *
-             *     "The 3 LSBs of both offsets (Depth Coordinate Offset Y and
-             *      Depth Coordinate Offset X) must be zero to ensure correct
-             *      alignment"
-             *
-             * We will make use of them and setting align_i to 8 help us meet
-             * the requirement.
-             */
-            layout->align_i = (templ->last_level > 0) ? 8 : 4;
-            layout->align_j = 4;
-            break;
-         }
-      }
-      else {
-         switch (layout->format) {
-         case PIPE_FORMAT_S8_UINT:
-            layout->align_i = 4;
-            layout->align_j = 2;
-            break;
-         default:
-            layout->align_i = 4;
-            layout->align_j = 4;
-            break;
-         }
-      }
-   }
-   else {
-      const bool valign_4 = (templ->nr_samples > 1) ||
-         (layout->dev->gen >= ILO_GEN(7) &&
-          layout->tiling == INTEL_TILING_Y &&
-          (templ->bind & PIPE_BIND_RENDER_TARGET));
-
-      if (valign_4)
-         assert(layout->block_size != 12);
-
-      layout->align_i = 4;
-      layout->align_j = (valign_4) ? 4 : 2;
-   }
-
-   /*
-    * the fact that align i and j are multiples of block width and height
-    * respectively is what makes the size of the bo a multiple of the block
-    * size, slices start at block boundaries, and many of the computations
-    * work.
-    */
-   assert(layout->align_i % layout->block_width == 0);
-   assert(layout->align_j % layout->block_height == 0);
-
-   /* make sure align() works */
-   assert(util_is_power_of_two(layout->align_i) &&
-          util_is_power_of_two(layout->align_j));
-   assert(util_is_power_of_two(layout->block_width) &&
-          util_is_power_of_two(layout->block_height));
-}
-
-static void
-tex_layout_init_levels(struct tex_layout *layout)
-{
-   const struct pipe_resource *templ = layout->templ;
-   int last_level, lv;
-
-   last_level = templ->last_level;
-
-   /* need at least 2 levels to compute full qpitch */
-   if (last_level == 0 && templ->array_size > 1 && layout->array_spacing_full)
-      last_level++;
-
-   /* compute mip level sizes */
-   for (lv = 0; lv <= last_level; lv++) {
-      int w, h, d;
-
-      w = u_minify(templ->width0, lv);
-      h = u_minify(templ->height0, lv);
-      d = u_minify(templ->depth0, lv);
-
-      /*
-       * From the Sandy Bridge PRM, volume 1 part 1, page 114:
-       *
-       *     "The dimensions of the mip maps are first determined by applying
-       *      the sizing algorithm presented in Non-Power-of-Two Mipmaps
-       *      above. Then, if necessary, they are padded out to compression
-       *      block boundaries."
-       */
-      w = align(w, layout->block_width);
-      h = align(h, layout->block_height);
-
-      /*
-       * From the Sandy Bridge PRM, volume 1 part 1, page 111:
-       *
-       *     "If the surface is multisampled (4x), these values must be
-       *      adjusted as follows before proceeding:
-       *
-       *        W_L = ceiling(W_L / 2) * 4
-       *        H_L = ceiling(H_L / 2) * 4"
-       *
-       * From the Ivy Bridge PRM, volume 1 part 1, page 108:
-       *
-       *     "If the surface is multisampled and it is a depth or stencil
-       *      surface or Multisampled Surface StorageFormat in SURFACE_STATE
-       *      is MSFMT_DEPTH_STENCIL, W_L and H_L must be adjusted as follows
-       *      before proceeding:
-       *
-       *        #samples  W_L =                    H_L =
-       *        2         ceiling(W_L / 2) * 4     HL [no adjustment]
-       *        4         ceiling(W_L / 2) * 4     ceiling(H_L / 2) * 4
-       *        8         ceiling(W_L / 2) * 8     ceiling(H_L / 2) * 4
-       *        16        ceiling(W_L / 2) * 8     ceiling(H_L / 2) * 8"
-       *
-       * For interleaved samples (4x), where pixels
-       *
-       *   (x, y  ) (x+1, y  )
-       *   (x, y+1) (x+1, y+1)
-       *
-       * would be is occupied by
-       *
-       *   (x, y  , si0) (x+1, y  , si0) (x, y  , si1) (x+1, y  , si1)
-       *   (x, y+1, si0) (x+1, y+1, si0) (x, y+1, si1) (x+1, y+1, si1)
-       *   (x, y  , si2) (x+1, y  , si2) (x, y  , si3) (x+1, y  , si3)
-       *   (x, y+1, si2) (x+1, y+1, si2) (x, y+1, si3) (x+1, y+1, si3)
-       *
-       * Thus the need to
-       *
-       *   w = align(w, 2) * 2;
-       *   y = align(y, 2) * 2;
-       */
-      if (layout->interleaved) {
-         switch (templ->nr_samples) {
-         case 0:
-         case 1:
-            break;
-         case 2:
-            w = align(w, 2) * 2;
-            break;
-         case 4:
-            w = align(w, 2) * 2;
-            h = align(h, 2) * 2;
-            break;
-         case 8:
-            w = align(w, 2) * 4;
-            h = align(h, 2) * 2;
-            break;
-         case 16:
-            w = align(w, 2) * 4;
-            h = align(h, 2) * 4;
-            break;
-         default:
-            assert(!"unsupported sample count");
-            break;
-         }
-      }
-
-      layout->levels[lv].w = w;
-      layout->levels[lv].h = h;
-      layout->levels[lv].d = d;
-   }
-}
-
-static void
-tex_layout_init_spacing(struct tex_layout *layout)
-{
-   const struct pipe_resource *templ = layout->templ;
-
-   if (layout->dev->gen >= ILO_GEN(7)) {
-      /*
-       * It is not explicitly states, but render targets are expected to be
-       * UMS/CMS (samples non-interleaved) and depth/stencil buffers are
-       * expected to be IMS (samples interleaved).
-       *
-       * See "Multisampled Surface Storage Format" field of SURFACE_STATE.
-       */
-      if (layout->has_depth || layout->has_stencil) {
-         layout->interleaved = true;
-
-         /*
-          * From the Ivy Bridge PRM, volume 1 part 1, page 111:
-          *
-          *     "note that the depth buffer and stencil buffer have an implied
-          *      value of ARYSPC_FULL"
-          */
-         layout->array_spacing_full = true;
-      }
-      else {
-         layout->interleaved = false;
-
-         /*
-          * From the Ivy Bridge PRM, volume 4 part 1, page 66:
-          *
-          *     "If Multisampled Surface Storage Format is MSFMT_MSS and
-          *      Number of Multisamples is not MULTISAMPLECOUNT_1, this field
-          *      (Surface Array Spacing) must be set to ARYSPC_LOD0."
-          *
-          * As multisampled resources are not mipmapped, we never use
-          * ARYSPC_FULL for them.
-          */
-         if (templ->nr_samples > 1)
-            assert(templ->last_level == 0);
-         layout->array_spacing_full = (templ->last_level > 0);
-      }
-   }
-   else {
-      /* GEN6 supports only interleaved samples */
-      layout->interleaved = true;
-
-      /*
-       * From the Sandy Bridge PRM, volume 1 part 1, page 115:
-       *
-       *     "The separate stencil buffer does not support mip mapping, thus
-       *      the storage for LODs other than LOD 0 is not needed. The
-       *      following QPitch equation applies only to the separate stencil
-       *      buffer:
-       *
-       *        QPitch = h_0"
-       *
-       * GEN6 does not support compact spacing otherwise.
-       */
-      layout->array_spacing_full = (layout->format != PIPE_FORMAT_S8_UINT);
-   }
-}
-
-static void
-tex_layout_init_tiling(struct tex_layout *layout)
-{
-   const struct pipe_resource *templ = layout->templ;
-   const enum pipe_format format = layout->format;
-   const unsigned tile_none = 1 << INTEL_TILING_NONE;
-   const unsigned tile_x = 1 << INTEL_TILING_X;
-   const unsigned tile_y = 1 << INTEL_TILING_Y;
-   unsigned valid_tilings = tile_none | tile_x | tile_y;
-
-   /*
-    * From the Sandy Bridge PRM, volume 1 part 2, page 32:
-    *
-    *     "Display/Overlay   Y-Major not supported.
-    *                        X-Major required for Async Flips"
-    */
-   if (unlikely(templ->bind & PIPE_BIND_SCANOUT))
-      valid_tilings &= tile_x;
-
-   /*
-    * From the Sandy Bridge PRM, volume 3 part 2, page 158:
-    *
-    *     "The cursor surface address must be 4K byte aligned. The cursor must
-    *      be in linear memory, it cannot be tiled."
-    */
-   if (unlikely(templ->bind & PIPE_BIND_CURSOR))
-      valid_tilings &= tile_none;
-
-   /*
-    * From the Ivy Bridge PRM, volume 4 part 1, page 76:
-    *
-    *     "The MCS surface must be stored as Tile Y."
-    */
-   if (templ->bind & ILO_BIND_MCS)
-      valid_tilings &= tile_y;
-
-   /*
-    * From the Sandy Bridge PRM, volume 2 part 1, page 318:
-    *
-    *     "[DevSNB+]: This field (Tiled Surface) must be set to TRUE. Linear
-    *      Depth Buffer is not supported."
-    *
-    *     "The Depth Buffer, if tiled, must use Y-Major tiling."
-    *
-    * From the Sandy Bridge PRM, volume 1 part 2, page 22:
-    *
-    *     "W-Major Tile Format is used for separate stencil."
-    *
-    * Since the HW does not support W-tiled fencing, we have to do it in the
-    * driver.
-    */
-   if (templ->bind & PIPE_BIND_DEPTH_STENCIL) {
-      switch (format) {
-      case PIPE_FORMAT_S8_UINT:
-         valid_tilings &= tile_none;
+   if (templ->target == PIPE_BUFFER) {
+      switch (templ->bind) {
+      case PIPE_BIND_VERTEX_BUFFER:
+         name = "buf-vb";
+         break;
+      case PIPE_BIND_INDEX_BUFFER:
+         name = "buf-ib";
+         break;
+      case PIPE_BIND_CONSTANT_BUFFER:
+         name = "buf-cb";
+         break;
+      case PIPE_BIND_STREAM_OUTPUT:
+         name = "buf-so";
          break;
       default:
-         valid_tilings &= tile_y;
          break;
       }
    }
 
-   if (templ->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) {
-      if (templ->bind & PIPE_BIND_RENDER_TARGET) {
-         /*
-          * From the Sandy Bridge PRM, volume 1 part 2, page 32:
-          *
-          *     "NOTE: 128BPE Format Color buffer ( render target ) MUST be
-          *      either TileX or Linear."
-          */
-         if (layout->block_size == 16)
-            valid_tilings &= ~tile_y;
-
-         /*
-          * From the Ivy Bridge PRM, volume 4 part 1, page 63:
-          *
-          *     "This field (Surface Vertical Aligment) must be set to
-          *      VALIGN_4 for all tiled Y Render Target surfaces."
-          *
-          *     "VALIGN_4 is not supported for surface format
-          *      R32G32B32_FLOAT."
-          */
-         if (layout->dev->gen >= ILO_GEN(7) && layout->block_size == 12)
-            valid_tilings &= ~tile_y;
-      }
-
-      /*
-       * Also, heuristically set a minimum width/height for enabling tiling.
-       */
-      if (templ->width0 < 64 && (valid_tilings & ~tile_x))
-         valid_tilings &= ~tile_x;
-
-      if ((templ->width0 < 32 || templ->height0 < 16) &&
-          (templ->width0 < 16 || templ->height0 < 32) &&
-          (valid_tilings & ~tile_y))
-         valid_tilings &= ~tile_y;
-   }
-   else {
-      /* force linear if we are not sure where the texture is bound to */
-      if (valid_tilings & tile_none)
-         valid_tilings &= tile_none;
-   }
-
-   /* no conflicting binding flags */
-   assert(valid_tilings);
-
-   /* prefer tiled than linear */
-   if (valid_tilings & tile_y)
-      layout->tiling = INTEL_TILING_Y;
-   else if (valid_tilings & tile_x)
-      layout->tiling = INTEL_TILING_X;
-   else
-      layout->tiling = INTEL_TILING_NONE;
-
-   layout->can_be_linear = valid_tilings & tile_none;
-}
-
-static void
-tex_layout_init_format(struct tex_layout *layout)
-{
-   const struct pipe_resource *templ = layout->templ;
-   enum pipe_format format;
-   const struct util_format_description *desc;
-   bool separate_stencil;
-
-   /* GEN7+ requires separate stencil buffers */
-   separate_stencil = (layout->dev->gen >= ILO_GEN(7));
-
-   switch (templ->format) {
-   case PIPE_FORMAT_ETC1_RGB8:
-      format = PIPE_FORMAT_R8G8B8X8_UNORM;
-      break;
-   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
-      if (separate_stencil) {
-         format = PIPE_FORMAT_Z24X8_UNORM;
-         layout->separate_stencil = true;
-      }
-      else {
-         format = templ->format;
-      }
-      break;
-   case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
-      if (separate_stencil) {
-         format = PIPE_FORMAT_Z32_FLOAT;
-         layout->separate_stencil = true;
-      }
-      else {
-         format = templ->format;
-      }
-      break;
-   default:
-      format = templ->format;
-      break;
-   }
-
-   layout->format = format;
-
-   layout->block_width = util_format_get_blockwidth(format);
-   layout->block_height = util_format_get_blockheight(format);
-   layout->block_size = util_format_get_blocksize(format);
-   layout->compressed = util_format_is_compressed(format);
-
-   desc = util_format_description(format);
-   layout->has_depth = util_format_has_depth(desc);
-   layout->has_stencil = util_format_has_stencil(desc);
-}
-
-static void
-tex_layout_init(struct tex_layout *layout,
-                struct pipe_screen *screen,
-                const struct pipe_resource *templ,
-                struct ilo_texture_slice **slices)
-{
-   struct ilo_screen *is = ilo_screen(screen);
-
-   memset(layout, 0, sizeof(*layout));
-
-   layout->dev = &is->dev;
-   layout->templ = templ;
-
-   /* note that there are dependencies between these functions */
-   tex_layout_init_format(layout);
-   tex_layout_init_tiling(layout);
-   tex_layout_init_spacing(layout);
-   tex_layout_init_levels(layout);
-   tex_layout_init_alignments(layout);
-   tex_layout_init_qpitch(layout);
-
-   if (slices) {
-      int lv;
-
-      for (lv = 0; lv <= templ->last_level; lv++)
-         layout->levels[lv].slices = slices[lv];
-   }
+   return name;
 }
 
 static bool
-tex_layout_force_linear(struct tex_layout *layout)
+resource_get_cpu_init(const struct pipe_resource *templ)
 {
-   if (!layout->can_be_linear)
-      return false;
-
-   /*
-    * we may be able to switch from VALIGN_4 to VALIGN_2 when the layout was
-    * Y-tiled, but let's keep it simple
-    */
-   layout->tiling = INTEL_TILING_NONE;
-
-   return true;
+   return (templ->bind & (PIPE_BIND_DEPTH_STENCIL |
+                          PIPE_BIND_RENDER_TARGET |
+                          PIPE_BIND_STREAM_OUTPUT)) ? false : true;
 }
 
-/**
- * Layout a 2D texture.
- */
-static void
-tex_layout_2d(struct tex_layout *layout)
+static enum gen_surface_type
+get_surface_type(enum pipe_texture_target target)
 {
-   const struct pipe_resource *templ = layout->templ;
-   unsigned int level_x, level_y, num_slices;
-   int lv;
-
-   level_x = 0;
-   level_y = 0;
-   for (lv = 0; lv <= templ->last_level; lv++) {
-      const unsigned int level_w = layout->levels[lv].w;
-      const unsigned int level_h = layout->levels[lv].h;
-      int slice;
-
-      /* set slice offsets */
-      if (layout->levels[lv].slices) {
-         for (slice = 0; slice < templ->array_size; slice++) {
-            layout->levels[lv].slices[slice].x = level_x;
-            /* slices are qpitch apart in Y-direction */
-            layout->levels[lv].slices[slice].y =
-               level_y + layout->qpitch * slice;
-         }
-      }
-
-      /* extend the size of the monolithic bo to cover this mip level */
-      if (layout->width < level_x + level_w)
-         layout->width = level_x + level_w;
-      if (layout->height < level_y + level_h)
-         layout->height = level_y + level_h;
-
-      /* MIPLAYOUT_BELOW */
-      if (lv == 1)
-         level_x += align(level_w, layout->align_i);
-      else
-         level_y += align(level_h, layout->align_j);
-   }
-
-   num_slices = templ->array_size;
-   /* samples of the same index are stored in a slice */
-   if (templ->nr_samples > 1 && !layout->interleaved)
-      num_slices *= templ->nr_samples;
-
-   /* we did not take slices into consideration in the computation above */
-   layout->height += layout->qpitch * (num_slices - 1);
-}
-
-/**
- * Layout a 3D texture.
- */
-static void
-tex_layout_3d(struct tex_layout *layout)
-{
-   const struct pipe_resource *templ = layout->templ;
-   unsigned int level_y;
-   int lv;
-
-   level_y = 0;
-   for (lv = 0; lv <= templ->last_level; lv++) {
-      const unsigned int level_w = layout->levels[lv].w;
-      const unsigned int level_h = layout->levels[lv].h;
-      const unsigned int level_d = layout->levels[lv].d;
-      const unsigned int slice_pitch = align(level_w, layout->align_i);
-      const unsigned int slice_qpitch = align(level_h, layout->align_j);
-      const unsigned int num_slices_per_row = 1 << lv;
-      int slice;
-
-      for (slice = 0; slice < level_d; slice += num_slices_per_row) {
-         int i;
-
-         /* set slice offsets */
-         if (layout->levels[lv].slices) {
-            for (i = 0; i < num_slices_per_row && slice + i < level_d; i++) {
-               layout->levels[lv].slices[slice + i].x = slice_pitch * i;
-               layout->levels[lv].slices[slice + i].y = level_y;
-            }
-         }
-
-         /* move on to the next slice row */
-         level_y += slice_qpitch;
-      }
-
-      /* rightmost slice */
-      slice = MIN2(num_slices_per_row, level_d) - 1;
-
-      /* extend the size of the monolithic bo to cover this slice */
-      if (layout->width < slice_pitch * slice + level_w)
-         layout->width = slice_pitch * slice + level_w;
-      if (lv == templ->last_level)
-         layout->height = (level_y - slice_qpitch) + level_h;
-   }
-}
-
-static void
-tex_layout_validate(struct tex_layout *layout)
-{
-   /*
-    * From the Sandy Bridge PRM, volume 1 part 1, page 118:
-    *
-    *     "To determine the necessary padding on the bottom and right side of
-    *      the surface, refer to the table in Section 7.18.3.4 for the i and j
-    *      parameters for the surface format in use. The surface must then be
-    *      extended to the next multiple of the alignment unit size in each
-    *      dimension, and all texels contained in this extended surface must
-    *      have valid GTT entries."
-    *
-    *     "For cube surfaces, an additional two rows of padding are required
-    *      at the bottom of the surface. This must be ensured regardless of
-    *      whether the surface is stored tiled or linear.  This is due to the
-    *      potential rotation of cache line orientation from memory to cache."
-    *
-    *     "For compressed textures (BC* and FXT1 surface formats), padding at
-    *      the bottom of the surface is to an even compressed row, which is
-    *      equal to a multiple of 8 uncompressed texel rows. Thus, for padding
-    *      purposes, these surfaces behave as if j = 8 only for surface
-    *      padding purposes. The value of 4 for j still applies for mip level
-    *      alignment and QPitch calculation."
-    */
-   if (layout->templ->bind & PIPE_BIND_SAMPLER_VIEW) {
-      layout->width = align(layout->width, layout->align_i);
-      layout->height = align(layout->height, layout->align_j);
-
-      if (layout->templ->target == PIPE_TEXTURE_CUBE)
-         layout->height += 2;
-
-      if (layout->compressed)
-         layout->height = align(layout->height, layout->align_j * 2);
-   }
-
-   /*
-    * From the Sandy Bridge PRM, volume 1 part 1, page 118:
-    *
-    *     "If the surface contains an odd number of rows of data, a final row
-    *      below the surface must be allocated."
-    */
-   if (layout->templ->bind & PIPE_BIND_RENDER_TARGET)
-      layout->height = align(layout->height, 2);
-
-   /*
-    * From the Sandy Bridge PRM, volume 1 part 2, page 22:
-    *
-    *     "A 4KB tile is subdivided into 8-high by 8-wide array of Blocks for
-    *      W-Major Tiles (W Tiles). Each Block is 8 rows by 8 bytes."
-    *
-    * Since we ask for INTEL_TILING_NONE instead of the non-existent
-    * INTEL_TILING_W, we need to manually align the width and height to the
-    * tile boundaries.
-    */
-   if (layout->templ->format == PIPE_FORMAT_S8_UINT) {
-      layout->width = align(layout->width, 64);
-      layout->height = align(layout->height, 64);
-   }
-
-   assert(layout->width % layout->block_width == 0);
-   assert(layout->height % layout->block_height == 0);
-   assert(layout->qpitch % layout->block_height == 0);
-}
-
-static size_t
-tex_layout_estimate_size(const struct tex_layout *layout)
-{
-   unsigned stride, height;
-
-   stride = (layout->width / layout->block_width) * layout->block_size;
-   height = layout->height / layout->block_height;
-
-   switch (layout->tiling) {
-   case INTEL_TILING_X:
-      stride = align(stride, 512);
-      height = align(height, 8);
-      break;
-   case INTEL_TILING_Y:
-      stride = align(stride, 128);
-      height = align(height, 32);
-      break;
+   switch (target) {
+   case PIPE_TEXTURE_1D:
+   case PIPE_TEXTURE_1D_ARRAY:
+      return GEN6_SURFTYPE_1D;
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+   case PIPE_TEXTURE_2D_ARRAY:
+      return GEN6_SURFTYPE_2D;
+   case PIPE_TEXTURE_3D:
+      return GEN6_SURFTYPE_3D;
+   case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_CUBE_ARRAY:
+      return GEN6_SURFTYPE_CUBE;
    default:
-      height = align(height, 2);
-      break;
+      assert(!"unknown texture target");
+      return GEN6_SURFTYPE_NULL;
+   }
+}
+
+static enum pipe_format
+resource_get_image_format(const struct pipe_resource *templ,
+                          const struct ilo_dev *dev,
+                          bool *separate_stencil_ret)
+{
+   enum pipe_format format = templ->format;
+   bool separate_stencil;
+
+   /* silently promote ETC1 */
+   if (templ->format == PIPE_FORMAT_ETC1_RGB8)
+      format = PIPE_FORMAT_R8G8B8X8_UNORM;
+
+   /* separate stencil buffers */
+   separate_stencil = false;
+   if ((templ->bind & PIPE_BIND_DEPTH_STENCIL) &&
+       util_format_is_depth_and_stencil(templ->format)) {
+      switch (templ->format) {
+      case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+         /* Gen6 requires HiZ to be available for all levels */
+         if (ilo_dev_gen(dev) >= ILO_GEN(7) || templ->last_level == 0) {
+            format = PIPE_FORMAT_Z32_FLOAT;
+            separate_stencil = true;
+         }
+         break;
+      case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+         format = PIPE_FORMAT_Z24X8_UNORM;
+         separate_stencil = true;
+         break;
+      default:
+         break;
+      }
    }
 
-   return stride * height;
+   if (separate_stencil_ret)
+      *separate_stencil_ret = separate_stencil;
+
+   return format;
+}
+
+static inline enum gen_surface_format
+pipe_to_surface_format(const struct ilo_dev *dev, enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+      return GEN6_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+   case PIPE_FORMAT_Z32_FLOAT:
+      return GEN6_FORMAT_R32_FLOAT;
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+   case PIPE_FORMAT_Z24X8_UNORM:
+      return GEN6_FORMAT_R24_UNORM_X8_TYPELESS;
+   case PIPE_FORMAT_Z16_UNORM:
+      return GEN6_FORMAT_R16_UNORM;
+   case PIPE_FORMAT_S8_UINT:
+      return GEN6_FORMAT_R8_UINT;
+   default:
+      return ilo_format_translate_color(dev, format);
+   }
 }
 
 static void
-tex_layout_apply(const struct tex_layout *layout, struct ilo_texture *tex)
+resource_get_image_info(const struct pipe_resource *templ,
+                        const struct ilo_dev *dev,
+                        enum pipe_format image_format,
+                        struct ilo_image_info *info)
 {
-   tex->bo_format = layout->format;
+   memset(info, 0, sizeof(*info));
 
-   /* in blocks */
-   tex->bo_width = layout->width / layout->block_width;
-   tex->bo_height = layout->height / layout->block_height;
-   tex->bo_cpp = layout->block_size;
-   tex->tiling = layout->tiling;
+   info->type = get_surface_type(templ->target);
 
-   tex->compressed = layout->compressed;
-   tex->block_width = layout->block_width;
-   tex->block_height = layout->block_height;
+   info->format = pipe_to_surface_format(dev, image_format);
+   info->interleaved_stencil = util_format_is_depth_and_stencil(image_format);
+   info->is_integer = util_format_is_pure_integer(image_format);
+   info->compressed = util_format_is_compressed(image_format);
+   info->block_width = util_format_get_blockwidth(image_format);
+   info->block_height = util_format_get_blockheight(image_format);
+   info->block_size = util_format_get_blocksize(image_format);
 
-   tex->halign_8 = (layout->align_i == 8);
-   tex->valign_4 = (layout->align_j == 4);
-   tex->array_spacing_full = layout->array_spacing_full;
-   tex->interleaved = layout->interleaved;
+   info->width = templ->width0;
+   info->height = templ->height0;
+   info->depth = templ->depth0;
+   info->array_size = templ->array_size;
+   info->level_count = templ->last_level + 1;
+   info->sample_count = (templ->nr_samples) ? templ->nr_samples : 1;
+
+   info->aux_disable = (templ->usage == PIPE_USAGE_STAGING);
+
+   if (templ->bind & PIPE_BIND_LINEAR)
+      info->valid_tilings = 1 << GEN6_TILING_NONE;
+
+   /*
+    * Tiled images must be mapped via GTT to get a linear view.  Prefer linear
+    * images when the image size is greater than one-fourth of the mappable
+    * aperture.
+    */
+   if (templ->bind & (PIPE_BIND_TRANSFER_WRITE | PIPE_BIND_TRANSFER_READ))
+      info->prefer_linear_threshold = dev->aperture_mappable / 4;
+
+   info->bind_surface_sampler = (templ->bind & PIPE_BIND_SAMPLER_VIEW);
+   info->bind_surface_dp_render = (templ->bind & PIPE_BIND_RENDER_TARGET);
+   info->bind_surface_dp_typed = (templ->bind &
+         (PIPE_BIND_SHADER_IMAGE | PIPE_BIND_COMPUTE_RESOURCE));
+   info->bind_zs = (templ->bind & PIPE_BIND_DEPTH_STENCIL);
+   info->bind_scanout = (templ->bind & PIPE_BIND_SCANOUT);
+   info->bind_cursor = (templ->bind & PIPE_BIND_CURSOR);
+}
+
+static enum gen_surface_tiling
+winsys_to_surface_tiling(enum intel_tiling_mode tiling)
+{
+   switch (tiling) {
+   case INTEL_TILING_NONE:
+      return GEN6_TILING_NONE;
+   case INTEL_TILING_X:
+      return GEN6_TILING_X;
+   case INTEL_TILING_Y:
+      return GEN6_TILING_Y;
+   default:
+      assert(!"unknown tiling");
+      return GEN6_TILING_NONE;
+   }
+}
+
+static inline enum intel_tiling_mode
+surface_to_winsys_tiling(enum gen_surface_tiling tiling)
+{
+   switch (tiling) {
+   case GEN6_TILING_NONE:
+      return INTEL_TILING_NONE;
+   case GEN6_TILING_X:
+      return INTEL_TILING_X;
+   case GEN6_TILING_Y:
+      return INTEL_TILING_Y;
+   default:
+      assert(!"unknown tiling");
+      return GEN6_TILING_NONE;
+   }
 }
 
 static void
 tex_free_slices(struct ilo_texture *tex)
 {
-   FREE(tex->slice_offsets[0]);
+   FREE(tex->slices[0]);
 }
 
 static bool
@@ -892,11 +275,11 @@ tex_alloc_slices(struct ilo_texture *tex)
    if (!slices)
       return false;
 
-   tex->slice_offsets[0] = slices;
+   tex->slices[0] = slices;
 
    /* point to the respective positions in the buffer */
    for (lv = 1; lv <= templ->last_level; lv++) {
-      tex->slice_offsets[lv] = tex->slice_offsets[lv - 1] +
+      tex->slices[lv] = tex->slices[lv - 1] +
          u_minify(templ->depth0, lv - 1) * templ->array_size;
    }
 
@@ -904,67 +287,111 @@ tex_alloc_slices(struct ilo_texture *tex)
 }
 
 static bool
-tex_create_bo(struct ilo_texture *tex,
-              const struct winsys_handle *handle)
+tex_create_bo(struct ilo_texture *tex)
 {
    struct ilo_screen *is = ilo_screen(tex->base.screen);
-   const char *name;
+   const char *name = resource_get_bo_name(&tex->base);
+   const bool cpu_init = resource_get_cpu_init(&tex->base);
    struct intel_bo *bo;
-   enum intel_tiling_mode tiling;
-   unsigned long pitch;
 
-   switch (tex->base.target) {
-   case PIPE_TEXTURE_1D:
-      name = "1D texture";
-      break;
-   case PIPE_TEXTURE_2D:
-      name = "2D texture";
-      break;
-   case PIPE_TEXTURE_3D:
-      name = "3D texture";
-      break;
-   case PIPE_TEXTURE_CUBE:
-      name = "cube texture";
-      break;
-   case PIPE_TEXTURE_RECT:
-      name = "rectangle texture";
-      break;
-   case PIPE_TEXTURE_1D_ARRAY:
-      name = "1D array texture";
-      break;
-   case PIPE_TEXTURE_2D_ARRAY:
-      name = "2D array texture";
-      break;
-   case PIPE_TEXTURE_CUBE_ARRAY:
-      name = "cube array texture";
-      break;
-   default:
-      name ="unknown texture";
-      break;
+   bo = intel_winsys_alloc_bo(is->dev.winsys, name,
+         tex->image.bo_stride * tex->image.bo_height, cpu_init);
+
+   /* set the tiling for transfer and export */
+   if (bo && (tex->image.tiling == GEN6_TILING_X ||
+              tex->image.tiling == GEN6_TILING_Y)) {
+      const enum intel_tiling_mode tiling =
+         surface_to_winsys_tiling(tex->image.tiling);
+
+      if (intel_bo_set_tiling(bo, tiling, tex->image.bo_stride)) {
+         intel_bo_unref(bo);
+         bo = NULL;
+      }
    }
-
-   if (handle) {
-      bo = intel_winsys_import_handle(is->winsys, name, handle,
-            tex->bo_width, tex->bo_height, tex->bo_cpp,
-            &tiling, &pitch);
-   }
-   else {
-      bo = intel_winsys_alloc_texture(is->winsys, name,
-            tex->bo_width, tex->bo_height, tex->bo_cpp,
-            tex->tiling, tex->bo_flags, &pitch);
-
-      tiling = tex->tiling;
-   }
-
    if (!bo)
       return false;
 
-   if (tex->bo)
-      intel_bo_unreference(tex->bo);
+   intel_bo_unref(tex->vma.bo);
+   ilo_vma_set_bo(&tex->vma, &is->dev, bo, 0);
 
-   tex->bo = bo;
-   tex->tiling = tiling;
-   tex->bo_stride = pitch;
+   return true;
+}
+
+static bool
+tex_create_separate_stencil(struct ilo_texture *tex)
+{
+   struct pipe_resource templ = tex->base;
+   struct pipe_resource *s8;
+
+   /*
+    * Unless PIPE_BIND_DEPTH_STENCIL is set, the resource may have other
+    * tilings.  But that should be fine since it will never be bound as the
+    * stencil buffer, and our transfer code can handle all tilings.
+    */
+   templ.format = PIPE_FORMAT_S8_UINT;
+
+   /* no stencil texturing */
+   templ.bind &= ~PIPE_BIND_SAMPLER_VIEW;
+
+   s8 = tex->base.screen->resource_create(tex->base.screen, &templ);
+   if (!s8)
+      return false;
+
+   tex->separate_s8 = ilo_texture(s8);
+
+   assert(tex->separate_s8->image_format == PIPE_FORMAT_S8_UINT);
+
+   return true;
+}
+
+static bool
+tex_create_hiz(struct ilo_texture *tex)
+{
+   const struct pipe_resource *templ = &tex->base;
+   const uint32_t size = tex->image.aux.bo_stride * tex->image.aux.bo_height;
+   struct ilo_screen *is = ilo_screen(tex->base.screen);
+   struct intel_bo *bo;
+
+   bo = intel_winsys_alloc_bo(is->dev.winsys, "hiz texture", size, false);
+   if (!bo)
+      return false;
+
+   ilo_vma_init(&tex->aux_vma, &is->dev, size, 4096);
+   ilo_vma_set_bo(&tex->aux_vma, &is->dev, bo, 0);
+
+   if (tex->imported) {
+      unsigned lv;
+
+      for (lv = 0; lv <= templ->last_level; lv++) {
+         if (tex->image.aux.enables & (1 << lv)) {
+            const unsigned num_slices = (templ->target == PIPE_TEXTURE_3D) ?
+               u_minify(templ->depth0, lv) : templ->array_size;
+            /* this will trigger HiZ resolves */
+            const unsigned flags = ILO_TEXTURE_CPU_WRITE;
+
+            ilo_texture_set_slice_flags(tex, lv, 0, num_slices, flags, flags);
+         }
+      }
+   }
+
+   return true;
+}
+
+static bool
+tex_create_mcs(struct ilo_texture *tex)
+{
+   const uint32_t size = tex->image.aux.bo_stride * tex->image.aux.bo_height;
+   struct ilo_screen *is = ilo_screen(tex->base.screen);
+   struct intel_bo *bo;
+
+   assert(tex->image.aux.enables == (1 << (tex->base.last_level + 1)) - 1);
+
+   bo = intel_winsys_alloc_bo(is->dev.winsys, "mcs texture", size, false);
+   if (!bo)
+      return false;
+
+   ilo_vma_init(&tex->aux_vma, &is->dev, size, 4096);
+   ilo_vma_set_bo(&tex->aux_vma, &is->dev, bo, 0);
 
    return true;
 }
@@ -975,9 +402,144 @@ tex_destroy(struct ilo_texture *tex)
    if (tex->separate_s8)
       tex_destroy(tex->separate_s8);
 
-   intel_bo_unreference(tex->bo);
+   intel_bo_unref(tex->vma.bo);
+   intel_bo_unref(tex->aux_vma.bo);
+
    tex_free_slices(tex);
    FREE(tex);
+}
+
+static bool
+tex_alloc_bos(struct ilo_texture *tex)
+{
+   if (!tex->imported && !tex_create_bo(tex))
+      return false;
+
+   switch (tex->image.aux.type) {
+   case ILO_IMAGE_AUX_HIZ:
+      if (!tex_create_hiz(tex))
+         return false;
+      break;
+   case ILO_IMAGE_AUX_MCS:
+      if (!tex_create_mcs(tex))
+         return false;
+      break;
+   default:
+      break;
+   }
+
+   return true;
+}
+
+static struct intel_bo *
+tex_import_handle(struct ilo_texture *tex,
+                  const struct winsys_handle *handle,
+                  struct ilo_image_info *info)
+{
+   struct ilo_screen *is = ilo_screen(tex->base.screen);
+   const struct pipe_resource *templ = &tex->base;
+   const char *name = resource_get_bo_name(&tex->base);
+   enum intel_tiling_mode tiling;
+   unsigned long pitch;
+   struct intel_bo *bo;
+
+   bo = intel_winsys_import_handle(is->dev.winsys, name, handle,
+         tex->image.bo_height, &tiling, &pitch);
+   /* modify image info */
+   if (bo) {
+      const uint8_t valid_tilings = 1 << winsys_to_surface_tiling(tiling);
+
+      if (info->valid_tilings && !(info->valid_tilings & valid_tilings)) {
+         intel_bo_unref(bo);
+         return NULL;
+      }
+
+      info->valid_tilings = valid_tilings;
+      info->force_bo_stride = pitch;
+
+      /* assume imported RTs are also scanouts */
+      if (!info->bind_scanout)
+         info->bind_scanout = (templ->usage & PIPE_BIND_RENDER_TARGET);
+   }
+
+   return bo;
+}
+
+static bool
+tex_init_image(struct ilo_texture *tex,
+               const struct winsys_handle *handle,
+               bool *separate_stencil)
+{
+   struct ilo_screen *is = ilo_screen(tex->base.screen);
+   const struct pipe_resource *templ = &tex->base;
+   struct ilo_image *img = &tex->image;
+   struct intel_bo *imported_bo = NULL;
+   struct ilo_image_info info;
+
+   tex->image_format = resource_get_image_format(templ,
+         &is->dev, separate_stencil);
+   resource_get_image_info(templ, &is->dev, tex->image_format, &info);
+
+   if (handle) {
+      imported_bo = tex_import_handle(tex, handle, &info);
+      if (!imported_bo)
+         return false;
+   }
+
+   if (!ilo_image_init(img, &is->dev, &info)) {
+      intel_bo_unref(imported_bo);
+      return false;
+   }
+
+   /*
+    * HiZ requires 8x4 alignment and some levels might need HiZ disabled.  It
+    * is generally fine except on Gen6, where HiZ and separate stencil must be
+    * enabled together.  For PIPE_FORMAT_Z24X8_UNORM with separate stencil, we
+    * can live with stencil values being interleaved for levels where HiZ is
+    * disabled.  But it is not the case for PIPE_FORMAT_Z32_FLOAT with
+    * separate stencil.  If HiZ was disabled for a level, we had to change the
+    * format to PIPE_FORMAT_Z32_FLOAT_S8X24_UINT for the level and that format
+    * had a different bpp.  In other words, HiZ has to be available for all
+    * levels.
+    */
+   if (ilo_dev_gen(&is->dev) == ILO_GEN(6) &&
+       templ->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+       tex->image_format == PIPE_FORMAT_Z32_FLOAT &&
+       img->aux.enables != (1 << templ->last_level)) {
+      tex->image_format = templ->format;
+      info.format = pipe_to_surface_format(&is->dev, tex->image_format);
+      info.interleaved_stencil = true;
+
+      memset(img, 0, sizeof(*img));
+      if (!ilo_image_init(img, &is->dev, &info)) {
+         intel_bo_unref(imported_bo);
+         return false;
+      }
+   }
+
+   if (img->bo_height > ilo_max_resource_size / img->bo_stride ||
+       !ilo_vma_init(&tex->vma, &is->dev, img->bo_stride * img->bo_height,
+          4096)) {
+      intel_bo_unref(imported_bo);
+      return false;
+   }
+
+   if (imported_bo) {
+      ilo_vma_set_bo(&tex->vma, &is->dev, imported_bo, 0);
+      tex->imported = true;
+   }
+
+   if (templ->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT) {
+      /* require on-the-fly tiling/untiling or format conversion */
+      if (img->tiling == GEN8_TILING_W || *separate_stencil ||
+          tex->image_format != templ->format)
+         return false;
+   }
+
+   if (!tex_alloc_slices(tex))
+      return false;
+
+   return true;
 }
 
 static struct pipe_resource *
@@ -985,8 +547,8 @@ tex_create(struct pipe_screen *screen,
            const struct pipe_resource *templ,
            const struct winsys_handle *handle)
 {
-   struct tex_layout layout;
    struct ilo_texture *tex;
+   bool separate_stencil;
 
    tex = CALLOC_STRUCT(ilo_texture);
    if (!tex)
@@ -996,83 +558,15 @@ tex_create(struct pipe_screen *screen,
    tex->base.screen = screen;
    pipe_reference_init(&tex->base.reference, 1);
 
-   if (!tex_alloc_slices(tex)) {
+   if (!tex_init_image(tex, handle, &separate_stencil)) {
       FREE(tex);
       return NULL;
    }
 
-   tex->imported = (handle != NULL);
-
-   if (tex->base.bind & (PIPE_BIND_DEPTH_STENCIL |
-                         PIPE_BIND_RENDER_TARGET))
-      tex->bo_flags |= INTEL_ALLOC_FOR_RENDER;
-
-   tex_layout_init(&layout, screen, templ, tex->slice_offsets);
-
-   switch (templ->target) {
-   case PIPE_TEXTURE_1D:
-   case PIPE_TEXTURE_2D:
-   case PIPE_TEXTURE_CUBE:
-   case PIPE_TEXTURE_RECT:
-   case PIPE_TEXTURE_1D_ARRAY:
-   case PIPE_TEXTURE_2D_ARRAY:
-   case PIPE_TEXTURE_CUBE_ARRAY:
-      tex_layout_2d(&layout);
-      break;
-   case PIPE_TEXTURE_3D:
-      tex_layout_3d(&layout);
-      break;
-   default:
-      assert(!"unknown resource target");
-      break;
-   }
-
-   tex_layout_validate(&layout);
-
-   /* make sure the bo can be mapped through GTT if tiled */
-   if (layout.tiling != INTEL_TILING_NONE) {
-      /*
-       * Usually only the first 256MB of the GTT is mappable.
-       *
-       * See also how intel_context::max_gtt_map_object_size is calculated.
-       */
-      const size_t mappable_gtt_size = 256 * 1024 * 1024;
-      const size_t size = tex_layout_estimate_size(&layout);
-
-      /* be conservative */
-      if (size > mappable_gtt_size / 4)
-         tex_layout_force_linear(&layout);
-   }
-
-   tex_layout_apply(&layout, tex);
-
-   if (!tex_create_bo(tex, handle)) {
-      tex_free_slices(tex);
-      FREE(tex);
+   if (!tex_alloc_bos(tex) ||
+       (separate_stencil && !tex_create_separate_stencil(tex))) {
+      tex_destroy(tex);
       return NULL;
-   }
-
-   /* allocate separate stencil resource */
-   if (layout.separate_stencil) {
-      struct pipe_resource s8_templ = *layout.templ;
-      struct pipe_resource *s8;
-
-      /*
-       * Unless PIPE_BIND_DEPTH_STENCIL is set, the resource may have other
-       * tilings.  But that should be fine since it will never be bound as the
-       * stencil buffer, and our transfer code can handle all tilings.
-       */
-      s8_templ.format = PIPE_FORMAT_S8_UINT;
-
-      s8 = screen->resource_create(screen, &s8_templ);
-      if (!s8) {
-         tex_destroy(tex);
-         return NULL;
-      }
-
-      tex->separate_s8 = ilo_texture(s8);
-
-      assert(tex->separate_s8->bo_format == PIPE_FORMAT_S8_UINT);
    }
 
    return &tex->base;
@@ -1082,91 +576,55 @@ static bool
 tex_get_handle(struct ilo_texture *tex, struct winsys_handle *handle)
 {
    struct ilo_screen *is = ilo_screen(tex->base.screen);
+   enum intel_tiling_mode tiling;
    int err;
 
-   err = intel_winsys_export_handle(is->winsys, tex->bo,
-         tex->tiling, tex->bo_stride, handle);
+   /* must match what tex_create_bo() sets */
+   if (tex->image.tiling == GEN8_TILING_W)
+      tiling = INTEL_TILING_NONE;
+   else
+      tiling = surface_to_winsys_tiling(tex->image.tiling);
+
+   err = intel_winsys_export_handle(is->dev.winsys, tex->vma.bo, tiling,
+         tex->image.bo_stride, tex->image.bo_height, handle);
 
    return !err;
 }
 
-/**
- * Estimate the texture size.  For large textures, the errors should be pretty
- * small.
- */
-static size_t
-tex_estimate_size(struct pipe_screen *screen,
-                  const struct pipe_resource *templ)
-{
-   struct tex_layout layout;
-
-   tex_layout_init(&layout, screen, templ, NULL);
-
-   switch (templ->target) {
-   case PIPE_TEXTURE_3D:
-      tex_layout_3d(&layout);
-      break;
-   default:
-      tex_layout_2d(&layout);
-      break;
-   }
-
-   tex_layout_validate(&layout);
-
-   return tex_layout_estimate_size(&layout);
-}
-
 static bool
-buf_create_bo(struct ilo_buffer *buf)
+buf_create_bo(struct ilo_buffer_resource *buf)
 {
    struct ilo_screen *is = ilo_screen(buf->base.screen);
-   const char *name;
+   const char *name = resource_get_bo_name(&buf->base);
+   const bool cpu_init = resource_get_cpu_init(&buf->base);
    struct intel_bo *bo;
 
-   switch (buf->base.bind) {
-   case PIPE_BIND_VERTEX_BUFFER:
-      name = "vertex buffer";
-      break;
-   case PIPE_BIND_INDEX_BUFFER:
-      name = "index buffer";
-      break;
-   case PIPE_BIND_CONSTANT_BUFFER:
-      name = "constant buffer";
-      break;
-   case PIPE_BIND_STREAM_OUTPUT:
-      name = "stream output";
-      break;
-   default:
-      name = "unknown buffer";
-      break;
-   }
-
-   bo = intel_winsys_alloc_buffer(is->winsys,
-         name, buf->bo_size, buf->bo_flags);
+   bo = intel_winsys_alloc_bo(is->dev.winsys, name, buf->bo_size, cpu_init);
    if (!bo)
       return false;
 
-   if (buf->bo)
-      intel_bo_unreference(buf->bo);
-
-   buf->bo = bo;
+   intel_bo_unref(buf->vma.bo);
+   ilo_vma_set_bo(&buf->vma, &is->dev, bo, 0);
 
    return true;
 }
 
 static void
-buf_destroy(struct ilo_buffer *buf)
+buf_destroy(struct ilo_buffer_resource *buf)
 {
-   intel_bo_unreference(buf->bo);
+   intel_bo_unref(buf->vma.bo);
    FREE(buf);
 }
 
 static struct pipe_resource *
 buf_create(struct pipe_screen *screen, const struct pipe_resource *templ)
 {
-   struct ilo_buffer *buf;
+   const struct ilo_screen *is = ilo_screen(screen);
+   struct ilo_buffer_resource *buf;
+   uint32_t alignment;
+   unsigned size;
 
-   buf = CALLOC_STRUCT(ilo_buffer);
+   buf = CALLOC_STRUCT(ilo_buffer_resource);
    if (!buf)
       return NULL;
 
@@ -1174,21 +632,36 @@ buf_create(struct pipe_screen *screen, const struct pipe_resource *templ)
    buf->base.screen = screen;
    pipe_reference_init(&buf->base.reference, 1);
 
-   buf->bo_size = templ->width0;
-   buf->bo_flags = 0;
+   size = templ->width0;
 
    /*
-    * From the Sandy Bridge PRM, volume 1 part 1, page 118:
+    * As noted in ilo_format_translate(), we treat some 3-component formats as
+    * 4-component formats to work around hardware limitations.  Imagine the
+    * case where the vertex buffer holds a single PIPE_FORMAT_R16G16B16_FLOAT
+    * vertex, and buf->bo_size is 6.  The hardware would fail to fetch it at
+    * boundary check because the vertex buffer is expected to hold a
+    * PIPE_FORMAT_R16G16B16A16_FLOAT vertex and that takes at least 8 bytes.
     *
-    *     "For buffers, which have no inherent "height," padding requirements
-    *      are different. A buffer must be padded to the next multiple of 256
-    *      array elements, with an additional 16 bytes added beyond that to
-    *      account for the L1 cache line."
+    * For the workaround to work, we should add 2 to the bo size.  But that
+    * would waste a page when the bo size is already page aligned.  Let's
+    * round it to page size for now and revisit this when needed.
     */
-   if (templ->bind & PIPE_BIND_SAMPLER_VIEW)
-      buf->bo_size = align(buf->bo_size, 256) + 16;
+   if ((templ->bind & PIPE_BIND_VERTEX_BUFFER) &&
+       ilo_dev_gen(&is->dev) < ILO_GEN(7.5))
+      size = align(size, 4096);
 
-   if (!buf_create_bo(buf)) {
+   if (templ->bind & PIPE_BIND_VERTEX_BUFFER)
+      size = ilo_state_vertex_buffer_size(&is->dev, size, &alignment);
+   if (templ->bind & PIPE_BIND_INDEX_BUFFER)
+      size = ilo_state_index_buffer_size(&is->dev, size, &alignment);
+   if (templ->bind & PIPE_BIND_STREAM_OUTPUT)
+      size = ilo_state_sol_buffer_size(&is->dev, size, &alignment);
+
+   buf->bo_size = size;
+   ilo_vma_init(&buf->vma, &is->dev, buf->bo_size, 4096);
+
+   if (buf->bo_size < templ->width0 || buf->bo_size > ilo_max_resource_size ||
+       !buf_create_bo(buf)) {
       FREE(buf);
       return NULL;
    }
@@ -1200,19 +673,32 @@ static boolean
 ilo_can_create_resource(struct pipe_screen *screen,
                         const struct pipe_resource *templ)
 {
-   /*
-    * We do not know if we will fail until we try to allocate the bo.
-    * So just set a limit on the texture size.
-    */
-   const size_t max_size = 1 * 1024 * 1024 * 1024;
-   size_t size;
+   struct ilo_screen *is = ilo_screen(screen);
+   enum pipe_format image_format;
+   struct ilo_image_info info;
+   struct ilo_image img;
 
    if (templ->target == PIPE_BUFFER)
-      size = templ->width0;
-   else
-      size = tex_estimate_size(screen, templ);
+      return (templ->width0 <= ilo_max_resource_size);
 
-   return (size <= max_size);
+   image_format = resource_get_image_format(templ, &is->dev, NULL);
+   resource_get_image_info(templ, &is->dev, image_format, &info);
+
+   memset(&img, 0, sizeof(img));
+   ilo_image_init(&img, &ilo_screen(screen)->dev, &info);
+
+   /* as in tex_init_image() */
+   if (ilo_dev_gen(&is->dev) == ILO_GEN(6) &&
+       templ->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+       image_format == PIPE_FORMAT_Z32_FLOAT &&
+       img.aux.enables != (1 << templ->last_level)) {
+      info.format = pipe_to_surface_format(&is->dev, templ->format);
+      info.interleaved_stencil = true;
+      memset(&img, 0, sizeof(img));
+      ilo_image_init(&img, &ilo_screen(screen)->dev, &info);
+   }
+
+   return (img.bo_height <= ilo_max_resource_size / img.bo_stride);
 }
 
 static struct pipe_resource *
@@ -1228,7 +714,8 @@ ilo_resource_create(struct pipe_screen *screen,
 static struct pipe_resource *
 ilo_resource_from_handle(struct pipe_screen *screen,
                          const struct pipe_resource *templ,
-                         struct winsys_handle *handle)
+                         struct winsys_handle *handle,
+                         unsigned usage)
 {
    if (templ->target == PIPE_BUFFER)
       return NULL;
@@ -1238,8 +725,10 @@ ilo_resource_from_handle(struct pipe_screen *screen,
 
 static boolean
 ilo_resource_get_handle(struct pipe_screen *screen,
+                        struct pipe_context *ctx,
                         struct pipe_resource *res,
-                        struct winsys_handle *handle)
+                        struct winsys_handle *handle,
+                        unsigned usage)
 {
    if (res->target == PIPE_BUFFER)
       return false;
@@ -1253,7 +742,7 @@ ilo_resource_destroy(struct pipe_screen *screen,
                      struct pipe_resource *res)
 {
    if (res->target == PIPE_BUFFER)
-      buf_destroy(ilo_buffer(res));
+      buf_destroy((struct ilo_buffer_resource *) res);
    else
       tex_destroy(ilo_texture(res));
 }
@@ -1272,100 +761,17 @@ ilo_init_resource_functions(struct ilo_screen *is)
 }
 
 bool
-ilo_buffer_alloc_bo(struct ilo_buffer *buf)
+ilo_resource_rename_bo(struct pipe_resource *res)
 {
-   return buf_create_bo(buf);
-}
+   if (res->target == PIPE_BUFFER) {
+      return buf_create_bo((struct ilo_buffer_resource *) res);
+   } else {
+      struct ilo_texture *tex = ilo_texture(res);
 
-bool
-ilo_texture_alloc_bo(struct ilo_texture *tex)
-{
-   /* a shared bo cannot be reallocated */
-   if (tex->imported)
-      return false;
+      /* an imported texture cannot be renamed */
+      if (tex->imported)
+         return false;
 
-   return tex_create_bo(tex, NULL);
-}
-
-/**
- * Return the offset (in bytes) to a slice within the bo.
- *
- * The returned offset is aligned to tile size.  Since slices are not
- * guaranteed to start at tile boundaries, the X and Y offsets (in pixels)
- * from the tile origin to the slice are also returned.  X offset is always a
- * multiple of 4 and Y offset is always a multiple of 2.
- */
-unsigned
-ilo_texture_get_slice_offset(const struct ilo_texture *tex,
-                             int level, int slice,
-                             unsigned *x_offset, unsigned *y_offset)
-{
-   unsigned tile_w, tile_h, tile_size, row_size;
-   unsigned x, y, slice_offset;
-
-   /* see the Sandy Bridge PRM, volume 1 part 2, page 24 */
-
-   switch (tex->tiling) {
-   case INTEL_TILING_NONE:
-      /* W-tiled */
-      if (tex->bo_format == PIPE_FORMAT_S8_UINT) {
-         tile_w = 64;
-         tile_h = 64;
-      }
-      else {
-         tile_w = 1;
-         tile_h = 1;
-      }
-      break;
-   case INTEL_TILING_X:
-      tile_w = 512;
-      tile_h = 8;
-      break;
-   case INTEL_TILING_Y:
-      tile_w = 128;
-      tile_h = 32;
-      break;
-   default:
-      assert(!"unknown tiling");
-      tile_w = 1;
-      tile_h = 1;
-      break;
+      return tex_create_bo(tex);
    }
-
-   tile_size = tile_w * tile_h;
-   row_size = tex->bo_stride * tile_h;
-
-   /* in bytes */
-   x = tex->slice_offsets[level][slice].x / tex->block_width * tex->bo_cpp;
-   y = tex->slice_offsets[level][slice].y / tex->block_height;
-   slice_offset = row_size * (y / tile_h) + tile_size * (x / tile_w);
-
-   /*
-    * Since tex->bo_stride is a multiple of tile_w, slice_offset should be
-    * aligned at this point.
-    */
-   assert(slice_offset % tile_size == 0);
-
-   /*
-    * because of the possible values of align_i and align_j in
-    * tex_layout_init_alignments(), x_offset is guaranteed to be a multiple of
-    * 4 and y_offset is guaranteed to be a multiple of 2.
-    */
-   if (x_offset) {
-      /* in pixels */
-      x = (x % tile_w) / tex->bo_cpp * tex->block_width;
-      assert(x % 4 == 0);
-
-      *x_offset = x;
-   }
-
-   if (y_offset) {
-      /* in pixels */
-      y = (y % tile_h) * tex->block_height;
-      assert(y % 2 == 0);
-
-      *y_offset = y;
-   }
-
-   return slice_offset;
 }

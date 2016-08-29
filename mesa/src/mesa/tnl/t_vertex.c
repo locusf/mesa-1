@@ -1,5 +1,5 @@
 /*
- * Copyright 2003 Tungsten Graphics, inc.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -16,18 +16,18 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.  IN NO EVENT SHALL
- * TUNGSTEN GRAPHICS AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
+ * VMWARE AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
  * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keithw@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
+#include <stdio.h>
 #include "main/glheader.h"
 #include "main/context.h"
-#include "main/colormac.h"
 #include "swrast/s_chan.h"
 #include "t_context.h"
 #include "t_vertex.h"
@@ -83,12 +83,22 @@ void _tnl_register_fastpath( struct tnl_clipspace *vtx,
    struct tnl_clipspace_fastpath *fastpath = CALLOC_STRUCT(tnl_clipspace_fastpath);
    GLuint i;
 
+   if (fastpath == NULL) {
+      _mesa_error_no_memory(__func__);
+      return;
+   }
+
    fastpath->vertex_size = vtx->vertex_size;
    fastpath->attr_count = vtx->attr_count;
    fastpath->match_strides = match_strides;
    fastpath->func = vtx->emit;
-   fastpath->attr =
-      malloc(vtx->attr_count * sizeof(fastpath->attr[0]));
+   fastpath->attr = malloc(vtx->attr_count * sizeof(fastpath->attr[0]));
+
+   if (fastpath->attr == NULL) {
+      free(fastpath);
+      _mesa_error_no_memory(__func__);
+      return;
+   }
 
    for (i = 0; i < vtx->attr_count; i++) {
       fastpath->attr[i].format = vtx->attr[i].format;
@@ -533,7 +543,7 @@ void _tnl_init_vertices( struct gl_context *ctx,
    vtx->codegen_emit = NULL;
 
 #ifdef USE_SSE_ASM
-   if (!_mesa_getenv("MESA_NO_CODEGEN"))
+   if (!getenv("MESA_NO_CODEGEN"))
       vtx->codegen_emit = _tnl_generate_sse_emit;
 #endif
 }
@@ -546,10 +556,8 @@ void _tnl_free_vertices( struct gl_context *ctx )
       struct tnl_clipspace *vtx = GET_VERTEX_STATE(ctx);
       struct tnl_clipspace_fastpath *fp, *tmp;
 
-      if (vtx->vertex_buf) {
-         _mesa_align_free(vtx->vertex_buf);
-         vtx->vertex_buf = NULL;
-      }
+      _mesa_align_free(vtx->vertex_buf);
+      vtx->vertex_buf = NULL;
 
       for (fp = vtx->fastpath ; fp ; fp = tmp) {
          tmp = fp->next;

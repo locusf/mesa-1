@@ -31,6 +31,39 @@
 
 #include "pipe/p_context.h"
 
-void fd_gmem_render_tiles(struct pipe_context *pctx);
+#include "freedreno_util.h"
+
+/* per-pipe configuration for hw binning: */
+struct fd_vsc_pipe {
+	struct fd_bo *bo;
+	uint8_t x, y, w, h;      /* VSC_PIPE[p].CONFIG */
+};
+
+/* per-tile configuration for hw binning: */
+struct fd_tile {
+	uint8_t p;               /* index into vsc_pipe[]s */
+	uint8_t n;               /* slot within pipe */
+	uint16_t bin_w, bin_h;
+	uint16_t xoff, yoff;
+};
+
+struct fd_gmem_stateobj {
+	struct pipe_scissor_state scissor;
+	uint32_t cbuf_base[MAX_RENDER_TARGETS];
+	uint32_t zsbuf_base[2];
+	uint8_t cbuf_cpp[MAX_RENDER_TARGETS];
+	uint8_t zsbuf_cpp[2];
+	uint16_t bin_h, nbins_y;
+	uint16_t bin_w, nbins_x;
+	uint16_t minx, miny;
+	uint16_t width, height;
+};
+
+struct fd_batch;
+
+void fd_gmem_render_tiles(struct fd_batch *batch);
+
+bool fd_gmem_needs_restore(struct fd_batch *batch, struct fd_tile *tile,
+		uint32_t buffers);
 
 #endif /* FREEDRENO_GMEM_H_ */

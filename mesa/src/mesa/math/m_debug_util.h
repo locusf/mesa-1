@@ -32,6 +32,9 @@
 #ifdef DEBUG_MATH  /* This code only used for debugging */
 
 
+#include "c99_math.h"
+
+
 /* Comment this out to deactivate the cycle counter.
  * NOTE: it works only on CPUs which know the 'rdtsc' command (586 or higher)
  * (hope, you don't try to debug Mesa on a 386 ;)
@@ -286,9 +289,9 @@ static int significand_match( GLfloat a, GLfloat b )
       return 0;
    }
 
-   FREXPF( a, &a_ex );
-   FREXPF( b, &b_ex );
-   FREXPF( d, &d_ex );
+   frexpf( a, &a_ex );
+   frexpf( b, &b_ex );
+   frexpf( d, &d_ex );
 
    if ( a_ex < b_ex ) {
       return a_ex - d_ex;
@@ -305,8 +308,6 @@ enum { NIL = 0, ONE = 1, NEG = -1, VAR = 2 };
 #  define ALIGN16(type, array)	type array __attribute__ ((aligned (16)))
 #elif defined(_MSC_VER)
 #  define ALIGN16(type, array)	type array __declspec(align(16)) /* GH: Does this work? */
-#elif defined(__WATCOMC__)
-#  define ALIGN16(type, array)	                    /* Watcom does not support this */ 
 #elif defined(__xlC__)
 #  define ALIGN16(type, array)       type __align (16) array 
 #else

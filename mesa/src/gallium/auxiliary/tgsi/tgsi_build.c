@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -110,6 +110,8 @@ tgsi_default_declaration( void )
    declaration.Invariant = 0;
    declaration.Local = 0;
    declaration.Array = 0;
+   declaration.Atomic = 0;
+   declaration.MemType = TGSI_MEMORY_TYPE_GLOBAL;
    declaration.Padding = 0;
 
    return declaration;
@@ -124,6 +126,9 @@ tgsi_build_declaration(
    unsigned semantic,
    unsigned invariant,
    unsigned local,
+   unsigned array,
+   unsigned atomic,
+   unsigned mem_type,
    struct tgsi_header *header )
 {
    struct tgsi_declaration declaration;
@@ -139,7 +144,9 @@ tgsi_build_declaration(
    declaration.Semantic = semantic;
    declaration.Invariant = invariant;
    declaration.Local = local;
-
+   declaration.Array = array;
+   declaration.Atomic = atomic;
+   declaration.MemType = mem_type;
    header_bodysize_grow( header );
 
    return declaration;
@@ -199,7 +206,7 @@ tgsi_default_declaration_interp( void )
    struct tgsi_declaration_interp di;
 
    di.Interpolate = TGSI_INTERPOLATE_CONSTANT;
-   di.Centroid = 0;
+   di.Location = TGSI_INTERPOLATE_LOC_CENTER;
    di.CylindricalWrap = 0;
    di.Padding = 0;
 
@@ -208,7 +215,7 @@ tgsi_default_declaration_interp( void )
 
 static struct tgsi_declaration_interp
 tgsi_build_declaration_interp(unsigned interpolate,
-                              unsigned centroid,
+                              unsigned interpolate_location,
                               unsigned cylindrical_wrap,
                               struct tgsi_declaration *declaration,
                               struct tgsi_header *header)
@@ -216,7 +223,7 @@ tgsi_build_declaration_interp(unsigned interpolate,
    struct tgsi_declaration_interp di;
 
    di.Interpolate = interpolate;
-   di.Centroid = centroid;
+   di.Location = interpolate_location;
    di.CylindricalWrap = cylindrical_wrap;
    di.Padding = 0;
 
@@ -258,36 +265,39 @@ tgsi_build_declaration_semantic(
    return ds;
 }
 
-static struct tgsi_declaration_resource
-tgsi_default_declaration_resource(void)
+static struct tgsi_declaration_image
+tgsi_default_declaration_image(void)
 {
-   struct tgsi_declaration_resource dr;
+   struct tgsi_declaration_image di;
 
-   dr.Resource = TGSI_TEXTURE_BUFFER;
-   dr.Raw = 0;
-   dr.Writable = 0;
-   dr.Padding = 0;
+   di.Resource = TGSI_TEXTURE_BUFFER;
+   di.Raw = 0;
+   di.Writable = 0;
+   di.Format = 0;
+   di.Padding = 0;
 
-   return dr;
+   return di;
 }
 
-static struct tgsi_declaration_resource
-tgsi_build_declaration_resource(unsigned texture,
-                                unsigned raw,
-                                unsigned writable,
-                                struct tgsi_declaration *declaration,
-                                struct tgsi_header *header)
+static struct tgsi_declaration_image
+tgsi_build_declaration_image(unsigned texture,
+                             unsigned format,
+                             unsigned raw,
+                             unsigned writable,
+                             struct tgsi_declaration *declaration,
+                             struct tgsi_header *header)
 {
-   struct tgsi_declaration_resource dr;
+   struct tgsi_declaration_image di;
 
-   dr = tgsi_default_declaration_resource();
-   dr.Resource = texture;
-   dr.Raw = raw;
-   dr.Writable = writable;
+   di = tgsi_default_declaration_image();
+   di.Resource = texture;
+   di.Format = format;
+   di.Raw = raw;
+   di.Writable = writable;
 
    declaration_grow(declaration, header);
 
-   return dr;
+   return di;
 }
 
 static struct tgsi_declaration_sampler_view
@@ -296,10 +306,10 @@ tgsi_default_declaration_sampler_view(void)
    struct tgsi_declaration_sampler_view dsv;
 
    dsv.Resource = TGSI_TEXTURE_BUFFER;
-   dsv.ReturnTypeX = PIPE_TYPE_UNORM;
-   dsv.ReturnTypeY = PIPE_TYPE_UNORM;
-   dsv.ReturnTypeZ = PIPE_TYPE_UNORM;
-   dsv.ReturnTypeW = PIPE_TYPE_UNORM;
+   dsv.ReturnTypeX = TGSI_RETURN_TYPE_UNORM;
+   dsv.ReturnTypeY = TGSI_RETURN_TYPE_UNORM;
+   dsv.ReturnTypeZ = TGSI_RETURN_TYPE_UNORM;
+   dsv.ReturnTypeW = TGSI_RETURN_TYPE_UNORM;
 
    return dsv;
 }
@@ -339,6 +349,21 @@ tgsi_default_declaration_array( void )
    return a;
 }
 
+static struct tgsi_declaration_array
+tgsi_build_declaration_array(unsigned arrayid,
+                             struct tgsi_declaration *declaration,
+                             struct tgsi_header *header)
+{
+   struct tgsi_declaration_array da;
+
+   da = tgsi_default_declaration_array();
+   da.ArrayID = arrayid;
+
+   declaration_grow(declaration, header);
+
+   return da;
+}
+
 struct tgsi_full_declaration
 tgsi_default_full_declaration( void )
 {
@@ -348,7 +373,7 @@ tgsi_default_full_declaration( void )
    full_declaration.Range = tgsi_default_declaration_range();
    full_declaration.Semantic = tgsi_default_declaration_semantic();
    full_declaration.Interp = tgsi_default_declaration_interp();
-   full_declaration.Resource = tgsi_default_declaration_resource();
+   full_declaration.Image = tgsi_default_declaration_image();
    full_declaration.SamplerView = tgsi_default_declaration_sampler_view();
    full_declaration.Array = tgsi_default_declaration_array();
 
@@ -379,6 +404,9 @@ tgsi_build_full_declaration(
       full_decl->Declaration.Semantic,
       full_decl->Declaration.Invariant,
       full_decl->Declaration.Local,
+      full_decl->Declaration.Array,
+      full_decl->Declaration.Atomic,
+      full_decl->Declaration.MemType,
       header );
 
    if (maxsize <= size)
@@ -416,7 +444,7 @@ tgsi_build_full_declaration(
       size++;
 
       *di = tgsi_build_declaration_interp(full_decl->Interp.Interpolate,
-                                          full_decl->Interp.Centroid,
+                                          full_decl->Interp.Location,
                                           full_decl->Interp.CylindricalWrap,
                                           declaration,
                                           header);
@@ -437,20 +465,21 @@ tgsi_build_full_declaration(
          header );
    }
 
-   if (full_decl->Declaration.File == TGSI_FILE_RESOURCE) {
-      struct tgsi_declaration_resource *dr;
+   if (full_decl->Declaration.File == TGSI_FILE_IMAGE) {
+      struct tgsi_declaration_image *di;
 
       if (maxsize <= size) {
          return  0;
       }
-      dr = (struct tgsi_declaration_resource *)&tokens[size];
+      di = (struct tgsi_declaration_image *)&tokens[size];
       size++;
 
-      *dr = tgsi_build_declaration_resource(full_decl->Resource.Resource,
-                                            full_decl->Resource.Raw,
-                                            full_decl->Resource.Writable,
-                                            declaration,
-                                            header);
+      *di = tgsi_build_declaration_image(full_decl->Image.Resource,
+                                         full_decl->Image.Format,
+                                         full_decl->Image.Raw,
+                                         full_decl->Image.Writable,
+                                         declaration,
+                                         header);
    }
 
    if (full_decl->Declaration.File == TGSI_FILE_SAMPLER_VIEW) {
@@ -472,6 +501,19 @@ tgsi_build_full_declaration(
          header);
    }
 
+   if (full_decl->Declaration.Array) {
+      struct tgsi_declaration_array *da;
+
+      if (maxsize <= size) {
+         return 0;
+      }
+      da = (struct tgsi_declaration_array *)&tokens[size];
+      size++;
+      *da = tgsi_build_declaration_array(
+         full_decl->Array.ArrayID,
+         declaration,
+         header);
+   }
    return size;
 }
 
@@ -580,13 +622,14 @@ tgsi_default_instruction( void )
    instruction.Type = TGSI_TOKEN_TYPE_INSTRUCTION;
    instruction.NrTokens = 0;
    instruction.Opcode = TGSI_OPCODE_MOV;
-   instruction.Saturate = TGSI_SAT_NONE;
+   instruction.Saturate = 0;
    instruction.Predicate = 0;
    instruction.NumDstRegs = 1;
    instruction.NumSrcRegs = 1;
    instruction.Label = 0;
    instruction.Texture = 0;
-   instruction.Padding  = 0;
+   instruction.Memory = 0;
+   instruction.Padding = 0;
 
    return instruction;
 }
@@ -602,7 +645,7 @@ tgsi_build_instruction(unsigned opcode,
    struct tgsi_instruction instruction;
 
    assert (opcode <= TGSI_OPCODE_LAST);
-   assert (saturate <= TGSI_SAT_MINUS_PLUS_ONE);
+   assert (saturate <= 1);
    assert (num_dst_regs <= 3);
    assert (num_src_regs <= 15);
 
@@ -732,6 +775,40 @@ tgsi_build_instruction_texture(
    return instruction_texture;
 }
 
+static struct tgsi_instruction_memory
+tgsi_default_instruction_memory( void )
+{
+   struct tgsi_instruction_memory instruction_memory;
+
+   instruction_memory.Qualifier = 0;
+   instruction_memory.Texture = 0;
+   instruction_memory.Format = 0;
+   instruction_memory.Padding = 0;
+
+   return instruction_memory;
+}
+
+static struct tgsi_instruction_memory
+tgsi_build_instruction_memory(
+   unsigned qualifier,
+   unsigned texture,
+   unsigned format,
+   struct tgsi_token *prev_token,
+   struct tgsi_instruction *instruction,
+   struct tgsi_header *header )
+{
+   struct tgsi_instruction_memory instruction_memory;
+
+   instruction_memory.Qualifier = qualifier;
+   instruction_memory.Texture = texture;
+   instruction_memory.Format = format;
+   instruction_memory.Padding = 0;
+   instruction->Memory = 1;
+
+   instruction_grow( instruction, header );
+
+   return instruction_memory;
+}
 
 static struct tgsi_texture_offset
 tgsi_default_texture_offset( void )
@@ -846,8 +923,8 @@ static struct tgsi_ind_register
 tgsi_build_ind_register(
    unsigned file,
    unsigned swizzle,
-   unsigned arrayid,
    int index,
+   unsigned arrayid,
    struct tgsi_instruction *instruction,
    struct tgsi_header *header )
 {
@@ -978,6 +1055,7 @@ tgsi_default_full_instruction( void )
    full_instruction.Predicate = tgsi_default_instruction_predicate();
    full_instruction.Label = tgsi_default_instruction_label();
    full_instruction.Texture = tgsi_default_instruction_texture();
+   full_instruction.Memory = tgsi_default_instruction_memory();
    for( i = 0;  i < TGSI_FULL_MAX_TEX_OFFSETS; i++ ) {
       full_instruction.TexOffsets[i] = tgsi_default_texture_offset();
    }
@@ -1089,6 +1167,26 @@ tgsi_build_full_instruction(
          prev_token = (struct tgsi_token *) texture_offset;
       }
    }
+
+   if (full_inst->Instruction.Memory) {
+      struct tgsi_instruction_memory *instruction_memory;
+
+      if( maxsize <= size )
+         return 0;
+      instruction_memory =
+         (struct  tgsi_instruction_memory *) &tokens[size];
+      size++;
+
+      *instruction_memory = tgsi_build_instruction_memory(
+         full_inst->Memory.Qualifier,
+         full_inst->Memory.Texture,
+         full_inst->Memory.Format,
+         prev_token,
+         instruction,
+         header );
+      prev_token = (struct tgsi_token  *) instruction_memory;
+   }
+
    for( i = 0;  i <   full_inst->Instruction.NumDstRegs; i++ ) {
       const struct tgsi_full_dst_register *reg = &full_inst->Dst[i];
       struct tgsi_dst_register *dst_register;
@@ -1340,4 +1438,19 @@ tgsi_build_full_property(
    }
 
    return size;
+}
+
+struct tgsi_full_src_register
+tgsi_full_src_register_from_dst(const struct tgsi_full_dst_register *dst)
+{
+   struct tgsi_full_src_register src;
+   src.Register = tgsi_default_src_register();
+   src.Register.File = dst->Register.File;
+   src.Register.Indirect = dst->Register.Indirect;
+   src.Register.Dimension = dst->Register.Dimension;
+   src.Register.Index = dst->Register.Index;
+   src.Indirect = dst->Indirect;
+   src.Dimension = dst->Dimension;
+   src.DimIndirect = dst->DimIndirect;
+   return src;
 }

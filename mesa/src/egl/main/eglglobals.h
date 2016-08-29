@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
  * Copyright 2010-2011 LunarG, Inc.
  * All Rights Reserved.
@@ -31,9 +31,10 @@
 #ifndef EGLGLOBALS_INCLUDED
 #define EGLGLOBALS_INCLUDED
 
+#include <stdbool.h>
+#include "c11/threads.h"
 
 #include "egltypedefs.h"
-#include "eglmutex.h"
 
 
 /**
@@ -41,13 +42,15 @@
  */
 struct _egl_global
 {
-   _EGLMutex *Mutex;
+   mtx_t *Mutex;
 
    /* the list of all displays */
    _EGLDisplay *DisplayList;
 
    EGLint NumAtExitCalls;
    void (*AtExitCalls[10])(void);
+
+   const char *ClientExtensionString;
 };
 
 

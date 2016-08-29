@@ -30,6 +30,8 @@
  */
 
 
+#include <stdio.h>
+#include "c99_math.h"
 #include "main/imports.h"
 #include "main/mtypes.h"
 #include "glxheader.h"
@@ -1015,7 +1017,7 @@ get_triangle_func(struct gl_context *ctx)
       return (swrast_tri_func) NULL;
    if (ctx->Polygon.SmoothFlag)
       return (swrast_tri_func) NULL;
-   if (ctx->Texture._EnabledUnits)
+   if (ctx->Texture._MaxEnabledTexImageUnit != -1)
       return (swrast_tri_func) NULL;
    if (swrast->_RasterMask & MULTI_DRAW_BIT)
       return (swrast_tri_func) NULL;

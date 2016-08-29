@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -117,7 +117,7 @@ do_blit_copypixels(struct gl_context * ctx,
    }
 
    if (ctx->Fog.Enabled ||
-       ctx->Texture._EnabledUnits ||
+       ctx->Texture._MaxEnabledTexImageUnit != -1 ||
        ctx->FragmentProgram._Enabled) {
       perf_debug("glCopyPixels(): Unsupported fragment shader state\n");
       return false;
@@ -138,7 +138,7 @@ do_blit_copypixels(struct gl_context * ctx,
    }
 
    if (ctx->Pixel.ZoomX != 1.0F || ctx->Pixel.ZoomY != 1.0F) {
-      perf_debug("glCopyPixles(): Unsupported pixel zoom\n");
+      perf_debug("glCopyPixels(): Unsupported pixel zoom\n");
       return false;
    }
 
@@ -176,7 +176,7 @@ do_blit_copypixels(struct gl_context * ctx,
                            width, height,
                            (ctx->Color.ColorLogicOpEnabled ?
                             ctx->Color.LogicOp : GL_COPY))) {
-      DBG("%s: blit failure\n", __FUNCTION__);
+      DBG("%s: blit failure\n", __func__);
       return false;
    }
 
@@ -186,7 +186,7 @@ do_blit_copypixels(struct gl_context * ctx,
 out:
    intel_check_front_buffer_rendering(intel);
 
-   DBG("%s: success\n", __FUNCTION__);
+   DBG("%s: success\n", __func__);
    return true;
 }
 
@@ -197,7 +197,7 @@ intelCopyPixels(struct gl_context * ctx,
                 GLsizei width, GLsizei height,
                 GLint destx, GLint desty, GLenum type)
 {
-   DBG("%s\n", __FUNCTION__);
+   DBG("%s\n", __func__);
 
    if (!_mesa_check_conditional_render(ctx))
       return;

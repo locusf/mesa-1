@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -62,6 +62,18 @@ const enum pipe_format const_resource_formats_VUYA[3] = {
    PIPE_FORMAT_NONE
 };
 
+const enum pipe_format const_resource_formats_YUVX[3] = {
+   PIPE_FORMAT_R8G8B8X8_UNORM,
+   PIPE_FORMAT_NONE,
+   PIPE_FORMAT_NONE
+};
+
+const enum pipe_format const_resource_formats_VUYX[3] = {
+   PIPE_FORMAT_B8G8R8X8_UNORM,
+   PIPE_FORMAT_NONE,
+   PIPE_FORMAT_NONE
+};
+
 const enum pipe_format const_resource_formats_YUYV[3] = {
    PIPE_FORMAT_R8G8_R8B8_UNORM,
    PIPE_FORMAT_NONE,
@@ -101,6 +113,12 @@ vl_video_buffer_formats(struct pipe_screen *screen, enum pipe_format format)
 
    case PIPE_FORMAT_B8G8R8A8_UNORM:
       return const_resource_formats_VUYA;
+
+   case PIPE_FORMAT_R8G8B8X8_UNORM:
+      return const_resource_formats_YUVX;
+
+   case PIPE_FORMAT_B8G8R8X8_UNORM:
+      return const_resource_formats_VUYX;
 
    case PIPE_FORMAT_YUYV:
       return const_resource_formats_YUYV;
@@ -147,7 +165,8 @@ vl_video_buffer_surface_format(enum pipe_format format)
 boolean
 vl_video_buffer_is_format_supported(struct pipe_screen *screen,
                                     enum pipe_format format,
-                                    enum pipe_video_profile profile)
+                                    enum pipe_video_profile profile,
+                                    enum pipe_video_entrypoint entrypoint)
 {
    const enum pipe_format *resource_formats;
    unsigned i;
@@ -186,11 +205,11 @@ vl_video_buffer_max_size(struct pipe_screen *screen)
 
 void
 vl_video_buffer_set_associated_data(struct pipe_video_buffer *vbuf,
-                                    struct pipe_video_decoder *vdec,
+                                    struct pipe_video_codec *vcodec,
                                     void *associated_data,
                                     void (*destroy_associated_data)(void *))
 {
-   vbuf->decoder = vdec;
+   vbuf->codec = vcodec;
 
    if (vbuf->associated_data == associated_data)
       return;
@@ -204,9 +223,9 @@ vl_video_buffer_set_associated_data(struct pipe_video_buffer *vbuf,
 
 void *
 vl_video_buffer_get_associated_data(struct pipe_video_buffer *vbuf,
-                                    struct pipe_video_decoder *vdec)
+                                    struct pipe_video_codec *vcodec)
 {
-   if (vbuf->decoder == vdec)
+   if (vbuf->codec == vcodec)
       return vbuf->associated_data;
    else
       return NULL;
@@ -231,17 +250,11 @@ vl_video_buffer_template(struct pipe_resource *templ,
    templ->height0 = tmpl->height;
    templ->depth0 = depth;
    templ->array_size = array_size;
-   templ->bind = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET;
+   templ->bind = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET | tmpl->bind;
    templ->usage = usage;
 
-   if (plane > 0) {
-      if (tmpl->chroma_format == PIPE_VIDEO_CHROMA_FORMAT_420) {
-         templ->width0 /= 2;
-         templ->height0 /= 2;
-      } else if (tmpl->chroma_format == PIPE_VIDEO_CHROMA_FORMAT_422) {
-         templ->height0 /= 2;
-      }
-   }
+   vl_video_buffer_adjust_size(&templ->width0, &templ->height0, plane,
+                               tmpl->chroma_format, false);
 }
 
 static void
@@ -258,7 +271,7 @@ vl_video_buffer_destroy(struct pipe_video_buffer *buffer)
       pipe_resource_reference(&buf->resources[i], NULL);
    }
 
-   for (i = 0; i < VL_NUM_COMPONENTS * 2; ++i)
+   for (i = 0; i < VL_MAX_SURFACES; ++i)
       pipe_surface_reference(&buf->surfaces[i], NULL);
 
    vl_video_buffer_set_associated_data(buffer, NULL, NULL, NULL);
@@ -284,7 +297,7 @@ vl_video_buffer_sampler_view_planes(struct pipe_video_buffer *buffer)
          u_sampler_view_default_template(&sv_templ, buf->resources[i], buf->resources[i]->format);
 
          if (util_format_get_nr_components(buf->resources[i]->format) == 1)
-            sv_templ.swizzle_r = sv_templ.swizzle_g = sv_templ.swizzle_b = sv_templ.swizzle_a = PIPE_SWIZZLE_RED;
+            sv_templ.swizzle_r = sv_templ.swizzle_g = sv_templ.swizzle_b = sv_templ.swizzle_a = PIPE_SWIZZLE_X;
 
          buf->sampler_view_planes[i] = pipe->create_sampler_view(pipe, buf->resources[i], &sv_templ);
          if (!buf->sampler_view_planes[i])
@@ -331,8 +344,8 @@ vl_video_buffer_sampler_view_components(struct pipe_video_buffer *buffer)
 
          memset(&sv_templ, 0, sizeof(sv_templ));
          u_sampler_view_default_template(&sv_templ, res, sampler_format[plane_order[i]]);
-         sv_templ.swizzle_r = sv_templ.swizzle_g = sv_templ.swizzle_b = PIPE_SWIZZLE_RED + j;
-         sv_templ.swizzle_a = PIPE_SWIZZLE_ONE;
+         sv_templ.swizzle_r = sv_templ.swizzle_g = sv_templ.swizzle_b = PIPE_SWIZZLE_X + j;
+         sv_templ.swizzle_a = PIPE_SWIZZLE_1;
          buf->sampler_view_components[component] = pipe->create_sampler_view(pipe, res, &sv_templ);
          if (!buf->sampler_view_components[component])
             goto error;
@@ -364,7 +377,7 @@ vl_video_buffer_surfaces(struct pipe_video_buffer *buffer)
    array_size = buffer->interlaced ? 2 : 1;
    for (i = 0, surf = 0; i < VL_NUM_COMPONENTS; ++i) {
       for (j = 0; j < array_size; ++j, ++surf) {
-         assert(surf < (VL_NUM_COMPONENTS * 2));
+         assert(surf < VL_MAX_SURFACES);
 
          if (!buf->resources[i]) {
             pipe_surface_reference(&buf->surfaces[surf], NULL);
@@ -385,7 +398,7 @@ vl_video_buffer_surfaces(struct pipe_video_buffer *buffer)
    return buf->surfaces;
 
 error:
-   for (i = 0; i < (VL_NUM_COMPONENTS * 2); ++i )
+   for (i = 0; i < VL_MAX_SURFACES; ++i )
       pipe_surface_reference(&buf->surfaces[i], NULL);
 
    return NULL;
@@ -406,6 +419,7 @@ vl_video_buffer_create(struct pipe_context *pipe,
    (
       pipe->screen,
       PIPE_VIDEO_PROFILE_UNKNOWN,
+      PIPE_VIDEO_ENTRYPOINT_UNKNOWN,
       PIPE_VIDEO_CAP_NPOT_TEXTURES
    );
 
@@ -425,7 +439,7 @@ vl_video_buffer_create(struct pipe_context *pipe,
    result = vl_video_buffer_create_ex
    (
       pipe, &templat, resource_formats,
-      1, tmpl->interlaced ? 2 : 1, PIPE_USAGE_STATIC
+      1, tmpl->interlaced ? 2 : 1, PIPE_USAGE_DEFAULT
    );
 
 
@@ -490,6 +504,8 @@ vl_video_buffer_create_ex2(struct pipe_context *pipe,
    unsigned i;
 
    buffer = CALLOC_STRUCT(vl_video_buffer);
+   if (!buffer)
+      return NULL;
 
    buffer->base = *tmpl;
    buffer->base.context = pipe;

@@ -68,7 +68,7 @@ struct _glxapi_table {
    void (*DestroyContext)(Display *dpy, GLXContext ctx);
    void (*DestroyGLXPixmap)(Display *dpy, GLXPixmap pixmap);
    int (*GetConfig)(Display *dpy, XVisualInfo *visinfo, int attrib, int *value);
-   /*GLXContext (*GetCurrentContext)(void);*/
+   GLXContext (*GetCurrentContext)(void);
    /*GLXDrawable (*GetCurrentDrawable)(void);*/
    Bool (*IsDirect)(Display *dpy, GLXContext ctx);
    Bool (*MakeCurrent)(Display *dpy, GLXDrawable drawable, GLXContext ctx);
@@ -201,6 +201,11 @@ struct _glxapi_table {
    void (*BindTexImageEXT)(Display *dpy, GLXDrawable drawable, int buffer,
                            const int *attrib_list);
    void (*ReleaseTexImageEXT)(Display *dpy, GLXDrawable drawable, int buffer);
+
+   /*** GLX_ARB_create_context ***/
+   GLXContext (*CreateContextAttribs)(Display *dpy, GLXFBConfig config,
+                                      GLXContext share_context, Bool direct,
+                                      const int *attrib_list);
 };
 
 

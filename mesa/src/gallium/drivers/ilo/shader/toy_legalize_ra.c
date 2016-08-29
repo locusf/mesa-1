@@ -70,7 +70,7 @@ struct linear_scan {
 static void
 linear_scan_free_regs(struct linear_scan *ls, int reg, int count)
 {
-   int i;
+   unsigned i;
 
    for (i = 0; i < count; i++)
       ls->free_regs[ls->num_free_regs++] = reg + count - 1 - i;
@@ -221,7 +221,7 @@ linear_scan_spill(struct linear_scan *ls,
 static void
 linear_scan_spill_range(struct linear_scan *ls, int first, int count)
 {
-   int i;
+   unsigned i;
 
    for (i = 0; i < count; i++) {
       struct linear_scan_live_interval *interval = &ls->intervals[first + i];
@@ -244,7 +244,7 @@ linear_scan_run(struct linear_scan *ls)
       int reg, count;
 
       /*
-       * BRW_OPCODE_SEND may write to multiple consecutive registers and we need to
+       * GEN6_OPCODE_SEND may write to multiple consecutive registers and we need to
        * support that
        */
       for (count = 1; i + count < ls->num_vrfs; count++) {
@@ -351,20 +351,20 @@ linear_scan_init_live_intervals(struct linear_scan *ls,
             struct toy_inst *inst2;
             int loop_level = 1;
 
-            assert(inst->opcode == BRW_OPCODE_DO);
+            assert(inst->opcode == TOY_OPCODE_DO);
             do_pc = pc;
             while_pc = pc + 1;
 
-            /* find the matching BRW_OPCODE_WHILE */
+            /* find the matching GEN6_OPCODE_WHILE */
             LIST_FOR_EACH_ENTRY_FROM(inst2, tc->iter_next,
                   &tc->instructions, list) {
                if (inst2->marker) {
-                  assert(inst->opcode == BRW_OPCODE_DO);
+                  assert(inst->opcode == TOY_OPCODE_DO);
                   loop_level++;
                   continue;
                }
 
-               if (inst2->opcode == BRW_OPCODE_WHILE) {
+               if (inst2->opcode == GEN6_OPCODE_WHILE) {
                   loop_level--;
                   if (!loop_level)
                      break;
@@ -380,13 +380,13 @@ linear_scan_init_live_intervals(struct linear_scan *ls,
          int num_dst;
 
          /* TODO this is a hack */
-         if (inst->opcode == BRW_OPCODE_SEND ||
-             inst->opcode == BRW_OPCODE_SENDC) {
+         if (inst->opcode == GEN6_OPCODE_SEND ||
+             inst->opcode == GEN6_OPCODE_SENDC) {
             const uint32_t mdesc = inst->src[1].val32;
             int response_length = (mdesc >> 20) & 0x1f;
 
             num_dst = response_length;
-            if (num_dst > 1 && inst->exec_size == BRW_EXECUTE_16)
+            if (num_dst > 1 && inst->exec_size == GEN6_EXECSIZE_16)
                num_dst /= 2;
          }
          else {
@@ -407,7 +407,7 @@ linear_scan_init_live_intervals(struct linear_scan *ls,
          }
       }
 
-      for (i = 0; i < Elements(inst->src); i++) {
+      for (i = 0; i < ARRAY_SIZE(inst->src); i++) {
          if (inst->src[i].file != TOY_FILE_VRF)
             continue;
 
@@ -539,7 +539,7 @@ linear_scan_allocation(struct toy_compiler *tc,
          inst->dst.val32 = reg * TOY_REG_WIDTH + subreg;
       }
 
-      for (i = 0; i < Elements(inst->src); i++) {
+      for (i = 0; i < ARRAY_SIZE(inst->src); i++) {
          const uint32_t val32 = inst->src[i].val32;
          int reg, subreg;
 
@@ -589,7 +589,7 @@ trivial_allocation(struct toy_compiler *tc,
             max_grf = reg;
       }
 
-      for (i = 0; i < Elements(inst->src); i++) {
+      for (i = 0; i < ARRAY_SIZE(inst->src); i++) {
          const uint32_t val32 = inst->src[i].val32;
          int reg, subreg;
 

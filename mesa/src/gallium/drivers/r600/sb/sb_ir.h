@@ -41,7 +41,8 @@ enum special_regs {
 	SV_ALU_PRED = 128,
 	SV_EXEC_MASK,
 	SV_AR_INDEX,
-	SV_VALID_MASK
+	SV_VALID_MASK,
+	SV_GEOMETRY_EMIT
 };
 
 class node;
@@ -61,6 +62,13 @@ struct sel_chan
 
 	static unsigned sel(unsigned idx) { return (idx-1) >> 2; }
 	static unsigned chan(unsigned idx) { return (idx-1) & 3; }
+
+	sel_chan(unsigned bank, unsigned index,
+			 unsigned chan, alu_kcache_index_mode index_mode)
+		: id(sel_chan((bank << 12) | index | ((unsigned)index_mode << 28), chan).id) {}
+	unsigned kcache_index_mode() const { return sel() >> 28; }
+	unsigned kcache_sel() const { return sel() & 0x0fffffffu; }
+	unsigned kcache_bank() const { return kcache_sel() >> 12; }
 };
 
 inline sb_ostream& operator <<(sb_ostream& o, sel_chan r) {
@@ -506,6 +514,9 @@ public:
 	bool is_AR() {
 		return is_special_reg() && select == sel_chan(SV_AR_INDEX, 0);
 	}
+	bool is_geometry_emit() {
+		return is_special_reg() && select == sel_chan(SV_GEOMETRY_EMIT, 0);
+	}
 
 	node* any_def() {
 		assert(!(def && adef));
@@ -700,7 +711,10 @@ enum node_flags {
 	NF_DONT_MOVE = (1 << 8),
 
 	// for KILLxx - we want to schedule them as early as possible
-	NF_SCHEDULE_EARLY = (1 << 9)
+	NF_SCHEDULE_EARLY = (1 << 9),
+
+	// for ALU_PUSH_BEFORE - when set, replace with PUSH + ALU
+	NF_ALU_STACK_WORKAROUND = (1 << 10)
 };
 
 inline node_flags operator |(node_flags l, node_flags r) {
@@ -963,7 +977,7 @@ public:
 class cf_node : public container_node {
 protected:
 	cf_node() : container_node(NT_OP, NST_CF_INST), jump_target(),
-		jump_after_target() {};
+		jump_after_target() { memset(&bc, 0, sizeof(bc_cf)); };
 public:
 	bc_cf bc;
 
@@ -982,7 +996,7 @@ public:
 
 class alu_node : public node {
 protected:
-	alu_node() : node(NT_OP, NST_ALU_INST) {};
+	alu_node() : node(NT_OP, NST_ALU_INST) { memset(&bc, 0, sizeof(bc_alu)); };
 public:
 	bc_alu bc;
 
@@ -1028,7 +1042,7 @@ public:
 
 class fetch_node : public node {
 protected:
-	fetch_node() : node(NT_OP, NST_FETCH_INST) {};
+	fetch_node() : node(NT_OP, NST_FETCH_INST) { memset(&bc, 0, sizeof(bc_fetch)); };
 public:
 	bc_fetch bc;
 
@@ -1086,7 +1100,8 @@ typedef std::vector<repeat_node*> repeat_vec;
 class region_node : public container_node {
 protected:
 	region_node(unsigned id) : container_node(NT_REGION, NST_LIST), region_id(id),
-			loop_phi(), phi(), vars_defined(), departs(), repeats() {}
+			loop_phi(), phi(), vars_defined(), departs(), repeats(), src_loop()
+			{}
 public:
 	unsigned region_id;
 
@@ -1098,12 +1113,16 @@ public:
 	depart_vec departs;
 	repeat_vec repeats;
 
+	// true if region was created for loop in the parser, sometimes repeat_node
+	// may be optimized away so we need to remember this information
+	bool src_loop;
+
 	virtual bool accept(vpass &p, bool enter);
 
 	unsigned dep_count() { return departs.size(); }
 	unsigned rep_count() { return repeats.size() + 1; }
 
-	bool is_loop() { return !repeats.empty(); }
+	bool is_loop() { return src_loop || !repeats.empty(); }
 
 	container_node* get_entry_code_location() {
 		node *p = first;

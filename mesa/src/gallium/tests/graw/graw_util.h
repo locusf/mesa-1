@@ -9,6 +9,7 @@
 
 #include "util/u_box.h"    
 #include "util/u_debug.h"
+#include "util/u_debug_image.h"
 #include "util/u_draw_quad.h"
 #include "util/u_format.h"
 #include "util/u_inlines.h"
@@ -26,7 +27,7 @@ struct graw_info
 
 
 
-static INLINE boolean
+static inline boolean
 graw_util_create_window(struct graw_info *info,
                         int width, int height,
                         int num_cbufs, bool zstencil_buf)
@@ -60,7 +61,7 @@ graw_util_create_window(struct graw_info *info,
       return FALSE;
    }
    
-   info->ctx = info->screen->context_create(info->screen, NULL);
+   info->ctx = info->screen->context_create(info->screen, NULL, 0);
    if (info->ctx == NULL) {
       debug_printf("graw: Failed to create context\n");
       return FALSE;
@@ -144,7 +145,7 @@ graw_util_create_window(struct graw_info *info,
 }
 
 
-static INLINE void
+static inline void
 graw_util_default_state(struct graw_info *info, boolean depth_test)
 {
    {
@@ -181,41 +182,39 @@ graw_util_default_state(struct graw_info *info, boolean depth_test)
 }
 
 
-static INLINE void
+static inline void
 graw_util_viewport(struct graw_info *info,
                    float x, float y,
                    float width, float height,
-                   float near, float far)
+                   float zNear, float zFar)
 {
-   float z = near;
+   float z = zNear;
    float half_width = width / 2.0f;
    float half_height = height / 2.0f;
-   float half_depth = (far - near) / 2.0f;
+   float half_depth = (zFar - zNear) / 2.0f;
    struct pipe_viewport_state vp;
 
    vp.scale[0] = half_width;
    vp.scale[1] = half_height;
    vp.scale[2] = half_depth;
-   vp.scale[3] = 1.0f;
 
    vp.translate[0] = half_width + x;
    vp.translate[1] = half_height + y;
    vp.translate[2] = half_depth + z;
-   vp.translate[3] = 0.0f;
 
    info->ctx->set_viewport_states(info->ctx, 0, 1, &vp);
 }
 
 
-static INLINE void
+static inline void
 graw_util_flush_front(const struct graw_info *info)
 {
    info->screen->flush_frontbuffer(info->screen, info->color_buf[0],
-                                   0, 0, info->window);
+                                   0, 0, info->window, NULL);
 }
 
 
-static INLINE struct pipe_resource *
+static inline struct pipe_resource *
 graw_util_create_tex2d(const struct graw_info *info,
                        int width, int height, enum pipe_format format,
                        const void *data)
@@ -243,14 +242,14 @@ graw_util_create_tex2d(const struct graw_info *info,
 
    u_box_2d(0, 0, width, height, &box);
 
-   info->ctx->transfer_inline_write(info->ctx,
-                                    tex,
-                                    0,
-                                    PIPE_TRANSFER_WRITE,
-                                    &box,
-                                    data,
-                                    row_stride,
-                                    image_bytes);
+   info->ctx->texture_subdata(info->ctx,
+                              tex,
+                              0,
+                              PIPE_TRANSFER_WRITE,
+                              &box,
+                              data,
+                              row_stride,
+                              image_bytes);
 
    /* Possibly read back & compare against original data:
     */
@@ -280,7 +279,7 @@ graw_util_create_tex2d(const struct graw_info *info,
 }
 
 
-static INLINE void *
+static inline void *
 graw_util_create_simple_sampler(const struct graw_info *info,
                                 unsigned wrap_mode,
                                 unsigned img_filter)
@@ -306,7 +305,7 @@ graw_util_create_simple_sampler(const struct graw_info *info,
 }
 
 
-static INLINE struct pipe_sampler_view *
+static inline struct pipe_sampler_view *
 graw_util_create_simple_sampler_view(const struct graw_info *info,
                                      struct pipe_resource *texture)
 {
@@ -316,10 +315,10 @@ graw_util_create_simple_sampler_view(const struct graw_info *info,
    memset(&sv_temp, 0, sizeof(sv_temp));
    sv_temp.format = texture->format;
    sv_temp.texture = texture;
-   sv_temp.swizzle_r = PIPE_SWIZZLE_RED;
-   sv_temp.swizzle_g = PIPE_SWIZZLE_GREEN;
-   sv_temp.swizzle_b = PIPE_SWIZZLE_BLUE;
-   sv_temp.swizzle_a = PIPE_SWIZZLE_ALPHA;
+   sv_temp.swizzle_r = PIPE_SWIZZLE_X;
+   sv_temp.swizzle_g = PIPE_SWIZZLE_Y;
+   sv_temp.swizzle_b = PIPE_SWIZZLE_Z;
+   sv_temp.swizzle_a = PIPE_SWIZZLE_W;
 
    sv = info->ctx->create_sampler_view(info->ctx, texture, &sv_temp);
 

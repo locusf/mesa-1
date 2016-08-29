@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -35,6 +35,9 @@ static void sp_blit(struct pipe_context *pipe,
                     const struct pipe_blit_info *info)
 {
    struct softpipe_context *sp = softpipe_context(pipe);
+
+   if (info->render_condition_enable && !softpipe_check_render_cond(sp))
+      return;
 
    if (info->src.resource->nr_samples > 1 &&
        info->dst.resource->nr_samples <= 1 &&
@@ -64,8 +67,8 @@ static void sp_blit(struct pipe_context *pipe,
    util_blitter_save_so_targets(sp->blitter, sp->num_so_targets,
                      (struct pipe_stream_output_target**)sp->so_targets);
    util_blitter_save_rasterizer(sp->blitter, sp->rasterizer);
-   util_blitter_save_viewport(sp->blitter, &sp->viewport);
-   util_blitter_save_scissor(sp->blitter, &sp->scissor);
+   util_blitter_save_viewport(sp->blitter, &sp->viewports[0]);
+   util_blitter_save_scissor(sp->blitter, &sp->scissors[0]);
    util_blitter_save_fragment_shader(sp->blitter, sp->fs);
    util_blitter_save_blend(sp->blitter, sp->blend);
    util_blitter_save_depth_stencil_alpha(sp->blitter, sp->depth_stencil);
@@ -84,11 +87,18 @@ static void sp_blit(struct pipe_context *pipe,
 }
 
 static void
+sp_flush_resource(struct pipe_context *pipe,
+                  struct pipe_resource *resource)
+{
+}
+
+static void
 softpipe_clear_render_target(struct pipe_context *pipe,
                              struct pipe_surface *dst,
                              const union pipe_color_union *color,
                              unsigned dstx, unsigned dsty,
-                             unsigned width, unsigned height)
+                             unsigned width, unsigned height,
+                             bool render_condition_enabled)
 {
    struct softpipe_context *softpipe = softpipe_context(pipe);
 
@@ -107,7 +117,8 @@ softpipe_clear_depth_stencil(struct pipe_context *pipe,
                              double depth,
                              unsigned stencil,
                              unsigned dstx, unsigned dsty,
-                             unsigned width, unsigned height)
+                             unsigned width, unsigned height,
+                             bool render_condition_enabled)
 {
    struct softpipe_context *softpipe = softpipe_context(pipe);
 
@@ -127,4 +138,5 @@ sp_init_surface_functions(struct softpipe_context *sp)
    sp->pipe.clear_render_target = softpipe_clear_render_target;
    sp->pipe.clear_depth_stencil = softpipe_clear_depth_stencil;
    sp->pipe.blit = sp_blit;
+   sp->pipe.flush_resource = sp_flush_resource;
 }

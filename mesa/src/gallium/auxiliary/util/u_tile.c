@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -37,7 +37,7 @@
 #include "util/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "util/u_rect.h"
+#include "util/u_surface.h"
 #include "util/u_tile.h"
 
 
@@ -214,13 +214,13 @@ s8x24_get_tile_rgba(const unsigned *src,
    unsigned i, j;
 
    for (i = 0; i < h; i++) {
-      float *pRow = p;
+      uint32_t *pRow = (uint32_t *)p;
 
       for (j = 0; j < w; j++, pRow += 4) {
          pRow[0] =
          pRow[1] =
          pRow[2] =
-         pRow[3] = (float)((*src++ >> 24) & 0xff);
+         pRow[3] = ((*src++ >> 24) & 0xff);
       }
 
       p += dst_stride;
@@ -241,12 +241,12 @@ x24s8_get_tile_rgba(const unsigned *src,
    unsigned i, j;
 
    for (i = 0; i < h; i++) {
-      float *pRow = p;
+      uint32_t *pRow = (uint32_t *)p;
       for (j = 0; j < w; j++, pRow += 4) {
          pRow[0] =
          pRow[1] =
          pRow[2] =
-         pRow[3] = (float)(*src++ & 0xff);
+         pRow[3] = (*src++ & 0xff);
       }
       p += dst_stride;
    }
@@ -265,12 +265,12 @@ s8_get_tile_rgba(const unsigned char *src,
    unsigned i, j;
 
    for (i = 0; i < h; i++) {
-      float *pRow = p;
+      uint32_t *pRow = (uint32_t *)p;
       for (j = 0; j < w; j++, pRow += 4) {
          pRow[0] =
          pRow[1] =
          pRow[2] =
-         pRow[3] = (float)(*src++ & 0xff);
+         pRow[3] = (*src++ & 0xff);
       }
       p += dst_stride;
    }
@@ -341,13 +341,13 @@ x32_s8_get_tile_rgba(const unsigned *src,
    unsigned i, j;
 
    for (i = 0; i < h; i++) {
-      float *pRow = p;
+      uint32_t *pRow = (uint32_t *)p;
       for (j = 0; j < w; j++, pRow += 4) {
          src++;
          pRow[0] =
          pRow[1] =
          pRow[2] =
-         pRow[3] = (float)(*src++ & 0xff);
+         pRow[3] = (*src++ & 0xff);
       }
       p += dst_stride;
    }

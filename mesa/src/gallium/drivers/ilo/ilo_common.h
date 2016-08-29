@@ -28,86 +28,17 @@
 #ifndef ILO_COMMON_H
 #define ILO_COMMON_H
 
-#include "pipe/p_compiler.h"
-#include "pipe/p_defines.h"
 #include "pipe/p_format.h"
+#include "pipe/p_defines.h"
 
-#include "util/u_debug.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 #include "util/u_format.h"
 #include "util/u_inlines.h"
-#include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_pointer.h"
 
-#define ILO_GEN(gen) ((int) (gen * 100))
-#define ILO_GEN_GET_MAJOR(gen) (gen / 100)
-
-enum ilo_debug {
-   ILO_DEBUG_3D        = 1 << 0,
-   ILO_DEBUG_VS        = 1 << 1,
-   ILO_DEBUG_GS        = 1 << 2,
-   ILO_DEBUG_FS        = 1 << 3,
-   ILO_DEBUG_CS        = 1 << 4,
-
-   ILO_DEBUG_NOHW      = 1 << 8,
-   ILO_DEBUG_NOCACHE   = 1 << 9,
-};
-
-struct ilo_dev_info {
-   /* these mirror intel_winsys_info */
-   int devid;
-   bool has_llc;
-   bool has_gen7_sol_reset;
-   bool has_address_swizzling;
-
-   int gen;
-   int gt;
-   int urb_size;
-};
-
-extern int ilo_debug;
-
-/**
- * Print a message, for dumping or debugging.
- */
-static inline void _util_printf_format(1, 2)
-ilo_printf(const char *format, ...)
-{
-   va_list ap;
-
-   va_start(ap, format);
-   _debug_vprintf(format, ap);
-   va_end(ap);
-}
-
-/**
- * Print a critical error.
- */
-static inline void _util_printf_format(1, 2)
-ilo_err(const char *format, ...)
-{
-   va_list ap;
-
-   va_start(ap, format);
-   _debug_vprintf(format, ap);
-   va_end(ap);
-}
-
-/**
- * Print a warning, silenced for release builds.
- */
-static inline void _util_printf_format(1, 2)
-ilo_warn(const char *format, ...)
-{
-#ifdef DEBUG
-   va_list ap;
-
-   va_start(ap, format);
-   _debug_vprintf(format, ap);
-   va_end(ap);
-#else
-#endif
-}
+#include "core/ilo_core.h"
+#include "core/ilo_debug.h"
+#include "core/ilo_dev.h"
 
 #endif /* ILO_COMMON_H */

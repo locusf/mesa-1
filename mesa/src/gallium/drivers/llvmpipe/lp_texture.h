@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -49,13 +49,6 @@ struct llvmpipe_context;
 struct sw_displaytarget;
 
 
-/** A 1D/2D/3D image, one mipmap level */
-struct llvmpipe_texture_image
-{
-   void *data;
-};
-
-
 /**
  * llvmpipe subclass of pipe_resource.  A texture, drawing surface,
  * vertex buffer, const buffer, etc.
@@ -71,10 +64,10 @@ struct llvmpipe_resource
    unsigned row_stride[LP_MAX_TEXTURE_LEVELS];
    /** Image stride (for cube maps, array or 3D textures) in bytes */
    unsigned img_stride[LP_MAX_TEXTURE_LEVELS];
-   /** Number of 3D slices or cube faces per level */
-   unsigned num_slices_faces[LP_MAX_TEXTURE_LEVELS];
    /** Offset to start of mipmap level, in bytes */
-   unsigned linear_mip_offsets[LP_MAX_TEXTURE_LEVELS];
+   unsigned mip_offsets[LP_MAX_TEXTURE_LEVELS];
+   /** allocated total size (for non-display target texture resources only) */
+   unsigned total_alloc_size;
 
    /**
     * Display target, for textures with the PIPE_BIND_DISPLAY_TARGET
@@ -85,7 +78,7 @@ struct llvmpipe_resource
    /**
     * Malloc'ed data for regular textures, or a mapping to dt above.
     */
-   struct llvmpipe_texture_image linear_img;
+   void *tex_data;
 
    /**
     * Data for non-texture resources.
@@ -113,21 +106,21 @@ struct llvmpipe_transfer
 
 
 /** cast wrappers */
-static INLINE struct llvmpipe_resource *
+static inline struct llvmpipe_resource *
 llvmpipe_resource(struct pipe_resource *pt)
 {
    return (struct llvmpipe_resource *) pt;
 }
 
 
-static INLINE const struct llvmpipe_resource *
+static inline const struct llvmpipe_resource *
 llvmpipe_resource_const(const struct pipe_resource *pt)
 {
    return (const struct llvmpipe_resource *) pt;
 }
 
 
-static INLINE struct llvmpipe_transfer *
+static inline struct llvmpipe_transfer *
 llvmpipe_transfer(struct pipe_transfer *pt)
 {
    return (struct llvmpipe_transfer *) pt;
@@ -138,7 +131,7 @@ void llvmpipe_init_screen_resource_funcs(struct pipe_screen *screen);
 void llvmpipe_init_context_resource_funcs(struct pipe_context *pipe);
 
 
-static INLINE boolean
+static inline boolean
 llvmpipe_resource_is_texture(const struct pipe_resource *resource)
 {
    switch (resource->target) {
@@ -151,6 +144,7 @@ llvmpipe_resource_is_texture(const struct pipe_resource *resource)
    case PIPE_TEXTURE_RECT:
    case PIPE_TEXTURE_3D:
    case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_CUBE_ARRAY:
       return TRUE;
    default:
       assert(0);
@@ -159,7 +153,7 @@ llvmpipe_resource_is_texture(const struct pipe_resource *resource)
 }
 
 
-static INLINE boolean
+static inline boolean
 llvmpipe_resource_is_1d(const struct pipe_resource *resource)
 {
    switch (resource->target) {
@@ -172,6 +166,7 @@ llvmpipe_resource_is_1d(const struct pipe_resource *resource)
    case PIPE_TEXTURE_RECT:
    case PIPE_TEXTURE_3D:
    case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_CUBE_ARRAY:
       return FALSE;
    default:
       assert(0);
@@ -180,7 +175,7 @@ llvmpipe_resource_is_1d(const struct pipe_resource *resource)
 }
 
 
-static INLINE unsigned
+static inline unsigned
 llvmpipe_layer_stride(struct pipe_resource *resource,
                       unsigned level)
 {
@@ -190,7 +185,7 @@ llvmpipe_layer_stride(struct pipe_resource *resource,
 }
 
 
-static INLINE unsigned
+static inline unsigned
 llvmpipe_resource_stride(struct pipe_resource *resource,
                          unsigned level)
 {
@@ -223,22 +218,6 @@ llvmpipe_resource_size(const struct pipe_resource *resource);
 ubyte *
 llvmpipe_get_texture_image_address(struct llvmpipe_resource *lpr,
                                    unsigned face_slice, unsigned level);
-
-void *
-llvmpipe_get_texture_image(struct llvmpipe_resource *resource,
-                           unsigned face_slice, unsigned level,
-                           enum lp_texture_usage usage);
-
-void *
-llvmpipe_get_texture_image_all(struct llvmpipe_resource *lpr,
-                               unsigned level,
-                               enum lp_texture_usage usage);
-
-ubyte *
-llvmpipe_get_texture_tile_linear(struct llvmpipe_resource *lpr,
-                                 unsigned face_slice, unsigned level,
-                                 enum lp_texture_usage usage,
-                                 unsigned x, unsigned y);
 
 
 extern void

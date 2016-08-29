@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -36,15 +36,18 @@
 
 #include "st_context.h"
 #include "st_texture.h"
+#include "st_cb_bitmap.h"
 #include "st_cb_blit.h"
 #include "st_cb_fbo.h"
-#include "st_atom.h"
+#include "st_manager.h"
+#include "st_scissor.h"
 
 #include "util/u_format.h"
 
-
 static void
 st_BlitFramebuffer(struct gl_context *ctx,
+                   struct gl_framebuffer *readFB,
+                   struct gl_framebuffer *drawFB,
                    GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                    GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
                    GLbitfield mask, GLenum filter)
@@ -55,15 +58,17 @@ st_BlitFramebuffer(struct gl_context *ctx,
    const uint pFilter = ((filter == GL_NEAREST)
                          ? PIPE_TEX_FILTER_NEAREST
                          : PIPE_TEX_FILTER_LINEAR);
-   struct gl_framebuffer *readFB = ctx->ReadBuffer;
-   struct gl_framebuffer *drawFB = ctx->DrawBuffer;
    struct {
       GLint srcX0, srcY0, srcX1, srcY1;
       GLint dstX0, dstY0, dstX1, dstY1;
    } clip;
    struct pipe_blit_info blit;
 
-   st_validate_state(st);
+   st_manager_validate_framebuffers(st);
+
+   /* Make sure bitmap rendering has landed in the framebuffers */
+   st_flush_bitmap_cache(st);
+   st_invalidate_readpix_cache(st);
 
    clip.srcX0 = srcX0;
    clip.srcY0 = srcY0;
@@ -80,11 +85,12 @@ st_BlitFramebuffer(struct gl_context *ctx,
     *
     * XXX: This should depend on mask !
     */
-   if (!_mesa_clip_blit(ctx,
+   if (!_mesa_clip_blit(ctx, readFB, drawFB,
                         &clip.srcX0, &clip.srcY0, &clip.srcX1, &clip.srcY1,
                         &clip.dstX0, &clip.dstY0, &clip.dstX1, &clip.dstY1)) {
       return; /* nothing to draw/blit */
    }
+   memset(&blit, 0, sizeof(struct pipe_blit_info));
    blit.scissor_enable =
       (dstX0 != clip.dstX0) ||
       (dstY0 != clip.dstY0) ||
@@ -158,7 +164,12 @@ st_BlitFramebuffer(struct gl_context *ctx,
       blit.src.box.height = srcY0 - srcY1;
    }
 
+   if (drawFB != ctx->WinSysDrawBuffer)
+      st_window_rectangles_to_blit(ctx, &blit);
+
    blit.filter = pFilter;
+   blit.render_condition_enable = TRUE;
+   blit.alpha_blend = FALSE;
 
    if (mask & GL_COLOR_BUFFER_BIT) {
       struct gl_renderbuffer_attachment *srcAtt =
@@ -179,20 +190,28 @@ st_BlitFramebuffer(struct gl_context *ctx,
                st_renderbuffer(drawFB->_ColorDrawBuffers[i]);
 
             if (dstRb) {
-               struct pipe_surface *dstSurf = dstRb->surface;
+               struct pipe_surface *dstSurf;
+
+               st_update_renderbuffer_surface(st, dstRb);
+
+               dstSurf = dstRb->surface;
 
                if (dstSurf) {
                   blit.dst.resource = dstSurf->texture;
                   blit.dst.level = dstSurf->u.tex.level;
                   blit.dst.box.z = dstSurf->u.tex.first_layer;
-                  blit.dst.format = util_format_linear(dstSurf->format);
+                  blit.dst.format = dstSurf->format;
 
                   blit.src.resource = srcObj->pt;
                   blit.src.level = srcAtt->TextureLevel;
                   blit.src.box.z = srcAtt->Zoffset + srcAtt->CubeMapFace;
-                  blit.src.format = util_format_linear(srcObj->pt->format);
+                  blit.src.format = srcObj->pt->format;
+
+                  if (!ctx->Color.sRGBEnabled)
+                     blit.src.format = util_format_linear(blit.src.format);
 
                   st->pipe->blit(st->pipe, &blit);
+                  dstRb->defined = true; /* front buffer tracking */
                }
             }
          }
@@ -203,9 +222,13 @@ st_BlitFramebuffer(struct gl_context *ctx,
          struct pipe_surface *srcSurf;
          GLuint i;
 
-         if (!srcRb || !srcRb->surface) {
+         if (!srcRb)
             return;
-         }
+
+         st_update_renderbuffer_surface(st, srcRb);
+
+         if (!srcRb->surface)
+            return;
 
          srcSurf = srcRb->surface;
 
@@ -214,20 +237,25 @@ st_BlitFramebuffer(struct gl_context *ctx,
                st_renderbuffer(drawFB->_ColorDrawBuffers[i]);
 
             if (dstRb) {
-               struct pipe_surface *dstSurf = dstRb->surface;
+               struct pipe_surface *dstSurf;
+
+               st_update_renderbuffer_surface(st, dstRb);
+
+               dstSurf = dstRb->surface;
 
                if (dstSurf) {
                   blit.dst.resource = dstSurf->texture;
                   blit.dst.level = dstSurf->u.tex.level;
                   blit.dst.box.z = dstSurf->u.tex.first_layer;
-                  blit.dst.format = util_format_linear(dstSurf->format);
+                  blit.dst.format = dstSurf->format;
 
                   blit.src.resource = srcSurf->texture;
                   blit.src.level = srcSurf->u.tex.level;
                   blit.src.box.z = srcSurf->u.tex.first_layer;
-                  blit.src.format = util_format_linear(srcSurf->format);
+                  blit.src.format = srcSurf->format;
 
                   st->pipe->blit(st->pipe, &blit);
+                  dstRb->defined = true; /* front buffer tracking */
                }
             }
          }

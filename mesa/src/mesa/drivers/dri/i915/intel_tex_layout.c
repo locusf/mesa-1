@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2006 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2006 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -26,8 +26,8 @@
  **************************************************************************/
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
-  *   Michel Dänzer <michel@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
+  *   Michel Dänzer <daenzer@vmware.com>
   */
 
 #include "intel_mipmap_tree.h"
@@ -39,7 +39,7 @@
 
 static unsigned int
 intel_horizontal_texture_alignment_unit(struct intel_context *intel,
-                                       gl_format format)
+                                       mesa_format format)
 {
    /**
     * From the "Alignment Unit Size" section of various specs, namely:
@@ -79,7 +79,7 @@ intel_horizontal_texture_alignment_unit(struct intel_context *intel,
 
 static unsigned int
 intel_vertical_texture_alignment_unit(struct intel_context *intel,
-                                     gl_format format)
+                                     mesa_format format)
 {
    /**
     * From the "Alignment Unit Size" section of various specs, namely:
@@ -114,7 +114,7 @@ intel_vertical_texture_alignment_unit(struct intel_context *intel,
 
 void
 intel_get_texture_alignment_unit(struct intel_context *intel,
-				 gl_format format,
+				 mesa_format format,
 				 unsigned int *w, unsigned int *h)
 {
    *w = intel_horizontal_texture_alignment_unit(intel, format);
@@ -136,7 +136,7 @@ void i945_miptree_layout_2d(struct intel_mipmap_tree *mt)
        mt->total_width = ALIGN(mt->physical_width0, mt->align_w);
    }
 
-   /* May need to adjust width to accomodate the placement of
+   /* May need to adjust width to accommodate the placement of
     * the 2nd mipmap.  This occurs when the alignment
     * constraints of mipmap placement push the right edge of the
     * 2nd mipmap out past the width of its parent.

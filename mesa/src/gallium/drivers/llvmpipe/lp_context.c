@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * Copyright 2008 VMware, Inc.  All rights reserved.
  * 
@@ -19,7 +19,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,7 +27,7 @@
  **************************************************************************/
 
 /* Author:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 #include "draw/draw_context.h"
@@ -36,7 +36,7 @@
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "util/u_simple_list.h"
+#include "util/simple_list.h"
 #include "lp_clear.h"
 #include "lp_context.h"
 #include "lp_flush.h"
@@ -46,10 +46,10 @@
 #include "lp_query.h"
 #include "lp_setup.h"
 
-
-/** shared by all contexts */
-unsigned llvmpipe_variant_count;
-
+/* This is only safe if there's just one concurrent context */
+#ifdef PIPE_SUBSYSTEM_EMBEDDED
+#define USE_GLOBAL_LLVM_CONTEXT
+#endif
 
 static void llvmpipe_destroy( struct pipe_context *pipe )
 {
@@ -73,20 +73,20 @@ static void llvmpipe_destroy( struct pipe_context *pipe )
 
    pipe_surface_reference(&llvmpipe->framebuffer.zsbuf, NULL);
 
-   for (i = 0; i < Elements(llvmpipe->sampler_views[0]); i++) {
+   for (i = 0; i < ARRAY_SIZE(llvmpipe->sampler_views[0]); i++) {
       pipe_sampler_view_reference(&llvmpipe->sampler_views[PIPE_SHADER_FRAGMENT][i], NULL);
    }
 
-   for (i = 0; i < Elements(llvmpipe->sampler_views[0]); i++) {
+   for (i = 0; i < ARRAY_SIZE(llvmpipe->sampler_views[0]); i++) {
       pipe_sampler_view_reference(&llvmpipe->sampler_views[PIPE_SHADER_VERTEX][i], NULL);
    }
 
-   for (i = 0; i < Elements(llvmpipe->sampler_views[0]); i++) {
+   for (i = 0; i < ARRAY_SIZE(llvmpipe->sampler_views[0]); i++) {
       pipe_sampler_view_reference(&llvmpipe->sampler_views[PIPE_SHADER_GEOMETRY][i], NULL);
    }
 
-   for (i = 0; i < Elements(llvmpipe->constants); i++) {
-      for (j = 0; j < Elements(llvmpipe->constants[i]); j++) {
+   for (i = 0; i < ARRAY_SIZE(llvmpipe->constants); i++) {
+      for (j = 0; j < ARRAY_SIZE(llvmpipe->constants[i]); j++) {
          pipe_resource_reference(&llvmpipe->constants[i][j].buffer, NULL);
       }
    }
@@ -96,6 +96,11 @@ static void llvmpipe_destroy( struct pipe_context *pipe )
    }
 
    lp_delete_setup_variants(llvmpipe);
+
+#ifndef USE_GLOBAL_LLVM_CONTEXT
+   LLVMContextDispose(llvmpipe->context);
+#endif
+   llvmpipe->context = NULL;
 
    align_free( llvmpipe );
 }
@@ -123,7 +128,8 @@ llvmpipe_render_condition ( struct pipe_context *pipe,
 }
 
 struct pipe_context *
-llvmpipe_create_context( struct pipe_screen *screen, void *priv )
+llvmpipe_create_context(struct pipe_screen *screen, void *priv,
+                        unsigned flags)
 {
    struct llvmpipe_context *llvmpipe;
 
@@ -165,10 +171,20 @@ llvmpipe_create_context( struct pipe_screen *screen, void *priv )
    llvmpipe_init_context_resource_funcs( &llvmpipe->pipe );
    llvmpipe_init_surface_functions(llvmpipe);
 
+#ifdef USE_GLOBAL_LLVM_CONTEXT
+   llvmpipe->context = LLVMGetGlobalContext();
+#else
+   llvmpipe->context = LLVMContextCreate();
+#endif
+
+   if (!llvmpipe->context)
+      goto fail;
+
    /*
     * Create drawing context and plug our rendering stage into it.
     */
-   llvmpipe->draw = draw_create(&llvmpipe->pipe);
+   llvmpipe->draw = draw_create_with_llvm_context(&llvmpipe->pipe,
+                                                  llvmpipe->context);
    if (!llvmpipe->draw)
       goto fail;
 

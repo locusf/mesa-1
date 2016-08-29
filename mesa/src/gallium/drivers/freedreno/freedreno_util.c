@@ -31,6 +31,8 @@
 
 #include "freedreno_util.h"
 
+unsigned marker_cnt;
+
 enum adreno_rb_depth_format
 fd_pipe2depth(enum pipe_format format)
 {
@@ -42,6 +44,9 @@ fd_pipe2depth(enum pipe_format format)
 	case PIPE_FORMAT_X8Z24_UNORM:
 	case PIPE_FORMAT_S8_UINT_Z24_UNORM:
 		return DEPTHX_24_8;
+	case PIPE_FORMAT_Z32_FLOAT:
+	case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+		return DEPTHX_32;
 	default:
 		return ~0;
 	}
@@ -99,32 +104,15 @@ fd_blend_factor(unsigned factor)
 	case PIPE_BLENDFACTOR_INV_CONST_ALPHA:
 		return FACTOR_ONE_MINUS_CONSTANT_ALPHA;
 	case PIPE_BLENDFACTOR_INV_SRC1_COLOR:
+		return FACTOR_ONE_MINUS_SRC1_COLOR;
 	case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
+		return FACTOR_ONE_MINUS_SRC1_ALPHA;
 	case PIPE_BLENDFACTOR_SRC1_COLOR:
+		return FACTOR_SRC1_COLOR;
 	case PIPE_BLENDFACTOR_SRC1_ALPHA:
-		/* I don't think these are supported */
+		return FACTOR_SRC1_ALPHA;
 	default:
 		DBG("invalid blend factor: %x", factor);
-		return 0;
-	}
-}
-
-enum adreno_rb_blend_opcode
-fd_blend_func(unsigned func)
-{
-	switch (func) {
-	case PIPE_BLEND_ADD:
-		return BLEND_DST_PLUS_SRC;
-	case PIPE_BLEND_MIN:
-		return BLEND_MIN_DST_SRC;
-	case PIPE_BLEND_MAX:
-		return BLEND_MAX_DST_SRC;
-	case PIPE_BLEND_SUBTRACT:
-		return BLEND_SRC_MINUS_DST;
-	case PIPE_BLEND_REVERSE_SUBTRACT:
-		return BLEND_DST_MINUS_SRC;
-	default:
-		DBG("invalid blend func: %x", func);
 		return 0;
 	}
 }

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -26,7 +26,7 @@
  **************************************************************************/
 
 /* Author:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 
@@ -38,6 +38,7 @@
 #include "sp_state.h"
 #include "sp_tile_cache.h"
 #include "sp_tex_tile_cache.h"
+#include "util/u_debug_image.h"
 #include "util/u_memory.h"
 #include "util/u_string.h"
 
@@ -55,7 +56,7 @@ softpipe_flush( struct pipe_context *pipe,
    if (flags & SP_FLUSH_TEXTURE_CACHE) {
       unsigned sh;
 
-      for (sh = 0; sh < Elements(softpipe->tex_cache); sh++) {
+      for (sh = 0; sh < ARRAY_SIZE(softpipe->tex_cache); sh++) {
          for (i = 0; i < softpipe->num_sampler_views[sh]; i++) {
             sp_flush_tex_tile_cache(softpipe->tex_cache[sh][i]);
          }
@@ -152,7 +153,7 @@ softpipe_flush_resource(struct pipe_context *pipe,
              * This is for illustrative purposes only, as softpipe does not
              * have fences.
              */
-            pipe->screen->fence_finish(pipe->screen, fence,
+            pipe->screen->fence_finish(pipe->screen, NULL, fence,
                                        PIPE_TIMEOUT_INFINITE);
             pipe->screen->fence_reference(pipe->screen, &fence, NULL);
          }
@@ -166,4 +167,30 @@ softpipe_flush_resource(struct pipe_context *pipe,
    }
 
    return TRUE;
+}
+
+void softpipe_texture_barrier(struct pipe_context *pipe)
+{
+   struct softpipe_context *softpipe = softpipe_context(pipe);
+   uint i, sh;
+
+   for (sh = 0; sh < ARRAY_SIZE(softpipe->tex_cache); sh++) {
+      for (i = 0; i < softpipe->num_sampler_views[sh]; i++) {
+         sp_flush_tex_tile_cache(softpipe->tex_cache[sh][i]);
+      }
+   }
+
+   for (i = 0; i < softpipe->framebuffer.nr_cbufs; i++)
+      if (softpipe->cbuf_cache[i])
+         sp_flush_tile_cache(softpipe->cbuf_cache[i]);
+
+   if (softpipe->zsbuf_cache)
+      sp_flush_tile_cache(softpipe->zsbuf_cache);
+
+   softpipe->dirty_render_cache = FALSE;
+}
+
+void softpipe_memory_barrier(struct pipe_context *pipe, unsigned flags)
+{
+   softpipe_texture_barrier(pipe);
 }

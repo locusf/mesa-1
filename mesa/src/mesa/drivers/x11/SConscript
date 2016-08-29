@@ -3,6 +3,7 @@ Import('*')
 env = env.Clone()
 
 env.Append(CPPPATH = [
+    '#/src',
     '#/src/mapi',
     '#/src/mesa',
     '#/src/mesa/main',
@@ -16,6 +17,8 @@ env.Prepend(LIBPATH = env['X11_LIBPATH'])
 
 env.Prepend(LIBS = [
     glapi,
+    mesautil,
+    compiler,
     glsl,
     mesa,
 ])
@@ -30,6 +33,14 @@ sources = [
 	'xm_line.c',
 	'xm_tri.c',
 ]
+
+if env['platform'] != 'darwin':
+    # Disallow undefined symbols, except with Address Sanitizer, since libasan
+    # is not linked on shared libs, as it should be LD_PRELOAD'ed instead
+    if not env['asan']:
+        env.Append(SHLINKFLAGS = [
+            '-Wl,-z,defs',
+        ])
 
 # libGL.so.1.6
 libgl_1_6 = env.SharedLibrary(

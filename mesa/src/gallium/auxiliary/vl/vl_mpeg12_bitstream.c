@@ -19,14 +19,14 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  **************************************************************************/
 
-#include "pipe/p_video_decoder.h"
+#include "pipe/p_video_codec.h"
 #include "util/u_memory.h"
 
 #include "vl_vlc.h"
@@ -533,7 +533,7 @@ static struct dct_coeff tbl_B14_DC[1 << 17];
 static struct dct_coeff tbl_B14_AC[1 << 17];
 static struct dct_coeff tbl_B15[1 << 17];
 
-static INLINE void
+static inline void
 init_dct_coeff_table(struct dct_coeff *dst, const struct dct_coeff_compressed *src,
                      unsigned size, bool is_DC)
 {
@@ -583,47 +583,47 @@ init_dct_coeff_table(struct dct_coeff *dst, const struct dct_coeff_compressed *s
          break;
       }
 
-      for(i=0; i<(1 << (17 - coeff.length)); ++i)
+      for(i = 0; i < (1u << (17 - coeff.length)); ++i)
          dst[src->bitcode << 1 | i] = coeff;
 
       if (has_sign) {
 	 coeff.level = -coeff.level;
-         for(; i<(1 << (18 - coeff.length)); ++i)
+         for(; i < (1u << (18 - coeff.length)); ++i)
             dst[src->bitcode << 1 | i] = coeff;
       }
    }
 }
 
-static INLINE void
+static inline void
 init_tables()
 {
-   vl_vlc_init_table(tbl_B1, Elements(tbl_B1), macroblock_address_increment, Elements(macroblock_address_increment));
-   vl_vlc_init_table(tbl_B2, Elements(tbl_B2), macroblock_type_i, Elements(macroblock_type_i));
-   vl_vlc_init_table(tbl_B3, Elements(tbl_B3), macroblock_type_p, Elements(macroblock_type_p));
-   vl_vlc_init_table(tbl_B4, Elements(tbl_B4), macroblock_type_b, Elements(macroblock_type_b));
-   vl_vlc_init_table(tbl_B9, Elements(tbl_B9), coded_block_pattern, Elements(coded_block_pattern));
-   vl_vlc_init_table(tbl_B10, Elements(tbl_B10), motion_code, Elements(motion_code));
-   vl_vlc_init_table(tbl_B11, Elements(tbl_B11), dmvector, Elements(dmvector));
-   vl_vlc_init_table(tbl_B12, Elements(tbl_B12), dct_dc_size_luminance, Elements(dct_dc_size_luminance));
-   vl_vlc_init_table(tbl_B13, Elements(tbl_B13), dct_dc_size_chrominance, Elements(dct_dc_size_chrominance));
-   init_dct_coeff_table(tbl_B14_DC, dct_coeff_tbl_zero, Elements(dct_coeff_tbl_zero), true);
-   init_dct_coeff_table(tbl_B14_AC, dct_coeff_tbl_zero, Elements(dct_coeff_tbl_zero), false);
-   init_dct_coeff_table(tbl_B15, dct_coeff_tbl_one, Elements(dct_coeff_tbl_one), false);
+   vl_vlc_init_table(tbl_B1, ARRAY_SIZE(tbl_B1), macroblock_address_increment, ARRAY_SIZE(macroblock_address_increment));
+   vl_vlc_init_table(tbl_B2, ARRAY_SIZE(tbl_B2), macroblock_type_i, ARRAY_SIZE(macroblock_type_i));
+   vl_vlc_init_table(tbl_B3, ARRAY_SIZE(tbl_B3), macroblock_type_p, ARRAY_SIZE(macroblock_type_p));
+   vl_vlc_init_table(tbl_B4, ARRAY_SIZE(tbl_B4), macroblock_type_b, ARRAY_SIZE(macroblock_type_b));
+   vl_vlc_init_table(tbl_B9, ARRAY_SIZE(tbl_B9), coded_block_pattern, ARRAY_SIZE(coded_block_pattern));
+   vl_vlc_init_table(tbl_B10, ARRAY_SIZE(tbl_B10), motion_code, ARRAY_SIZE(motion_code));
+   vl_vlc_init_table(tbl_B11, ARRAY_SIZE(tbl_B11), dmvector, ARRAY_SIZE(dmvector));
+   vl_vlc_init_table(tbl_B12, ARRAY_SIZE(tbl_B12), dct_dc_size_luminance, ARRAY_SIZE(dct_dc_size_luminance));
+   vl_vlc_init_table(tbl_B13, ARRAY_SIZE(tbl_B13), dct_dc_size_chrominance, ARRAY_SIZE(dct_dc_size_chrominance));
+   init_dct_coeff_table(tbl_B14_DC, dct_coeff_tbl_zero, ARRAY_SIZE(dct_coeff_tbl_zero), true);
+   init_dct_coeff_table(tbl_B14_AC, dct_coeff_tbl_zero, ARRAY_SIZE(dct_coeff_tbl_zero), false);
+   init_dct_coeff_table(tbl_B15, dct_coeff_tbl_one, ARRAY_SIZE(dct_coeff_tbl_one), false);
 }
 
-static INLINE int
+static inline int
 DIV2DOWN(int todiv)
 {
    return (todiv&~1)/2;
 }
 
-static INLINE int
+static inline int
 DIV2UP(int todiv)
 {
    return (todiv+1)/2;
 }
 
-static INLINE void
+static inline void
 motion_vector(struct vl_mpg12_bs *bs, int r, int s, int dmv, short delta[2], short dmvector[2])
 {
    int t;
@@ -647,7 +647,7 @@ motion_vector(struct vl_mpg12_bs *bs, int r, int s, int dmv, short delta[2], sho
    }
 }
 
-static INLINE int
+static inline int
 wrap(short f, int shift)
 {
    if (f < (-16 << shift))
@@ -658,7 +658,7 @@ wrap(short f, int shift)
       return f;
 }
 
-static INLINE void
+static inline void
 motion_vector_frame(struct vl_mpg12_bs *bs, int s, struct pipe_mpeg12_macroblock *mb)
 {
    int dmv = mb->macroblock_modes.bits.frame_motion_type == PIPE_MPEG12_MO_TYPE_DUAL_PRIME;
@@ -682,7 +682,7 @@ motion_vector_frame(struct vl_mpg12_bs *bs, int s, struct pipe_mpeg12_macroblock
    }
 }
 
-static INLINE void
+static inline void
 motion_vector_field(struct vl_mpg12_bs *bs, int s, struct pipe_mpeg12_macroblock *mb)
 {
    int dmv = mb->macroblock_modes.bits.field_motion_type == PIPE_MPEG12_MO_TYPE_DUAL_PRIME;
@@ -701,12 +701,12 @@ motion_vector_field(struct vl_mpg12_bs *bs, int s, struct pipe_mpeg12_macroblock
    }
 }
 
-static INLINE void
+static inline void
 reset_predictor(struct vl_mpg12_bs *bs) {
    bs->pred_dc[0] = bs->pred_dc[1] = bs->pred_dc[2] = 0;
 }
 
-static INLINE void
+static inline void
 decode_dct(struct vl_mpg12_bs *bs, struct pipe_mpeg12_macroblock *mb, int scale)
 {
    static const unsigned blk2cc[] = { 0, 0, 0, 0, 1, 2 };
@@ -805,7 +805,7 @@ entry:
       vl_vlc_eatbits(&bs->vlc, 1);
 }
 
-static INLINE void
+static inline void
 decode_slice(struct vl_mpg12_bs *bs, struct pipe_video_buffer *target)
 {
    struct pipe_mpeg12_macroblock mb;
@@ -814,7 +814,7 @@ decode_slice(struct vl_mpg12_bs *bs, struct pipe_video_buffer *target)
    signed x = -1;
 
    memset(&mb, 0, sizeof(mb));
-   mb.base.codec = PIPE_VIDEO_CODEC_MPEG12;
+   mb.base.codec = PIPE_VIDEO_FORMAT_MPEG12;
    mb.y = vl_vlc_get_uimsbf(&bs->vlc, 8) - 1;
    mb.blocks = dct_blocks;
 
@@ -929,6 +929,7 @@ decode_slice(struct vl_mpg12_bs *bs, struct pipe_video_buffer *target)
          mb.PMV[1][0][0] = mb.PMV[0][0][0];
          mb.PMV[1][0][1] = mb.PMV[0][0][1];
          assert(extra);
+         (void) extra;
       } else if (mb.macroblock_type & PIPE_MPEG12_MB_TYPE_INTRA ||
                 !(mb.macroblock_type & (PIPE_MPEG12_MB_TYPE_MOTION_FORWARD |
                                         PIPE_MPEG12_MB_TYPE_MOTION_BACKWARD))) {
@@ -965,7 +966,7 @@ decode_slice(struct vl_mpg12_bs *bs, struct pipe_video_buffer *target)
 }
 
 void
-vl_mpg12_bs_init(struct vl_mpg12_bs *bs, struct pipe_video_decoder *decoder)
+vl_mpg12_bs_init(struct vl_mpg12_bs *bs, struct pipe_video_codec *decoder)
 {
    static bool tables_initialized = false;
 
@@ -995,7 +996,7 @@ vl_mpg12_bs_decode(struct vl_mpg12_bs *bs,
    bs->intra_dct_tbl = picture->intra_vlc_format ? tbl_B15 : tbl_B14_AC;
 
    vl_vlc_init(&bs->vlc, num_buffers, buffers, sizes);
-   while (vl_vlc_bits_left(&bs->vlc) > 32) {
+   while (vl_vlc_search_byte(&bs->vlc, ~0, 0x00) && vl_vlc_bits_left(&bs->vlc) > 32) {
       uint32_t code = vl_vlc_peekbits(&bs->vlc, 32);
 
       if (code >= 0x101 && code <= 0x1AF) {

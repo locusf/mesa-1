@@ -34,6 +34,8 @@
 #include "tgsi/tgsi_dump.h"
 #include "tgsi/tgsi_parse.h"
 
+#include "freedreno_program.h"
+
 #include "fd2_program.h"
 #include "fd2_compiler.h"
 #include "fd2_texture.h"
@@ -141,15 +143,6 @@ fd2_fp_state_delete(struct pipe_context *pctx, void *hwcso)
 	delete_shader(so);
 }
 
-static void
-fd2_fp_state_bind(struct pipe_context *pctx, void *hwcso)
-{
-	struct fd_context *ctx = fd_context(pctx);
-	ctx->prog.fp = hwcso;
-	ctx->prog.dirty |= FD_SHADER_DIRTY_FP;
-	ctx->dirty |= FD_DIRTY_PROG;
-}
-
 static void *
 fd2_vp_state_create(struct pipe_context *pctx,
 		const struct pipe_shader_state *cso)
@@ -169,15 +162,6 @@ fd2_vp_state_delete(struct pipe_context *pctx, void *hwcso)
 }
 
 static void
-fd2_vp_state_bind(struct pipe_context *pctx, void *hwcso)
-{
-	struct fd_context *ctx = fd_context(pctx);
-	ctx->prog.vp = hwcso;
-	ctx->prog.dirty |= FD_SHADER_DIRTY_VP;
-	ctx->dirty |= FD_DIRTY_PROG;
-}
-
-static void
 patch_vtx_fetches(struct fd_context *ctx, struct fd2_shader_stateobj *so,
 		struct fd_vertex_stateobj *vtx)
 {
@@ -190,7 +174,7 @@ patch_vtx_fetches(struct fd_context *ctx, struct fd2_shader_stateobj *so,
 		struct ir2_instruction *instr = so->vfetch_instrs[i];
 		struct pipe_vertex_element *elem = &vtx->pipe[i];
 		struct pipe_vertex_buffer *vb =
-				&ctx->vertexbuf.vb[elem->vertex_buffer_index];
+				&ctx->vtx.vertexbuf.vb[elem->vertex_buffer_index];
 		enum pipe_format format = elem->src_format;
 		const struct util_format_description *desc =
 				util_format_description(format);
@@ -263,18 +247,15 @@ fd2_program_validate(struct fd_context *ctx)
 	 * from the vertex shader.  And therefore if frag shader has changed we
 	 * need to recompile both vert and frag shader.
 	 */
-	if (prog->dirty & FD_SHADER_DIRTY_FP)
+	if (ctx->dirty & FD_SHADER_DIRTY_FP)
 		compile(prog, prog->fp);
 
-	if (prog->dirty & (FD_SHADER_DIRTY_FP | FD_SHADER_DIRTY_VP))
+	if (ctx->dirty & (FD_SHADER_DIRTY_FP | FD_SHADER_DIRTY_VP))
 		compile(prog, prog->vp);
-
-	if (prog->dirty)
-		ctx->dirty |= FD_DIRTY_PROG;
 
 	/* if necessary, fix up vertex fetch instructions: */
 	if (ctx->dirty & (FD_DIRTY_VTXSTATE | FD_DIRTY_PROG))
-		patch_vtx_fetches(ctx, prog->vp, ctx->vtx);
+		patch_vtx_fetches(ctx, prog->vp, ctx->vtx.vtx);
 
 	/* if necessary, fix up texture fetch instructions: */
 	if (ctx->dirty & (FD_DIRTY_TEXSTATE | FD_DIRTY_PROG)) {
@@ -308,8 +289,6 @@ fd2_program_emit(struct fd_ringbuffer *ring,
 			A2XX_SQ_PROGRAM_CNTL_VS_EXPORT_COUNT(vs_export) |
 			A2XX_SQ_PROGRAM_CNTL_PS_REGS(fs_gprs) |
 			A2XX_SQ_PROGRAM_CNTL_VS_REGS(vs_gprs));
-
-	prog->dirty = 0;
 }
 
 /* Creates shader:
@@ -481,26 +460,15 @@ fd2_prog_init(struct pipe_context *pctx)
 	struct fd_context *ctx = fd_context(pctx);
 
 	pctx->create_fs_state = fd2_fp_state_create;
-	pctx->bind_fs_state = fd2_fp_state_bind;
 	pctx->delete_fs_state = fd2_fp_state_delete;
 
 	pctx->create_vs_state = fd2_vp_state_create;
-	pctx->bind_vs_state = fd2_vp_state_bind;
 	pctx->delete_vs_state = fd2_vp_state_delete;
+
+	fd_prog_init(pctx);
 
 	ctx->solid_prog.fp = create_solid_fp();
 	ctx->solid_prog.vp = create_solid_vp();
-	ctx->blit_prog.fp = create_blit_fp();
-	ctx->blit_prog.vp = create_blit_vp();
-}
-
-void
-fd2_prog_fini(struct pipe_context *pctx)
-{
-	struct fd_context *ctx = fd_context(pctx);
-
-	delete_shader(ctx->solid_prog.vp);
-	delete_shader(ctx->solid_prog.fp);
-	delete_shader(ctx->blit_prog.vp);
-	delete_shader(ctx->blit_prog.fp);
+	ctx->blit_prog[0].fp = create_blit_fp();
+	ctx->blit_prog[0].vp = create_blit_vp();
 }

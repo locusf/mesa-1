@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -59,7 +59,7 @@ intel_copy_texsubimage(struct intel_context *intel,
    if (!intelImage->mt || !irb || !irb->mt) {
       if (unlikely(INTEL_DEBUG & DEBUG_PERF))
 	 fprintf(stderr, "%s fail %p %p (0x%08x)\n",
-		 __FUNCTION__, intelImage->mt, irb, internalFormat);
+		 __func__, intelImage->mt, irb, internalFormat);
       return false;
    }
 
@@ -97,7 +97,7 @@ intelCopyTexSubImage(struct gl_context *ctx, GLuint dims,
    }
 
    /* Otherwise, fall back to meta.  This will likely be slow. */
-   perf_debug("%s - fallback to swrast\n", __FUNCTION__);
+   perf_debug("%s - fallback to swrast\n", __func__);
    _mesa_meta_CopyTexSubImage(ctx, dims, texImage,
                               xoffset, yoffset, slice,
                               rb, x, y, width, height);

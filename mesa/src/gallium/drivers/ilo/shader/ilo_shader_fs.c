@@ -32,7 +32,6 @@
 #include "toy_legalize.h"
 #include "toy_optimize.h"
 #include "toy_helpers.h"
-#include "ilo_context.h"
 #include "ilo_shader_internal.h"
 
 struct fs_compile_context {
@@ -42,11 +41,16 @@ struct fs_compile_context {
    struct toy_compiler tc;
    struct toy_tgsi tgsi;
 
-   enum brw_message_target const_cache;
+   int const_cache;
    int dispatch_mode;
 
    struct {
-      int barycentric_interps[BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT];
+      int interp_perspective_pixel;
+      int interp_perspective_centroid;
+      int interp_perspective_sample;
+      int interp_nonperspective_pixel;
+      int interp_nonperspective_centroid;
+      int interp_nonperspective_sample;
       int source_depth;
       int source_w;
       int pos_offset;
@@ -157,7 +161,7 @@ fetch_attr(struct fs_compile_context *fcc, struct toy_dst dst, int slot)
    struct toy_compiler *tc = &fcc->tc;
    struct toy_dst real_dst[4];
    bool is_const = false;
-   int grf, mode, ch;
+   int grf, interp, ch;
 
    tdst_transpose(dst, real_dst);
 
@@ -169,9 +173,9 @@ fetch_attr(struct fs_compile_context *fcc, struct toy_dst dst, int slot)
       break;
    case TGSI_INTERPOLATE_LINEAR:
       if (fcc->tgsi.inputs[slot].centroid)
-         mode = BRW_WM_NONPERSPECTIVE_CENTROID_BARYCENTRIC;
+         interp = fcc->payloads[0].interp_nonperspective_centroid;
       else
-         mode = BRW_WM_NONPERSPECTIVE_PIXEL_BARYCENTRIC;
+         interp = fcc->payloads[0].interp_nonperspective_pixel;
       break;
    case TGSI_INTERPOLATE_COLOR:
       if (fcc->variant->u.fs.flatshade) {
@@ -181,13 +185,13 @@ fetch_attr(struct fs_compile_context *fcc, struct toy_dst dst, int slot)
       /* fall through */
    case TGSI_INTERPOLATE_PERSPECTIVE:
       if (fcc->tgsi.inputs[slot].centroid)
-         mode = BRW_WM_PERSPECTIVE_CENTROID_BARYCENTRIC;
+         interp = fcc->payloads[0].interp_perspective_centroid;
       else
-         mode = BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC;
+         interp = fcc->payloads[0].interp_perspective_pixel;
       break;
    default:
       assert(!"unexpected FS interpolation");
-      mode = BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC;
+      interp = fcc->payloads[0].interp_perspective_pixel;
       break;
    }
 
@@ -210,10 +214,10 @@ fetch_attr(struct fs_compile_context *fcc, struct toy_dst dst, int slot)
       attr[2] = tsrc(TOY_FILE_GRF, grf + 1, 0);
       attr[3] = tsrc(TOY_FILE_GRF, grf + 1, 4 * 4);
 
-      uv = tsrc(TOY_FILE_GRF, fcc->payloads[0].barycentric_interps[mode], 0);
+      uv = tsrc(TOY_FILE_GRF, interp, 0);
 
       for (ch = 0; ch < 4; ch++) {
-         tc_add2(tc, BRW_OPCODE_PLN, real_dst[ch],
+         tc_add2(tc, GEN6_OPCODE_PLN, real_dst[ch],
                tsrc_rect(attr[ch], TOY_RECT_010), uv);
       }
    }
@@ -262,21 +266,21 @@ fs_lower_opcode_tgsi_indirect_const(struct fs_compile_context *fcc,
    struct toy_inst *inst;
    struct toy_src desc, real_src[4];
    struct toy_dst tmp, real_dst[4];
-   int i;
+   unsigned i;
 
    tsrc_transpose(idx, real_src);
 
    /* set offset */
    inst = tc_MOV(tc, offset, real_src[0]);
-   inst->mask_ctrl = BRW_MASK_DISABLE;
+   inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
 
    switch (inst->exec_size) {
-   case BRW_EXECUTE_8:
-      simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD8;
+   case GEN6_EXECSIZE_8:
+      simd_mode = GEN6_MSG_SAMPLER_SIMD8;
       param_size = 1;
       break;
-   case BRW_EXECUTE_16:
-      simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD16;
+   case GEN6_EXECSIZE_16:
+      simd_mode = GEN6_MSG_SAMPLER_SIMD16;
       param_size = 2;
       break;
    default:
@@ -288,13 +292,13 @@ fs_lower_opcode_tgsi_indirect_const(struct fs_compile_context *fcc,
 
    desc = tsrc_imm_mdesc_sampler(tc, param_size, param_size * 4, false,
          simd_mode,
-         GEN5_SAMPLER_MESSAGE_SAMPLE_LD,
+         GEN6_MSG_SAMPLER_LD,
          0,
-         ILO_WM_CONST_SURFACE(dim));
+         fcc->shader->bt.const_base + dim);
 
    tmp = tdst(TOY_FILE_VRF, tc_alloc_vrf(tc, param_size * 4), 0);
-   inst = tc_SEND(tc, tmp, tsrc_from(offset), desc, BRW_SFID_SAMPLER);
-   inst->mask_ctrl = BRW_MASK_DISABLE;
+   inst = tc_SEND(tc, tmp, tsrc_from(offset), desc, GEN6_SFID_SAMPLER);
+   inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
 
    tdst_transpose(dst, real_dst);
    for (i = 0; i < 4; i++) {
@@ -304,6 +308,32 @@ fs_lower_opcode_tgsi_indirect_const(struct fs_compile_context *fcc,
       /* cast to type D to make sure these are raw moves */
       tc_MOV(tc, tdst_d(real_dst[i]), tsrc_d(src));
    }
+}
+
+static bool
+fs_lower_opcode_tgsi_const_pcb(struct fs_compile_context *fcc,
+                               struct toy_dst dst, int dim,
+                               struct toy_src idx)
+{
+   const int grf = fcc->first_const_grf + idx.val32 / 2;
+   const int grf_subreg = (idx.val32 & 1) * 16;
+   struct toy_src src;
+   struct toy_dst real_dst[4];
+   unsigned i;
+
+   if (!fcc->variant->use_pcb || dim != 0 || idx.file != TOY_FILE_IMM ||
+       grf >= fcc->first_attr_grf)
+      return false;
+
+   src = tsrc_rect(tsrc(TOY_FILE_GRF, grf, grf_subreg), TOY_RECT_010);
+
+   tdst_transpose(dst, real_dst);
+   for (i = 0; i < 4; i++) {
+      /* cast to type D to make sure these are raw moves */
+      tc_MOV(&fcc->tc, tdst_d(real_dst[i]), tsrc_d(tsrc_offset(src, 0, i)));
+   }
+
+   return true;
 }
 
 static void
@@ -320,24 +350,27 @@ fs_lower_opcode_tgsi_const_gen6(struct fs_compile_context *fcc,
    struct toy_inst *inst;
    struct toy_src desc;
    struct toy_dst tmp, real_dst[4];
-   int i;
+   unsigned i;
+
+   if (fs_lower_opcode_tgsi_const_pcb(fcc, dst, dim, idx))
+      return;
 
    /* set message header */
    inst = tc_MOV(tc, header, r0);
-   inst->mask_ctrl = BRW_MASK_DISABLE;
+   inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
 
    /* set global offset */
    inst = tc_MOV(tc, global_offset, idx);
-   inst->mask_ctrl = BRW_MASK_DISABLE;
-   inst->exec_size = BRW_EXECUTE_1;
+   inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
+   inst->exec_size = GEN6_EXECSIZE_1;
    inst->src[0].rect = TOY_RECT_010;
 
-   msg_type = BRW_DATAPORT_READ_MESSAGE_OWORD_BLOCK_READ;
-   msg_ctrl = BRW_DATAPORT_OWORD_BLOCK_1_OWORDLOW << 8;
+   msg_type = GEN6_MSG_DP_OWORD_BLOCK_READ;
+   msg_ctrl = GEN6_MSG_DP_OWORD_BLOCK_SIZE_1_LO;
    msg_len = 1;
 
    desc = tsrc_imm_mdesc_data_port(tc, false, msg_len, 1, true, false,
-         msg_type, msg_ctrl, ILO_WM_CONST_SURFACE(dim));
+         msg_type, msg_ctrl, fcc->shader->bt.const_base + dim);
 
    tmp = tc_alloc_tmp(tc);
 
@@ -363,7 +396,10 @@ fs_lower_opcode_tgsi_const_gen7(struct fs_compile_context *fcc,
    struct toy_src desc;
    struct toy_inst *inst;
    struct toy_dst tmp, real_dst[4];
-   int i;
+   unsigned i;
+
+   if (fs_lower_opcode_tgsi_const_pcb(fcc, dst, dim, idx))
+      return;
 
    /*
     * In 4c1fdae0a01b3f92ec03b61aac1d3df500d51fc6, pull constant load was
@@ -374,19 +410,19 @@ fs_lower_opcode_tgsi_const_gen7(struct fs_compile_context *fcc,
 
    /* set offset */
    inst = tc_MOV(tc, offset, tsrc_rect(idx, TOY_RECT_010));
-   inst->exec_size = BRW_EXECUTE_8;
-   inst->mask_ctrl = BRW_MASK_DISABLE;
+   inst->exec_size = GEN6_EXECSIZE_8;
+   inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
 
    desc = tsrc_imm_mdesc_sampler(tc, 1, 1, false,
-         BRW_SAMPLER_SIMD_MODE_SIMD4X2,
-         GEN5_SAMPLER_MESSAGE_SAMPLE_LD,
+         GEN6_MSG_SAMPLER_SIMD4X2,
+         GEN6_MSG_SAMPLER_LD,
          0,
-         ILO_WM_CONST_SURFACE(dim));
+         fcc->shader->bt.const_base + dim);
 
    tmp = tc_alloc_tmp(tc);
-   inst = tc_SEND(tc, tmp, tsrc_from(offset), desc, BRW_SFID_SAMPLER);
-   inst->exec_size = BRW_EXECUTE_8;
-   inst->mask_ctrl = BRW_MASK_DISABLE;
+   inst = tc_SEND(tc, tmp, tsrc_from(offset), desc, GEN6_SFID_SAMPLER);
+   inst->exec_size = GEN6_EXECSIZE_8;
+   inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
 
    tdst_transpose(dst, real_dst);
    for (i = 0; i < 4; i++) {
@@ -457,7 +493,7 @@ fs_lower_opcode_tgsi_direct(struct fs_compile_context *fcc,
       fs_lower_opcode_tgsi_in(fcc, inst->dst, dim, idx);
       break;
    case TOY_OPCODE_TGSI_CONST:
-      if (tc->dev->gen >= ILO_GEN(7))
+      if (ilo_dev_gen(tc->dev) >= ILO_GEN(7))
          fs_lower_opcode_tgsi_const_gen7(fcc, inst->dst, dim, inst->src[1]);
       else
          fs_lower_opcode_tgsi_const_gen6(fcc, inst->dst, dim, inst->src[1]);
@@ -542,25 +578,25 @@ fs_add_sampler_params_gen6(struct toy_compiler *tc, int msg_type,
 
 #define SAMPLER_PARAM(p) (tdst(TOY_FILE_MRF, base_mrf + (p) * param_size, 0))
    switch (msg_type) {
-   case GEN5_SAMPLER_MESSAGE_SAMPLE:
+   case GEN6_MSG_SAMPLER_SAMPLE:
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(i), coords[i]);
       num_params = num_coords;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS:
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_LOD:
+   case GEN6_MSG_SAMPLER_SAMPLE_B:
+   case GEN6_MSG_SAMPLER_SAMPLE_L:
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(i), coords[i]);
       tc_MOV(tc, SAMPLER_PARAM(4), bias_or_lod);
       num_params = 5;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_COMPARE:
+   case GEN6_MSG_SAMPLER_SAMPLE_C:
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(i), coords[i]);
       tc_MOV(tc, SAMPLER_PARAM(4), ref_or_si);
       num_params = 5;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_DERIVS:
+   case GEN6_MSG_SAMPLER_SAMPLE_D:
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(i), coords[i]);
       for (i = 0; i < num_derivs; i++) {
@@ -569,15 +605,15 @@ fs_add_sampler_params_gen6(struct toy_compiler *tc, int msg_type,
       }
       num_params = 4 + num_derivs * 2;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS_COMPARE:
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_LOD_COMPARE:
+   case GEN6_MSG_SAMPLER_SAMPLE_B_C:
+   case GEN6_MSG_SAMPLER_SAMPLE_L_C:
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(i), coords[i]);
       tc_MOV(tc, SAMPLER_PARAM(4), ref_or_si);
       tc_MOV(tc, SAMPLER_PARAM(5), bias_or_lod);
       num_params = 6;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_LD:
+   case GEN6_MSG_SAMPLER_LD:
       assert(num_coords <= 3);
 
       for (i = 0; i < num_coords; i++)
@@ -586,7 +622,7 @@ fs_add_sampler_params_gen6(struct toy_compiler *tc, int msg_type,
       tc_MOV(tc, tdst_d(SAMPLER_PARAM(4)), ref_or_si);
       num_params = 5;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO:
+   case GEN6_MSG_SAMPLER_RESINFO:
       tc_MOV(tc, tdst_d(SAMPLER_PARAM(0)), bias_or_lod);
       num_params = 1;
       break;
@@ -615,25 +651,25 @@ fs_add_sampler_params_gen7(struct toy_compiler *tc, int msg_type,
 
 #define SAMPLER_PARAM(p) (tdst(TOY_FILE_MRF, base_mrf + (p) * param_size, 0))
    switch (msg_type) {
-   case GEN5_SAMPLER_MESSAGE_SAMPLE:
+   case GEN6_MSG_SAMPLER_SAMPLE:
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(i), coords[i]);
       num_params = num_coords;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS:
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_LOD:
+   case GEN6_MSG_SAMPLER_SAMPLE_B:
+   case GEN6_MSG_SAMPLER_SAMPLE_L:
       tc_MOV(tc, SAMPLER_PARAM(0), bias_or_lod);
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(1 + i), coords[i]);
       num_params = 1 + num_coords;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_COMPARE:
+   case GEN6_MSG_SAMPLER_SAMPLE_C:
       tc_MOV(tc, SAMPLER_PARAM(0), ref_or_si);
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(1 + i), coords[i]);
       num_params = 1 + num_coords;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_DERIVS:
+   case GEN6_MSG_SAMPLER_SAMPLE_D:
       for (i = 0; i < num_coords; i++) {
          tc_MOV(tc, SAMPLER_PARAM(i * 3), coords[i]);
          if (i < num_derivs) {
@@ -643,15 +679,15 @@ fs_add_sampler_params_gen7(struct toy_compiler *tc, int msg_type,
       }
       num_params = num_coords * 3 - ((num_coords > num_derivs) ? 2 : 0);
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS_COMPARE:
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_LOD_COMPARE:
+   case GEN6_MSG_SAMPLER_SAMPLE_B_C:
+   case GEN6_MSG_SAMPLER_SAMPLE_L_C:
       tc_MOV(tc, SAMPLER_PARAM(0), ref_or_si);
       tc_MOV(tc, SAMPLER_PARAM(1), bias_or_lod);
       for (i = 0; i < num_coords; i++)
          tc_MOV(tc, SAMPLER_PARAM(2 + i), coords[i]);
       num_params = 2 + num_coords;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_LD:
+   case GEN6_MSG_SAMPLER_LD:
       assert(num_coords >= 1 && num_coords <= 3);
 
       tc_MOV(tc, tdst_d(SAMPLER_PARAM(0)), coords[0]);
@@ -660,7 +696,7 @@ fs_add_sampler_params_gen7(struct toy_compiler *tc, int msg_type,
          tc_MOV(tc, tdst_d(SAMPLER_PARAM(1 + i)), coords[i]);
       num_params = 1 + num_coords;
       break;
-   case GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO:
+   case GEN6_MSG_SAMPLER_RESINFO:
       tc_MOV(tc, tdst_d(SAMPLER_PARAM(0)), bias_or_lod);
       num_params = 1;
       break;
@@ -678,22 +714,24 @@ fs_add_sampler_params_gen7(struct toy_compiler *tc, int msg_type,
  * Set up message registers and return the message descriptor for sampling.
  */
 static struct toy_src
-fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
+fs_prepare_tgsi_sampling(struct fs_compile_context *fcc,
+                         const struct toy_inst *inst,
                          int base_mrf, const uint32_t *saturate_coords,
                          unsigned *ret_sampler_index)
 {
+   struct toy_compiler *tc = &fcc->tc;
    unsigned simd_mode, msg_type, msg_len, sampler_index, binding_table_index;
    struct toy_src coords[4], ddx[4], ddy[4], bias_or_lod, ref_or_si;
    int num_coords, ref_pos, num_derivs;
    int sampler_src, param_size, i;
 
    switch (inst->exec_size) {
-   case BRW_EXECUTE_8:
-      simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD8;
+   case GEN6_EXECSIZE_8:
+      simd_mode = GEN6_MSG_SAMPLER_SIMD8;
       param_size = 1;
       break;
-   case BRW_EXECUTE_16:
-      simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD16;
+   case GEN6_EXECSIZE_16:
+      simd_mode = GEN6_MSG_SAMPLER_SIMD16;
       param_size = 2;
       break;
    default:
@@ -702,7 +740,9 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       break;
    }
 
-   num_coords = tgsi_util_get_texture_coord_dim(inst->tex.target, &ref_pos);
+   num_coords = tgsi_util_get_texture_coord_dim(inst->tex.target);
+   ref_pos = tgsi_util_get_shadow_ref_src_index(inst->tex.target);
+
    tsrc_transpose(inst->src[0], coords);
    bias_or_lod = tsrc_null();
    ref_or_si = tsrc_null();
@@ -750,18 +790,27 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       if (ref_pos >= 0) {
          assert(ref_pos < 4);
 
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_COMPARE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_C;
          ref_or_si = coords[ref_pos];
       }
       else {
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE;
       }
       break;
    case TOY_OPCODE_TGSI_TXD:
-      if (ref_pos >= 0)
-         tc_fail(tc, "TXD with shadow sampler not supported");
+      if (ref_pos >= 0) {
+         assert(ref_pos < 4);
 
-      msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_DERIVS;
+         msg_type = GEN7_MSG_SAMPLER_SAMPLE_D_C;
+         ref_or_si = coords[ref_pos];
+
+         if (ilo_dev_gen(tc->dev) < ILO_GEN(7.5))
+            tc_fail(tc, "TXD with shadow sampler not supported");
+      }
+      else {
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_D;
+      }
+
       tsrc_transpose(inst->src[1], ddx);
       tsrc_transpose(inst->src[2], ddy);
       num_derivs = num_coords;
@@ -771,11 +820,11 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       if (ref_pos >= 0) {
          assert(ref_pos < 3);
 
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_COMPARE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_C;
          ref_or_si = coords[ref_pos];
       }
       else {
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE;
       }
 
       /* project the coordinates */
@@ -800,11 +849,11 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       if (ref_pos >= 0) {
          assert(ref_pos < 3);
 
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS_COMPARE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_B_C;
          ref_or_si = coords[ref_pos];
       }
       else {
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_B;
       }
 
       bias_or_lod = coords[3];
@@ -813,17 +862,17 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       if (ref_pos >= 0) {
          assert(ref_pos < 3);
 
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LOD_COMPARE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_L_C;
          ref_or_si = coords[ref_pos];
       }
       else {
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LOD;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_L;
       }
 
       bias_or_lod = coords[3];
       break;
    case TOY_OPCODE_TGSI_TXF:
-      msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LD;
+      msg_type = GEN6_MSG_SAMPLER_LD;
 
       switch (inst->tex.target) {
       case TGSI_TEXTURE_2D_MSAA:
@@ -855,12 +904,12 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       sampler_src = 1;
       break;
    case TOY_OPCODE_TGSI_TXQ:
-      msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO;
+      msg_type = GEN6_MSG_SAMPLER_RESINFO;
       num_coords = 0;
       bias_or_lod = coords[0];
       break;
    case TOY_OPCODE_TGSI_TXQ_LZ:
-      msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO;
+      msg_type = GEN6_MSG_SAMPLER_RESINFO;
       num_coords = 0;
       sampler_src = 0;
       break;
@@ -868,7 +917,7 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       if (ref_pos >= 0) {
          assert(ref_pos < 5);
 
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_COMPARE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_C;
 
          if (ref_pos >= 4) {
             struct toy_src src1[4];
@@ -880,7 +929,7 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
          }
       }
       else {
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE;
       }
 
       sampler_src = 2;
@@ -889,11 +938,11 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       if (ref_pos >= 0) {
          assert(ref_pos < 4);
 
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS_COMPARE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_B_C;
          ref_or_si = coords[ref_pos];
       }
       else {
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_B;
       }
 
       {
@@ -908,11 +957,11 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       if (ref_pos >= 0) {
          assert(ref_pos < 4);
 
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LOD_COMPARE;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_L_C;
          ref_or_si = coords[ref_pos];
       }
       else {
-         msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LOD;
+         msg_type = GEN6_MSG_SAMPLER_SAMPLE_L;
       }
 
       {
@@ -931,7 +980,7 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
 
    assert(inst->src[sampler_src].file == TOY_FILE_IMM);
    sampler_index = inst->src[sampler_src].val32;
-   binding_table_index = ILO_WM_TEXTURE_SURFACE(sampler_index);
+   binding_table_index = fcc->shader->bt.tex_base + sampler_index;
 
    /*
     * From the Sandy Bridge PRM, volume 4 part 1, page 18:
@@ -952,9 +1001,9 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
          tc_alloc_tmp4(tc, tmp);
 
          tc_SEL(tc, tmp[3], tsrc_absolute(coords[0]),
-               tsrc_absolute(coords[1]), BRW_CONDITIONAL_GE);
+               tsrc_absolute(coords[1]), GEN6_COND_GE);
          tc_SEL(tc, tmp[3], tsrc_from(tmp[3]),
-               tsrc_absolute(coords[2]), BRW_CONDITIONAL_GE);
+               tsrc_absolute(coords[2]), GEN6_COND_GE);
          tc_INV(tc, tmp[3], tsrc_from(tmp[3]));
 
          for (i = 0; i < 3; i++) {
@@ -998,8 +1047,8 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
          min = tsrc_imm_f(0.0f);
          max = tsrc_imm_f(2048.0f);
 
-         tc_SEL(tc, tmp, coords[i], min, BRW_CONDITIONAL_G);
-         tc_SEL(tc, tmp, tsrc_from(tmp), max, BRW_CONDITIONAL_L);
+         tc_SEL(tc, tmp, coords[i], min, GEN6_COND_G);
+         tc_SEL(tc, tmp, tsrc_from(tmp), max, GEN6_COND_L);
 
          coords[i] = tsrc_from(tmp);
       }
@@ -1018,7 +1067,7 @@ fs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
    }
 
    /* set up sampler parameters */
-   if (tc->dev->gen >= ILO_GEN(7)) {
+   if (ilo_dev_gen(tc->dev) >= ILO_GEN(7)) {
       msg_len = fs_add_sampler_params_gen7(tc, msg_type, base_mrf, param_size,
             coords, num_coords, bias_or_lod, ref_or_si, ddx, ddy, num_derivs);
    }
@@ -1055,7 +1104,7 @@ fs_lower_opcode_tgsi_sampling(struct fs_compile_context *fcc,
    int swizzles[4], i;
    bool need_filter;
 
-   desc = fs_prepare_tgsi_sampling(tc, inst,
+   desc = fs_prepare_tgsi_sampling(fcc, inst,
          fcc->first_free_mrf,
          fcc->variant->saturate_tex_coords,
          &sampler_index);
@@ -1071,10 +1120,10 @@ fs_lower_opcode_tgsi_sampling(struct fs_compile_context *fcc,
       break;
    }
 
-   toy_compiler_lower_to_send(tc, inst, false, BRW_SFID_SAMPLER);
+   toy_compiler_lower_to_send(tc, inst, false, GEN6_SFID_SAMPLER);
    inst->src[0] = tsrc(TOY_FILE_MRF, fcc->first_free_mrf, 0);
    inst->src[1] = desc;
-   for (i = 2; i < Elements(inst->src); i++)
+   for (i = 2; i < ARRAY_SIZE(inst->src); i++)
       inst->src[i] = tsrc_null();
 
    /* write to temps first */
@@ -1094,19 +1143,19 @@ fs_lower_opcode_tgsi_sampling(struct fs_compile_context *fcc,
       swizzles[3] = fcc->variant->sampler_view_swizzles[sampler_index].a;
    }
    else {
-      swizzles[0] = PIPE_SWIZZLE_RED;
-      swizzles[1] = PIPE_SWIZZLE_GREEN;
-      swizzles[2] = PIPE_SWIZZLE_BLUE;
-      swizzles[3] = PIPE_SWIZZLE_ALPHA;
+      swizzles[0] = PIPE_SWIZZLE_X;
+      swizzles[1] = PIPE_SWIZZLE_Y;
+      swizzles[2] = PIPE_SWIZZLE_Z;
+      swizzles[3] = PIPE_SWIZZLE_W;
    }
 
    /* swizzle the results */
    for (i = 0; i < 4; i++) {
       switch (swizzles[i]) {
-      case PIPE_SWIZZLE_ZERO:
+      case PIPE_SWIZZLE_0:
          tc_MOV(tc, dst[i], tsrc_imm_f(0.0f));
          break;
-      case PIPE_SWIZZLE_ONE:
+      case PIPE_SWIZZLE_1:
          tc_MOV(tc, dst[i], tsrc_imm_f(1.0f));
          break;
       default:
@@ -1121,7 +1170,7 @@ fs_lower_opcode_derivative(struct toy_compiler *tc, struct toy_inst *inst)
 {
    struct toy_dst dst[4];
    struct toy_src src[4];
-   int i;
+   unsigned i;
 
    tdst_transpose(inst->dst, dst);
    tsrc_transpose(inst->src[0], src);
@@ -1142,7 +1191,7 @@ fs_lower_opcode_derivative(struct toy_compiler *tc, struct toy_inst *inst)
     *
     *   dst = src.zzww - src.xxyy
     *
-    * But since we are in BRW_ALIGN_1, swizzling does not work and we have to
+    * But since we are in GEN6_ALIGN_1, swizzling does not work and we have to
     * play with the region parameters.
     */
    if (inst->opcode == TOY_OPCODE_DDX) {
@@ -1175,7 +1224,7 @@ fs_lower_opcode_fb_write(struct toy_compiler *tc, struct toy_inst *inst)
 {
    /* fs_write_fb() has set up the message registers */
    toy_compiler_lower_to_send(tc, inst, true,
-         GEN6_SFID_DATAPORT_RENDER_CACHE);
+         GEN6_SFID_DP_RC);
 }
 
 static void
@@ -1189,39 +1238,39 @@ fs_lower_opcode_kil(struct toy_compiler *tc, struct toy_inst *inst)
    pixel_mask_dst = tdst_uw(tdst(TOY_FILE_GRF, 1, 7 * 4));
    pixel_mask = tsrc_rect(tsrc_from(pixel_mask_dst), TOY_RECT_010);
 
-   f0 = tsrc_rect(tsrc_uw(tsrc(TOY_FILE_ARF, BRW_ARF_FLAG, 0)), TOY_RECT_010);
+   f0 = tsrc_rect(tsrc_uw(tsrc(TOY_FILE_ARF, GEN6_ARF_F0, 0)), TOY_RECT_010);
 
    /* KILL or KILL_IF */
    if (tsrc_is_null(inst->src[0])) {
       struct toy_src dummy = tsrc_uw(tsrc(TOY_FILE_GRF, 0, 0));
-      struct toy_dst f0_dst = tdst_uw(tdst(TOY_FILE_ARF, BRW_ARF_FLAG, 0));
+      struct toy_dst f0_dst = tdst_uw(tdst(TOY_FILE_ARF, GEN6_ARF_F0, 0));
 
       /* create a mask that masks out all pixels */
       tmp = tc_MOV(tc, f0_dst, tsrc_rect(tsrc_imm_uw(0xffff), TOY_RECT_010));
-      tmp->exec_size = BRW_EXECUTE_1;
-      tmp->mask_ctrl = BRW_MASK_DISABLE;
+      tmp->exec_size = GEN6_EXECSIZE_1;
+      tmp->mask_ctrl = GEN6_MASKCTRL_NOMASK;
 
-      tc_CMP(tc, tdst_null(), dummy, dummy, BRW_CONDITIONAL_NEQ);
+      tc_CMP(tc, tdst_null(), dummy, dummy, GEN6_COND_NZ);
 
       /* swapping the two src operands breaks glBitmap()!? */
       tmp = tc_AND(tc, pixel_mask_dst, f0, pixel_mask);
-      tmp->exec_size = BRW_EXECUTE_1;
-      tmp->mask_ctrl = BRW_MASK_DISABLE;
+      tmp->exec_size = GEN6_EXECSIZE_1;
+      tmp->mask_ctrl = GEN6_MASKCTRL_NOMASK;
    }
    else {
       struct toy_src src[4];
-      int i;
+      unsigned i;
 
       tsrc_transpose(inst->src[0], src);
       /* mask out killed pixels */
       for (i = 0; i < 4; i++) {
          tc_CMP(tc, tdst_null(), src[i], tsrc_imm_f(0.0f),
-               BRW_CONDITIONAL_GE);
+               GEN6_COND_GE);
 
          /* swapping the two src operands breaks glBitmap()!? */
          tmp = tc_AND(tc, pixel_mask_dst, f0, pixel_mask);
-         tmp->exec_size = BRW_EXECUTE_1;
-         tmp->mask_ctrl = BRW_MASK_DISABLE;
+         tmp->exec_size = GEN6_EXECSIZE_1;
+         tmp->mask_ctrl = GEN6_MASKCTRL_NOMASK;
       }
    }
 
@@ -1379,7 +1428,7 @@ fs_compile(struct fs_compile_context *fcc)
 
    if (ilo_debug & ILO_DEBUG_FS) {
       ilo_printf("disassembly:\n");
-      toy_compiler_disassemble(tc, sh->kernel, sh->kernel_size);
+      toy_compiler_disassemble(tc->dev, sh->kernel, sh->kernel_size, false);
       ilo_printf("\n");
    }
 
@@ -1401,12 +1450,12 @@ fs_write_fb(struct fs_compile_context *fcc)
    int color_slots[ILO_MAX_DRAW_BUFFERS], num_cbufs;
    int pos_slot = -1, cbuf, i;
 
-   for (i = 0; i < Elements(color_slots); i++)
+   for (i = 0; i < ARRAY_SIZE(color_slots); i++)
       color_slots[i] = -1;
 
    for (i = 0; i < fcc->tgsi.num_outputs; i++) {
       if (fcc->tgsi.outputs[i].semantic_name == TGSI_SEMANTIC_COLOR) {
-         assert(fcc->tgsi.outputs[i].semantic_index < Elements(color_slots));
+         assert(fcc->tgsi.outputs[i].semantic_index < ARRAY_SIZE(color_slots));
          color_slots[fcc->tgsi.outputs[i].semantic_index] = i;
       }
       else if (fcc->tgsi.outputs[i].semantic_name == TGSI_SEMANTIC_POSITION) {
@@ -1425,13 +1474,13 @@ fs_write_fb(struct fs_compile_context *fcc)
       struct toy_inst *inst;
 
       inst = tc_MOV(tc, header, r0);
-      inst->mask_ctrl = BRW_MASK_DISABLE;
+      inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
       base_mrf += fcc->num_grf_per_vrf;
 
       /* this is a two-register header */
-      if (fcc->dispatch_mode == GEN6_WM_8_DISPATCH_ENABLE) {
+      if (fcc->dispatch_mode == GEN6_PS_DISPATCH_8) {
          inst = tc_MOV(tc, tdst_offset(header, 1, 0), tsrc_offset(r0, 1, 0));
-         inst->mask_ctrl = BRW_MASK_DISABLE;
+         inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
          base_mrf += fcc->num_grf_per_vrf;
       }
 
@@ -1485,8 +1534,8 @@ fs_write_fb(struct fs_compile_context *fcc)
          struct toy_inst *inst;
 
          inst = tc_MOV(tc, tdst_offset(header, 0, 2), tsrc_imm_ud(cbuf));
-         inst->mask_ctrl = BRW_MASK_DISABLE;
-         inst->exec_size = BRW_EXECUTE_1;
+         inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
+         inst->exec_size = GEN6_EXECSIZE_1;
          inst->src[0].rect = TOY_RECT_010;
       }
 
@@ -1512,9 +1561,9 @@ fs_write_fb(struct fs_compile_context *fcc)
          mrf += fcc->num_grf_per_vrf;
       }
 
-      msg_type = (fcc->dispatch_mode == GEN6_WM_16_DISPATCH_ENABLE) ?
-         BRW_DATAPORT_RENDER_TARGET_WRITE_SIMD16_SINGLE_SOURCE :
-         BRW_DATAPORT_RENDER_TARGET_WRITE_SIMD8_SINGLE_SOURCE_SUBSPAN01;
+      msg_type = (fcc->dispatch_mode == GEN6_PS_DISPATCH_16) ?
+         GEN6_MSG_DP_RT_MODE_SIMD16 >> 8 :
+         GEN6_MSG_DP_RT_MODE_SIMD8_LO >> 8;
 
       ctrl = (cbuf == num_cbufs - 1) << 12 |
              msg_type << 8;
@@ -1522,8 +1571,8 @@ fs_write_fb(struct fs_compile_context *fcc)
       desc = tsrc_imm_mdesc_data_port(tc, cbuf == num_cbufs - 1,
             mrf - fcc->first_free_mrf, 0,
             header_present, false,
-            GEN6_DATAPORT_WRITE_MESSAGE_RENDER_TARGET_WRITE,
-            ctrl, ILO_WM_DRAW_SURFACE(cbuf));
+            GEN6_MSG_DP_RT_WRITE,
+            ctrl, fcc->shader->bt.rt_base + cbuf);
 
       tc_add2(tc, TOY_OPCODE_FB_WRITE, tdst_null(),
             tsrc(TOY_FILE_MRF, fcc->first_free_mrf, 0), desc);
@@ -1536,7 +1585,7 @@ fs_write_fb(struct fs_compile_context *fcc)
 static void
 fs_setup_shader_out(struct ilo_shader *sh, const struct toy_tgsi *tgsi)
 {
-   int i;
+   unsigned i;
 
    sh->out.count = tgsi->num_outputs;
    for (i = 0; i < tgsi->num_outputs; i++) {
@@ -1556,7 +1605,7 @@ static void
 fs_setup_shader_in(struct ilo_shader *sh, const struct toy_tgsi *tgsi,
                    bool flatshade)
 {
-   int i;
+   unsigned i;
 
    sh->in.count = tgsi->num_inputs;
    for (i = 0; i < tgsi->num_inputs; i++) {
@@ -1582,11 +1631,11 @@ fs_setup_shader_in(struct ilo_shader *sh, const struct toy_tgsi *tgsi,
 
          if (tgsi->inputs[i].centroid) {
             sh->in.barycentric_interpolation_mode |=
-               1 << BRW_WM_NONPERSPECTIVE_CENTROID_BARYCENTRIC;
+               GEN6_INTERP_NONPERSPECTIVE_CENTROID;
          }
          else {
             sh->in.barycentric_interpolation_mode |=
-               1 << BRW_WM_NONPERSPECTIVE_PIXEL_BARYCENTRIC;
+               GEN6_INTERP_NONPERSPECTIVE_PIXEL;
          }
          break;
       case TGSI_INTERPOLATE_COLOR:
@@ -1598,11 +1647,11 @@ fs_setup_shader_in(struct ilo_shader *sh, const struct toy_tgsi *tgsi,
       case TGSI_INTERPOLATE_PERSPECTIVE:
          if (tgsi->inputs[i].centroid) {
             sh->in.barycentric_interpolation_mode |=
-               1 << BRW_WM_PERSPECTIVE_CENTROID_BARYCENTRIC;
+               GEN6_INTERP_PERSPECTIVE_CENTROID;
          }
          else {
             sh->in.barycentric_interpolation_mode |=
-               1 << BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC;
+               GEN6_INTERP_PERSPECTIVE_PIXEL;
          }
          break;
       default:
@@ -1623,30 +1672,54 @@ fs_setup_payloads(struct fs_compile_context *fcc)
    grf++;
 
    /* r1-r2: coordinates and etc. */
-   grf += (fcc->dispatch_mode == GEN6_WM_32_DISPATCH_ENABLE) ? 2 : 1;
+   grf += (fcc->dispatch_mode == GEN6_PS_DISPATCH_32) ? 2 : 1;
 
-   for (i = 0; i < Elements(fcc->payloads); i++) {
-      int interp;
+   for (i = 0; i < ARRAY_SIZE(fcc->payloads); i++) {
+      const int reg_scale =
+         (fcc->dispatch_mode == GEN6_PS_DISPATCH_8) ? 1 : 2;
 
       /* r3-r26 or r32-r55: barycentric interpolation parameters */
-      for (interp = 0; interp < BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT; interp++) {
-         if (!(sh->in.barycentric_interpolation_mode & (1 << interp)))
-            continue;
-
-         fcc->payloads[i].barycentric_interps[interp] = grf;
-         grf += (fcc->dispatch_mode == GEN6_WM_8_DISPATCH_ENABLE) ? 2 : 4;
+      if (sh->in.barycentric_interpolation_mode &
+            (GEN6_INTERP_PERSPECTIVE_PIXEL)) {
+         fcc->payloads[i].interp_perspective_pixel = grf;
+         grf += 2 * reg_scale;
+      }
+      if (sh->in.barycentric_interpolation_mode &
+            (GEN6_INTERP_PERSPECTIVE_CENTROID)) {
+         fcc->payloads[i].interp_perspective_centroid = grf;
+         grf += 2 * reg_scale;
+      }
+      if (sh->in.barycentric_interpolation_mode &
+            (GEN6_INTERP_PERSPECTIVE_SAMPLE)) {
+         fcc->payloads[i].interp_perspective_sample = grf;
+         grf += 2 * reg_scale;
+      }
+      if (sh->in.barycentric_interpolation_mode &
+            (GEN6_INTERP_NONPERSPECTIVE_PIXEL)) {
+         fcc->payloads[i].interp_nonperspective_pixel = grf;
+         grf += 2 * reg_scale;
+      }
+      if (sh->in.barycentric_interpolation_mode &
+            (GEN6_INTERP_NONPERSPECTIVE_CENTROID)) {
+         fcc->payloads[i].interp_nonperspective_centroid = grf;
+         grf += 2 * reg_scale;
+      }
+      if (sh->in.barycentric_interpolation_mode &
+            (GEN6_INTERP_NONPERSPECTIVE_SAMPLE)) {
+         fcc->payloads[i].interp_nonperspective_sample = grf;
+         grf += 2 * reg_scale;
       }
 
       /* r27-r28 or r56-r57: interpoloated depth */
       if (sh->in.has_pos) {
          fcc->payloads[i].source_depth = grf;
-         grf += (fcc->dispatch_mode == GEN6_WM_8_DISPATCH_ENABLE) ? 1 : 2;
+         grf += 1 * reg_scale;
       }
 
       /* r29-r30 or r58-r59: interpoloated w */
       if (sh->in.has_pos) {
          fcc->payloads[i].source_w = grf;
-         grf += (fcc->dispatch_mode == GEN6_WM_8_DISPATCH_ENABLE) ? 1 : 2;
+         grf += 1 * reg_scale;
       }
 
       /* r31 or r60: position offset */
@@ -1655,7 +1728,7 @@ fs_setup_payloads(struct fs_compile_context *fcc)
          grf++;
       }
 
-      if (fcc->dispatch_mode != GEN6_WM_32_DISPATCH_ENABLE)
+      if (fcc->dispatch_mode != GEN6_PS_DISPATCH_32)
          break;
    }
 
@@ -1714,16 +1787,16 @@ fs_setup(struct fs_compile_context *fcc,
 
    toy_compiler_init(&fcc->tc, state->info.dev);
 
-   fcc->dispatch_mode = GEN6_WM_8_DISPATCH_ENABLE;
+   fcc->dispatch_mode = GEN6_PS_DISPATCH_8;
 
-   fcc->tc.templ.access_mode = BRW_ALIGN_1;
-   if (fcc->dispatch_mode == GEN6_WM_16_DISPATCH_ENABLE) {
-      fcc->tc.templ.qtr_ctrl = GEN6_COMPRESSION_1H;
-      fcc->tc.templ.exec_size = BRW_EXECUTE_16;
+   fcc->tc.templ.access_mode = GEN6_ALIGN_1;
+   if (fcc->dispatch_mode == GEN6_PS_DISPATCH_16) {
+      fcc->tc.templ.qtr_ctrl = GEN6_QTRCTRL_1H;
+      fcc->tc.templ.exec_size = GEN6_EXECSIZE_16;
    }
    else {
-      fcc->tc.templ.qtr_ctrl = GEN6_COMPRESSION_1Q;
-      fcc->tc.templ.exec_size = BRW_EXECUTE_8;
+      fcc->tc.templ.qtr_ctrl = GEN6_QTRCTRL_1Q;
+      fcc->tc.templ.exec_size = GEN6_EXECSIZE_8;
    }
 
    fcc->tc.rect_linear_width = 8;
@@ -1732,7 +1805,7 @@ fs_setup(struct fs_compile_context *fcc,
     * The classic driver uses the sampler cache (gen6) or the data cache
     * (gen7).  Why?
     */
-   fcc->const_cache = GEN6_SFID_DATAPORT_CONSTANT_CACHE;
+   fcc->const_cache = GEN6_SFID_DP_CC;
 
    if (!fs_setup_tgsi(&fcc->tc, state->info.tokens, &fcc->tgsi)) {
       toy_compiler_cleanup(&fcc->tc);
@@ -1743,8 +1816,28 @@ fs_setup(struct fs_compile_context *fcc,
    fs_setup_shader_in(fcc->shader, &fcc->tgsi, fcc->variant->u.fs.flatshade);
    fs_setup_shader_out(fcc->shader, &fcc->tgsi);
 
-   /* we do not make use of push constant buffers yet */
-   num_consts = 0;
+   if (fcc->variant->use_pcb && !fcc->tgsi.const_indirect) {
+      num_consts = (fcc->tgsi.const_count + 1) / 2;
+
+      /*
+       * From the Sandy Bridge PRM, volume 2 part 1, page 287:
+       *
+       *     "The sum of all four read length fields (each incremented to
+       *      represent the actual read length) must be less than or equal to
+       *      64"
+       *
+       * Since we are usually under a high register pressure, do not allow
+       * for more than 8.
+       */
+      if (num_consts > 8)
+         num_consts = 0;
+   }
+   else {
+      num_consts = 0;
+   }
+
+   fcc->shader->skip_cbuf0_upload = (!fcc->tgsi.const_count || num_consts);
+   fcc->shader->pcb.cbuf0_size = num_consts * (sizeof(float) * 8);
 
    fcc->first_const_grf = fs_setup_payloads(fcc);
    fcc->first_attr_grf = fcc->first_const_grf + num_consts;
@@ -1755,11 +1848,11 @@ fs_setup(struct fs_compile_context *fcc,
    fcc->first_free_mrf = 1;
    fcc->last_free_mrf = 15;
 
-   /* instructions are compressed with BRW_EXECUTE_16 */
+   /* instructions are compressed with GEN6_EXECSIZE_16 */
    fcc->num_grf_per_vrf =
-      (fcc->dispatch_mode == GEN6_WM_16_DISPATCH_ENABLE) ? 2 : 1;
+      (fcc->dispatch_mode == GEN6_PS_DISPATCH_16) ? 2 : 1;
 
-   if (fcc->tc.dev->gen >= ILO_GEN(7)) {
+   if (ilo_dev_gen(fcc->tc.dev) >= ILO_GEN(7)) {
       fcc->last_free_grf -= 15;
       fcc->first_free_mrf = fcc->last_free_grf + 1;
       fcc->last_free_mrf = fcc->first_free_mrf + 14;
@@ -1768,7 +1861,24 @@ fs_setup(struct fs_compile_context *fcc,
    fcc->shader->in.start_grf = fcc->first_const_grf;
    fcc->shader->has_kill = fcc->tgsi.uses_kill;
    fcc->shader->dispatch_16 =
-      (fcc->dispatch_mode == GEN6_WM_16_DISPATCH_ENABLE);
+      (fcc->dispatch_mode == GEN6_PS_DISPATCH_16);
+
+   fcc->shader->bt.rt_base = 0;
+   fcc->shader->bt.rt_count = fcc->variant->u.fs.num_cbufs;
+   /* to send EOT */
+   if (!fcc->shader->bt.rt_count)
+      fcc->shader->bt.rt_count = 1;
+
+   fcc->shader->bt.tex_base = fcc->shader->bt.rt_base +
+                              fcc->shader->bt.rt_count;
+   fcc->shader->bt.tex_count = fcc->variant->num_sampler_views;
+
+   fcc->shader->bt.const_base = fcc->shader->bt.tex_base +
+                                fcc->shader->bt.tex_count;
+   fcc->shader->bt.const_count = state->info.constant_buffer_count;
+
+   fcc->shader->bt.total_count = fcc->shader->bt.const_base +
+                                 fcc->shader->bt.const_count;
 
    return true;
 }

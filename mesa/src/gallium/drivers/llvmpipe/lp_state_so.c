@@ -64,17 +64,26 @@ static void
 llvmpipe_set_so_targets(struct pipe_context *pipe,
                         unsigned num_targets,
                         struct pipe_stream_output_target **targets,
-                        unsigned append_bitmask)
+                        const unsigned *offsets)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
    int i;
    for (i = 0; i < num_targets; i++) {
+      const boolean append = (offsets[i] == (unsigned)-1);
+      /*
+       * Warn if the so target was created in another context.
+       * XXX Not entirely sure if mesa/st may rely on this?
+       * Otherwise should just assert.
+       */
+      if (targets[i] && targets[i]->context != pipe) {
+         debug_printf("Illegal setting of so target with target %d created in "
+                       "another context\n", i);
+      }
       pipe_so_target_reference((struct pipe_stream_output_target **)&llvmpipe->so_targets[i], targets[i]);
-      /* if we're not appending then lets reset the internal
-         data of our so target */
-      if (!(append_bitmask & (1 << i)) && llvmpipe->so_targets[i]) {
-         llvmpipe->so_targets[i]->internal_offset = 0;
-         llvmpipe->so_targets[i]->emitted_vertices = 0;
+      /* If we're not appending then lets set the internal
+         offset to what was requested */
+      if (!append && llvmpipe->so_targets[i]) {
+         llvmpipe->so_targets[i]->internal_offset = offsets[i];
       }
    }
 

@@ -127,6 +127,12 @@ offset_tri
 
 offset_units
     Specifies the polygon offset bias
+offset_units_unscaled
+    Specifies the unit of the polygon offset bias. If false, use the
+    GL/D3D1X behaviour. If true, offset_units is a floating point offset
+    which isn't scaled (D3D9). Note that GL/D3D1X behaviour has different
+    formula whether the depth buffer is unorm or float, which is not
+    the case for D3D9.
 offset_scale
     Specifies the polygon offset scale
 offset_clamp
@@ -200,10 +206,11 @@ point_quad_rasterization
 Determines if points should be rasterized according to quad or point
 rasterization rules.
 
-OpenGL actually has quite different rasterization rules for points and
-point sprites - hence this indicates if points should be rasterized as
-points or according to point sprite (which decomposes them into quads,
-basically) rules.
+(Legacy-only) OpenGL actually has quite different rasterization rules
+for points and point sprites - hence this indicates if points should be
+rasterized as points or according to point sprite (which decomposes them
+into quads, basically) rules. Newer GL versions no longer support the old
+point rules at all.
 
 Additionally Direct3D will always use quad rasterization rules for
 points, regardless of whether point sprites are enabled or not.
@@ -217,6 +224,12 @@ generated.
    Some renderers always internally translate points into quads; this state
    still affects those renderers by overriding other rasterization state.
 
+point_tri_clip
+    Determines if clipping of points should happen after they are converted
+    to "rectangles" (required by d3d) or before (required by OpenGL, though
+    this rule is ignored by some IHVs).
+    It is not valid to set this to enabled but have point_quad_rasterization
+    disabled.
 point_smooth
     Whether points should be smoothed. Point smoothing turns rectangular
     points into circles or ovals.

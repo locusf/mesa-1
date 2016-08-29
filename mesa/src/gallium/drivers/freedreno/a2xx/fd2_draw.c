@@ -30,7 +30,6 @@
 #include "util/u_string.h"
 #include "util/u_memory.h"
 #include "util/u_prim.h"
-#include "util/u_pack_color.h"
 
 #include "freedreno_state.h"
 #include "freedreno_resource.h"
@@ -57,8 +56,8 @@ emit_cacheflush(struct fd_ringbuffer *ring)
 static void
 emit_vertexbufs(struct fd_context *ctx)
 {
-	struct fd_vertex_stateobj *vtx = ctx->vtx;
-	struct fd_vertexbuf_stateobj *vertexbuf = &ctx->vertexbuf;
+	struct fd_vertex_stateobj *vtx = ctx->vtx.vtx;
+	struct fd_vertexbuf_stateobj *vertexbuf = &ctx->vtx.vertexbuf;
 	struct fd2_vertex_buf bufs[PIPE_MAX_ATTRIBS];
 	unsigned i;
 
@@ -77,13 +76,13 @@ emit_vertexbufs(struct fd_context *ctx)
 	// NOTE I believe the 0x78 (or 0x9c in solid_vp) relates to the
 	// CONST(20,0) (or CONST(26,0) in soliv_vp)
 
-	fd2_emit_vertex_bufs(ctx->ring, 0x78, bufs, vtx->num_elements);
+	fd2_emit_vertex_bufs(ctx->batch->draw, 0x78, bufs, vtx->num_elements);
 }
 
-static void
-fd2_draw(struct fd_context *ctx, const struct pipe_draw_info *info)
+static bool
+fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info)
 {
-	struct fd_ringbuffer *ring = ctx->ring;
+	struct fd_ringbuffer *ring = ctx->batch->draw;
 
 	if (ctx->dirty & FD_DIRTY_VTXBUF)
 		emit_vertexbufs(ctx);
@@ -101,39 +100,33 @@ fd2_draw(struct fd_context *ctx, const struct pipe_draw_info *info)
 	OUT_PKT0(ring, REG_A2XX_TC_CNTL_STATUS, 1);
 	OUT_RING(ring, A2XX_TC_CNTL_STATUS_L2_INVALIDATE);
 
-	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
-	OUT_RING(ring, 0x0000000);
+	OUT_WFI (ring);
 
 	OUT_PKT3(ring, CP_SET_CONSTANT, 3);
 	OUT_RING(ring, CP_REG(REG_A2XX_VGT_MAX_VTX_INDX));
 	OUT_RING(ring, info->max_index);        /* VGT_MAX_VTX_INDX */
 	OUT_RING(ring, info->min_index);        /* VGT_MIN_VTX_INDX */
 
-	fd_draw_emit(ctx, info);
+	fd_draw_emit(ctx->batch, ring, ctx->primtypes[info->mode],
+				 IGNORE_VISIBILITY, info);
 
 	OUT_PKT3(ring, CP_SET_CONSTANT, 2);
 	OUT_RING(ring, CP_REG(REG_A2XX_UNKNOWN_2010));
 	OUT_RING(ring, 0x00000000);
 
 	emit_cacheflush(ring);
+
+	return true;
 }
 
-
-static uint32_t
-pack_rgba(enum pipe_format format, const float *rgba)
-{
-	union util_color uc;
-	util_pack_color(rgba, format, &uc);
-	return uc.ui;
-}
 
 static void
 fd2_clear(struct fd_context *ctx, unsigned buffers,
 		const union pipe_color_union *color, double depth, unsigned stencil)
 {
 	struct fd2_context *fd2_ctx = fd2_context(ctx);
-	struct fd_ringbuffer *ring = ctx->ring;
-	struct pipe_framebuffer_state *fb = &ctx->framebuffer;
+	struct fd_ringbuffer *ring = ctx->batch->draw;
+	struct pipe_framebuffer_state *fb = &ctx->batch->framebuffer;
 	uint32_t reg, colr = 0;
 
 	if ((buffers & PIPE_CLEAR_COLOR) && fb->nr_cbufs)
@@ -186,7 +179,7 @@ fd2_clear(struct fd_context *ctx, unsigned buffers,
 				reg |= A2XX_RB_COPY_CONTROL_CLEAR_MASK(0xf);
 			break;
 		default:
-			assert(1);
+			debug_assert(0);
 			break;
 		}
 	}
@@ -203,6 +196,9 @@ fd2_clear(struct fd_context *ctx, unsigned buffers,
 			break;
 		case DEPTHX_16:
 			reg = (uint32_t)(0xffffffff * depth);
+			break;
+		default:
+			debug_assert(0);
 			break;
 		}
 	}
@@ -270,11 +266,8 @@ fd2_clear(struct fd_context *ctx, unsigned buffers,
 	OUT_RING(ring, 3);                 /* VGT_MAX_VTX_INDX */
 	OUT_RING(ring, 0);                 /* VGT_MIN_VTX_INDX */
 
-	OUT_PKT3(ring, CP_DRAW_INDX, 3);
-	OUT_RING(ring, 0x00000000);
-	OUT_RING(ring, DRAW(DI_PT_RECTLIST, DI_SRC_SEL_AUTO_INDEX,
-			INDEX_SIZE_IGN, IGNORE_VISIBILITY));
-	OUT_RING(ring, 3);					/* NumIndices */
+	fd_draw(ctx->batch, ring, DI_PT_RECTLIST, IGNORE_VISIBILITY,
+			DI_SRC_SEL_AUTO_INDEX, 3, 0, INDEX_SIZE_IGN, 0, 0, NULL);
 
 	OUT_PKT3(ring, CP_SET_CONSTANT, 2);
 	OUT_RING(ring, CP_REG(REG_A2XX_A220_RB_LRZ_VSC_CONTROL));
@@ -289,6 +282,6 @@ void
 fd2_draw_init(struct pipe_context *pctx)
 {
 	struct fd_context *ctx = fd_context(pctx);
-	ctx->draw = fd2_draw;
+	ctx->draw_vbo = fd2_draw_vbo;
 	ctx->clear = fd2_clear;
 }

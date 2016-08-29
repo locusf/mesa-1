@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,6 +29,7 @@
 #include "pipe/p_shader_tokens.h"
 #include "tgsi_parse.h"
 #include "tgsi_util.h"
+#include "tgsi_exec.h"
 
 union pointer_hack
 {
@@ -53,17 +54,17 @@ tgsi_util_get_src_register_swizzle(
    const struct tgsi_src_register *reg,
    unsigned component )
 {
-   switch( component ) {
-   case 0:
+   switch (component) {
+   case TGSI_CHAN_X:
       return reg->SwizzleX;
-   case 1:
+   case TGSI_CHAN_Y:
       return reg->SwizzleY;
-   case 2:
+   case TGSI_CHAN_Z:
       return reg->SwizzleZ;
-   case 3:
+   case TGSI_CHAN_W:
       return reg->SwizzleW;
    default:
-      assert( 0 );
+      assert(0);
    }
    return 0;
 }
@@ -193,7 +194,7 @@ tgsi_util_get_inst_usage_mask(const struct tgsi_full_instruction *inst,
    case TGSI_OPCODE_MAD:
    case TGSI_OPCODE_SUB:
    case TGSI_OPCODE_LRP:
-   case TGSI_OPCODE_CND:
+   case TGSI_OPCODE_FMA:
    case TGSI_OPCODE_FRC:
    case TGSI_OPCODE_CEIL:
    case TGSI_OPCODE_CLAMP:
@@ -217,13 +218,42 @@ tgsi_util_get_inst_usage_mask(const struct tgsi_full_instruction *inst,
    case TGSI_OPCODE_OR:
    case TGSI_OPCODE_XOR:
    case TGSI_OPCODE_SAD:
+   case TGSI_OPCODE_FSEQ:
+   case TGSI_OPCODE_FSGE:
+   case TGSI_OPCODE_FSLT:
+   case TGSI_OPCODE_FSNE:
+   case TGSI_OPCODE_F2I:
+   case TGSI_OPCODE_IDIV:
+   case TGSI_OPCODE_IMAX:
+   case TGSI_OPCODE_IMIN:
+   case TGSI_OPCODE_INEG:
+   case TGSI_OPCODE_ISGE:
+   case TGSI_OPCODE_ISHR:
+   case TGSI_OPCODE_ISLT:
+   case TGSI_OPCODE_F2U:
+   case TGSI_OPCODE_U2F:
+   case TGSI_OPCODE_UADD:
+   case TGSI_OPCODE_UDIV:
+   case TGSI_OPCODE_UMAD:
+   case TGSI_OPCODE_UMAX:
+   case TGSI_OPCODE_UMIN:
+   case TGSI_OPCODE_UMOD:
+   case TGSI_OPCODE_UMUL:
+   case TGSI_OPCODE_USEQ:
+   case TGSI_OPCODE_USGE:
+   case TGSI_OPCODE_USHR:
+   case TGSI_OPCODE_USLT:
+   case TGSI_OPCODE_USNE:
+   case TGSI_OPCODE_IMUL_HI:
+   case TGSI_OPCODE_UMUL_HI:
+   case TGSI_OPCODE_DDX_FINE:
+   case TGSI_OPCODE_DDY_FINE:
       /* Channel-wise operations */
       read_mask = write_mask;
       break;
 
    case TGSI_OPCODE_EX2:
    case TGSI_OPCODE_LG2:
-   case TGSI_OPCODE_RCC:
       read_mask = TGSI_WRITEMASK_X;
       break;
 
@@ -345,10 +375,8 @@ tgsi_util_get_src_from_ind(const struct tgsi_ind_register *reg)
  * sample index.
  */
 int
-tgsi_util_get_texture_coord_dim(int tgsi_tex, int *shadow_or_sample)
+tgsi_util_get_texture_coord_dim(unsigned tgsi_tex)
 {
-   int dim;
-
    /*
     * Depending on the texture target, (src0.xyzw, src1.x) is interpreted
     * differently:
@@ -377,8 +405,7 @@ tgsi_util_get_texture_coord_dim(int tgsi_tex, int *shadow_or_sample)
    case TGSI_TEXTURE_BUFFER:
    case TGSI_TEXTURE_1D:
    case TGSI_TEXTURE_SHADOW1D:
-      dim = 1;
-      break;
+      return 1;
    case TGSI_TEXTURE_2D:
    case TGSI_TEXTURE_RECT:
    case TGSI_TEXTURE_1D_ARRAY:
@@ -386,48 +413,64 @@ tgsi_util_get_texture_coord_dim(int tgsi_tex, int *shadow_or_sample)
    case TGSI_TEXTURE_SHADOWRECT:
    case TGSI_TEXTURE_SHADOW1D_ARRAY:
    case TGSI_TEXTURE_2D_MSAA:
-      dim = 2;
-      break;
+      return 2;
    case TGSI_TEXTURE_3D:
    case TGSI_TEXTURE_CUBE:
    case TGSI_TEXTURE_2D_ARRAY:
    case TGSI_TEXTURE_SHADOWCUBE:
    case TGSI_TEXTURE_SHADOW2D_ARRAY:
    case TGSI_TEXTURE_2D_ARRAY_MSAA:
-      dim = 3;
-      break;
+      return 3;
    case TGSI_TEXTURE_CUBE_ARRAY:
    case TGSI_TEXTURE_SHADOWCUBE_ARRAY:
-      dim = 4;
-      break;
+      return 4;
    default:
       assert(!"unknown texture target");
-      dim = 0;
-      break;
+      return 0;
    }
+}
 
-   if (shadow_or_sample) {
-      switch (tgsi_tex) {
-      case TGSI_TEXTURE_SHADOW1D:
-         /* there is a gap */
-         *shadow_or_sample = 2;
-         break;
-      case TGSI_TEXTURE_SHADOW2D:
-      case TGSI_TEXTURE_SHADOWRECT:
-      case TGSI_TEXTURE_SHADOWCUBE:
-      case TGSI_TEXTURE_SHADOW1D_ARRAY:
-      case TGSI_TEXTURE_SHADOW2D_ARRAY:
-      case TGSI_TEXTURE_SHADOWCUBE_ARRAY:
-      case TGSI_TEXTURE_2D_MSAA:
-      case TGSI_TEXTURE_2D_ARRAY_MSAA:
-         *shadow_or_sample = dim;
-         break;
-      default:
-         /* no shadow nor sample */
-         *shadow_or_sample = -1;
-         break;
-      }
+
+/**
+ * Given a TGSI_TEXTURE_x target, return the src register index for the
+ * shadow reference coordinate.
+ */
+int
+tgsi_util_get_shadow_ref_src_index(unsigned tgsi_tex)
+{
+   switch (tgsi_tex) {
+   case TGSI_TEXTURE_SHADOW1D:
+   case TGSI_TEXTURE_SHADOW2D:
+   case TGSI_TEXTURE_SHADOWRECT:
+   case TGSI_TEXTURE_SHADOW1D_ARRAY:
+      return 2;
+   case TGSI_TEXTURE_SHADOWCUBE:
+   case TGSI_TEXTURE_SHADOW2D_ARRAY:
+   case TGSI_TEXTURE_2D_MSAA:
+   case TGSI_TEXTURE_2D_ARRAY_MSAA:
+      return 3;
+   case TGSI_TEXTURE_SHADOWCUBE_ARRAY:
+      return 4;
+   default:
+      /* no shadow nor sample */
+      return -1;
    }
+}
 
-   return dim;
+
+boolean
+tgsi_is_shadow_target(unsigned target)
+{
+   switch (target) {
+   case TGSI_TEXTURE_SHADOW1D:
+   case TGSI_TEXTURE_SHADOW2D:
+   case TGSI_TEXTURE_SHADOWRECT:
+   case TGSI_TEXTURE_SHADOW1D_ARRAY:
+   case TGSI_TEXTURE_SHADOW2D_ARRAY:
+   case TGSI_TEXTURE_SHADOWCUBE:
+   case TGSI_TEXTURE_SHADOWCUBE_ARRAY:
+      return TRUE;
+   default:
+      return FALSE;
+   }
 }

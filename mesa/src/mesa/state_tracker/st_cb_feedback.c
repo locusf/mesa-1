@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -46,6 +46,7 @@
 #include "st_context.h"
 #include "st_draw.h"
 #include "st_cb_feedback.h"
+#include "st_program.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
@@ -69,7 +70,7 @@ struct feedback_stage
  * GL Feedback functions
  **********************************************************************/
 
-static INLINE struct feedback_stage *
+static inline struct feedback_stage *
 feedback_stage( struct draw_stage *stage )
 {
    return (struct feedback_stage *)stage;
@@ -274,7 +275,10 @@ static void
 st_RenderMode(struct gl_context *ctx, GLenum newMode )
 {
    struct st_context *st = st_context(ctx);
-   struct draw_context *draw = st->draw;
+   struct draw_context *draw = st_get_draw_context(st);
+
+   if (!st->draw)
+      return;
 
    if (newMode == GL_RENDER) {
       /* restore normal VBO draw function */
@@ -288,13 +292,16 @@ st_RenderMode(struct gl_context *ctx, GLenum newMode )
       vbo_set_draw_func(ctx, st_feedback_draw_vbo);
    }
    else {
+      struct gl_vertex_program *vp = st->ctx->VertexProgram._Current;
+
       if (!st->feedback_stage)
          st->feedback_stage = draw_glfeedback_stage(ctx, draw);
       draw_set_rasterize_stage(draw, st->feedback_stage);
       /* Plug in new vbo draw function */
       vbo_set_draw_func(ctx, st_feedback_draw_vbo);
       /* need to generate/use a vertex program that emits pos/color/tex */
-      st->dirty.st |= ST_NEW_VERTEX_PROGRAM;
+      if (vp)
+         st->dirty |= ST_NEW_VERTEX_PROGRAM(st, st_vertex_program(vp));
    }
 }
 

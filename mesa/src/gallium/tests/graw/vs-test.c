@@ -100,15 +100,9 @@ static void init_fs_constbuf( void )
 
    u_box_2d(0,0,sizeof(constants),1, &box);
 
-   ctx->transfer_inline_write(ctx,
-                              constbuf,
-                              0,
-                              PIPE_TRANSFER_WRITE,
-                              &box,
-                              constants,
-                              sizeof constants,
-                              sizeof constants);
-
+   ctx->buffer_subdata(ctx, constbuf,
+                       PIPE_TRANSFER_WRITE,
+                       0, sizeof(constants), constants);
 
    pipe_set_constant_buffer(ctx,
                             PIPE_SHADER_VERTEX, 0,
@@ -118,23 +112,21 @@ static void init_fs_constbuf( void )
 
 static void set_viewport( float x, float y,
                           float width, float height,
-                          float near, float far)
+                          float zNear, float zFar)
 {
-   float z = far;
+   float z = zFar;
    float half_width = (float)width / 2.0f;
    float half_height = (float)height / 2.0f;
-   float half_depth = ((float)far - (float)near) / 2.0f;
+   float half_depth = ((float)zFar - (float)zNear) / 2.0f;
    struct pipe_viewport_state vp;
 
    vp.scale[0] = half_width;
    vp.scale[1] = half_height;
    vp.scale[2] = half_depth;
-   vp.scale[3] = 1.0f;
 
    vp.translate[0] = half_width + x;
    vp.translate[1] = half_height + y;
    vp.translate[2] = half_depth + z;
-   vp.translate[3] = 0.0f;
 
    ctx->set_viewport_states( ctx, 0, 1, &vp );
 }
@@ -176,7 +168,7 @@ static void set_vertices( void )
    vbuf.buffer_offset = 0;
    vbuf.buffer = pipe_buffer_create_with_data(ctx,
                                               PIPE_BIND_VERTEX_BUFFER,
-                                              PIPE_USAGE_STATIC,
+                                              PIPE_USAGE_DEFAULT,
                                               sizeof(vertices),
                                               vertices);
 
@@ -229,12 +221,12 @@ static void draw( void )
    union pipe_color_union clear_color = { {.1,.3,.5,0} };
 
    ctx->clear(ctx, PIPE_CLEAR_COLOR, &clear_color, 0, 0);
-   util_draw_arrays(ctx, PIPE_PRIM_POINTS, 0, Elements(vertices));
+   util_draw_arrays(ctx, PIPE_PRIM_POINTS, 0, ARRAY_SIZE(vertices));
    ctx->flush(ctx, NULL, 0);
 
    graw_save_surface_to_file(ctx, surf, NULL);
 
-   screen->flush_frontbuffer(screen, rttex, 0, 0, window);
+   screen->flush_frontbuffer(screen, rttex, 0, 0, window, NULL);
 }
 
 #define SIZE 16
@@ -307,14 +299,14 @@ static void init_tex( void )
 
    u_box_2d(0,0,SIZE,SIZE, &box);
 
-   ctx->transfer_inline_write(ctx,
-                              samptex,
-                              0,
-                              PIPE_TRANSFER_WRITE,
-                              &box,
-                              tex2d,
-                              sizeof tex2d[0],
-                              sizeof tex2d);
+   ctx->texture_subdata(ctx,
+                        samptex,
+                        0,
+                        PIPE_TRANSFER_WRITE,
+                        &box,
+                        tex2d,
+                        sizeof tex2d[0],
+                        sizeof tex2d);
 
    /* Possibly read back & compare against original data:
     */
@@ -346,7 +338,7 @@ static void init_tex( void )
    if (sv == NULL)
       exit(5);
 
-   ctx->set_fragment_sampler_views(ctx, 1, &sv);
+   ctx->set_sampler_views(ctx, PIPE_SHADER_FRAGMENT, 0, 1, &sv);
    
 
    memset(&sampler_desc, 0, sizeof sampler_desc);
@@ -365,7 +357,7 @@ static void init_tex( void )
    if (sampler == NULL)
       exit(6);
 
-   ctx->bind_fragment_sampler_states(ctx, 1, &sampler);
+   ctx->bind_sampler_states(ctx, PIPE_SHADER_FRAGMENT, 0, 1, &sampler);
    
 }
 
@@ -394,7 +386,7 @@ static void init( void )
       exit(1);
    }
    
-   ctx = screen->context_create(screen, NULL);
+   ctx = screen->context_create(screen, NULL, 0);
    if (ctx == NULL)
       exit(3);
 

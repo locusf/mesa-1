@@ -29,7 +29,7 @@
 #define HUD_PRIVATE_H
 
 #include "pipe/p_context.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 
 struct hud_graph {
    /* initialized by common code */
@@ -61,8 +61,13 @@ struct hud_pane {
    unsigned inner_height;
    float yscale;
    unsigned max_num_vertices;
+   unsigned last_line; /* index of the last describing line in the graph */
    uint64_t max_value;
-   boolean uses_byte_units;
+   uint64_t initial_max_value;
+   uint64_t ceiling;
+   unsigned dyn_ceil_last_ran;
+   boolean dyn_ceiling;
+   enum pipe_driver_query_type type;
    uint64_t period; /* in microseconds */
 
    struct list_head graph_list;
@@ -76,17 +81,26 @@ void hud_pane_set_max_value(struct hud_pane *pane, uint64_t value);
 void hud_graph_add_value(struct hud_graph *gr, uint64_t value);
 
 /* graphs/queries */
+struct hud_batch_query_context;
+
 #define ALL_CPUS ~0 /* optionally set as cpu_index */
 
 int hud_get_num_cpus(void);
 
 void hud_fps_graph_install(struct hud_pane *pane);
 void hud_cpu_graph_install(struct hud_pane *pane, unsigned cpu_index);
-void hud_pipe_query_install(struct hud_pane *pane, struct pipe_context *pipe,
+void hud_pipe_query_install(struct hud_batch_query_context **pbq,
+                            struct hud_pane *pane, struct pipe_context *pipe,
                             const char *name, unsigned query_type,
                             unsigned result_index,
-                            uint64_t max_value, boolean uses_byte_units);
-boolean hud_driver_query_install(struct hud_pane *pane,
+                            uint64_t max_value,
+                            enum pipe_driver_query_type type,
+                            enum pipe_driver_query_result_type result_type,
+                            unsigned flags);
+boolean hud_driver_query_install(struct hud_batch_query_context **pbq,
+                                 struct hud_pane *pane,
                                  struct pipe_context *pipe, const char *name);
+void hud_batch_query_update(struct hud_batch_query_context *bq);
+void hud_batch_query_cleanup(struct hud_batch_query_context **pbq);
 
 #endif

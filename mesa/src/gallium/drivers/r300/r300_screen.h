@@ -25,7 +25,7 @@
 #define R300_SCREEN_H
 
 #include "r300_chipset.h"
-#include "../../winsys/radeon/drm/radeon_winsys.h"
+#include "radeon/radeon_winsys.h"
 #include "pipe/p_screen.h"
 #include "util/u_slab.h"
 #include "os/os_thread.h"
@@ -51,11 +51,11 @@ struct r300_screen {
 
 
 /* Convenience cast wrappers. */
-static INLINE struct r300_screen* r300_screen(struct pipe_screen* screen) {
+static inline struct r300_screen* r300_screen(struct pipe_screen* screen) {
     return (struct r300_screen*)screen;
 }
 
-static INLINE struct radeon_winsys *
+static inline struct radeon_winsys *
 radeon_winsys(struct pipe_screen *screen) {
     return r300_screen(screen)->rws;
 }
@@ -102,12 +102,12 @@ radeon_winsys(struct pipe_screen *screen) {
 #define DBG_P_STAT      (1 << 25)
 /*@}*/
 
-static INLINE boolean SCREEN_DBG_ON(struct r300_screen * screen, unsigned flags)
+static inline boolean SCREEN_DBG_ON(struct r300_screen * screen, unsigned flags)
 {
     return (screen->debug & flags) ? TRUE : FALSE;
 }
 
-static INLINE void SCREEN_DBG(struct r300_screen * screen, unsigned flags,
+static inline void SCREEN_DBG(struct r300_screen * screen, unsigned flags,
                               const char * fmt, ...)
 {
     if (SCREEN_DBG_ON(screen, flags)) {

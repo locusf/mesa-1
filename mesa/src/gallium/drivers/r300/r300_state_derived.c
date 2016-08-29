@@ -52,7 +52,6 @@ enum r300_rs_col_write_type {
 
 static void r300_draw_emit_attrib(struct r300_context* r300,
                                   enum attrib_emit emit,
-                                  enum interp_mode interp,
                                   int index)
 {
     struct r300_vertex_shader* vs = r300->vs_state.state;
@@ -62,7 +61,7 @@ static void r300_draw_emit_attrib(struct r300_context* r300,
     output = draw_find_shader_output(r300->draw,
                                      info->output_semantic_name[index],
                                      info->output_semantic_index[index]);
-    draw_emit_vertex_attr(&r300->vertex_info, emit, interp, output);
+    draw_emit_vertex_attr(&r300->vertex_info, emit, output);
 }
 
 static void r300_draw_emit_all_attribs(struct r300_context* r300)
@@ -73,31 +72,27 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
 
     /* Position. */
     if (vs_outputs->pos != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_4F, INTERP_PERSPECTIVE,
-                              vs_outputs->pos);
+        r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->pos);
     } else {
         assert(0);
     }
 
     /* Point size. */
     if (vs_outputs->psize != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_1F_PSIZE, INTERP_POS,
-                              vs_outputs->psize);
+        r300_draw_emit_attrib(r300, EMIT_1F_PSIZE, vs_outputs->psize);
     }
 
     /* Colors. */
     for (i = 0; i < ATTR_COLOR_COUNT; i++) {
         if (vs_outputs->color[i] != ATTR_UNUSED) {
-            r300_draw_emit_attrib(r300, EMIT_4F, INTERP_LINEAR,
-                                  vs_outputs->color[i]);
+            r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->color[i]);
         }
     }
 
     /* Back-face colors. */
     for (i = 0; i < ATTR_COLOR_COUNT; i++) {
         if (vs_outputs->bcolor[i] != ATTR_UNUSED) {
-            r300_draw_emit_attrib(r300, EMIT_4F, INTERP_LINEAR,
-                                  vs_outputs->bcolor[i]);
+            r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->bcolor[i]);
         }
     }
 
@@ -108,16 +103,14 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
     for (i = 0; i < ATTR_GENERIC_COUNT && gen_count < 8; i++) {
         if (vs_outputs->generic[i] != ATTR_UNUSED &&
             !(r300->sprite_coord_enable & (1 << i))) {
-            r300_draw_emit_attrib(r300, EMIT_4F, INTERP_PERSPECTIVE,
-                                  vs_outputs->generic[i]);
+            r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->generic[i]);
             gen_count++;
         }
     }
 
     /* Fog coordinates. */
     if (gen_count < 8 && vs_outputs->fog != ATTR_UNUSED) {
-        r300_draw_emit_attrib(r300, EMIT_4F, INTERP_PERSPECTIVE,
-                              vs_outputs->fog);
+        r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->fog);
         gen_count++;
     }
 
@@ -125,8 +118,7 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
     if (r300_fs(r300)->shader->inputs.wpos != ATTR_UNUSED && gen_count < 8) {
         DBG(r300, DBG_SWTCL, "draw_emit_attrib: WPOS, index: %i\n",
             vs_outputs->wpos);
-        r300_draw_emit_attrib(r300, EMIT_4F, INTERP_PERSPECTIVE,
-                              vs_outputs->wpos);
+        r300_draw_emit_attrib(r300, EMIT_4F, vs_outputs->wpos);
     }
 }
 
@@ -699,24 +691,24 @@ static uint32_t r300_get_border_color(enum pipe_format format,
             /* The Y component is used for the border color. */
             border_swizzled[1] = border_swizzled[0] + 1.0f/32;
             util_pack_color(border_swizzled, PIPE_FORMAT_B4G4R4A4_UNORM, &uc);
-            return uc.ui;
+            return uc.ui[0];
         case PIPE_FORMAT_RGTC2_SNORM:
         case PIPE_FORMAT_LATC2_SNORM:
             util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SNORM, &uc);
-            return uc.ui;
+            return uc.ui[0];
         case PIPE_FORMAT_RGTC2_UNORM:
         case PIPE_FORMAT_LATC2_UNORM:
             util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_UNORM, &uc);
-            return uc.ui;
+            return uc.ui[0];
         case PIPE_FORMAT_DXT1_SRGB:
         case PIPE_FORMAT_DXT1_SRGBA:
         case PIPE_FORMAT_DXT3_SRGBA:
         case PIPE_FORMAT_DXT5_SRGBA:
             util_pack_color(border_swizzled, PIPE_FORMAT_B8G8R8A8_SRGB, &uc);
-            return uc.ui;
+            return uc.ui[0];
         default:
             util_pack_color(border_swizzled, PIPE_FORMAT_B8G8R8A8_UNORM, &uc);
-            return uc.ui;
+            return uc.ui[0];
         }
     }
 
@@ -789,7 +781,7 @@ static uint32_t r300_get_border_color(enum pipe_format format,
             break;
     }
 
-    return uc.ui;
+    return uc.ui[0];
 }
 
 static void r300_merge_textures_and_samplers(struct r300_context* r300)
@@ -873,10 +865,10 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
                     /* X24x8 is sampled as Y16X16 on r3xx-r4xx.
                      * The depth here is at the Y component. */
                     for (j = 0; j < 4; j++)
-                        depth_swizzle[j] = UTIL_FORMAT_SWIZZLE_Y;
+                        depth_swizzle[j] = PIPE_SWIZZLE_Y;
                 } else {
                     for (j = 0; j < 4; j++)
-                        depth_swizzle[j] = UTIL_FORMAT_SWIZZLE_X;
+                        depth_swizzle[j] = PIPE_SWIZZLE_X;
                 }
 
                 /* If compare mode is disabled, sampler view swizzles

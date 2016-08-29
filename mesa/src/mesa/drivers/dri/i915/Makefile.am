@@ -28,6 +28,8 @@ AM_CFLAGS = \
 	-I$(top_srcdir)/src/ \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/mesa/ \
+	-I$(top_srcdir)/src/gallium/include \
+	-I$(top_srcdir)/src/gallium/auxiliary \
 	-I$(top_srcdir)/src/mesa/drivers/dri/common \
 	-I$(top_srcdir)/src/mesa/drivers/dri/intel/server \
 	-I$(top_builddir)/src/mesa/drivers/dri/common \
@@ -35,31 +37,6 @@ AM_CFLAGS = \
 	$(VISIBILITY_CFLAGS) \
 	$(INTEL_CFLAGS)
 
-if HAVE_OPENGL_ES1
-AM_CFLAGS += \
-	-DFEATURE_ES1=1
-endif
-
-if HAVE_OPENGL_ES2
-AM_CFLAGS += \
-	-DFEATURE_ES2=1
-endif
-
-dridir = $(DRI_DRIVER_INSTALL_DIR)
-
-if HAVE_I915_DRI
-dri_LTLIBRARIES = i915_dri.la
-endif
-
-i915_dri_la_SOURCES = $(i915_FILES)
-i915_dri_la_LDFLAGS = -module -avoid-version -shared
-i915_dri_la_LIBADD = \
-	../common/libdricommon.la \
-	$(DRI_LIB_DEPS) \
-	$(INTEL_LIBS)
-
-# Provide compatibility with scripts for the old Mesa build system for
-# a while by putting a link to the driver into /lib of the build tree.
-all-local: i915_dri.la
-	$(MKDIR_P) $(top_builddir)/$(LIB_DIR);
-	ln -f .libs/i915_dri.so $(top_builddir)/$(LIB_DIR)/i915_dri.so;
+noinst_LTLIBRARIES = libi915_dri.la
+libi915_dri_la_SOURCES = $(i915_FILES)
+libi915_dri_la_LIBADD = $(INTEL_LIBS)

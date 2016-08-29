@@ -38,69 +38,69 @@ static const struct {
    int num_dst;
    int num_src;
 } aos_simple_opcode_map[TGSI_OPCODE_LAST] = {
-   [TGSI_OPCODE_ARL]          = { BRW_OPCODE_RNDD,                1, 1 },
-   [TGSI_OPCODE_MOV]          = { BRW_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_ARL]          = { GEN6_OPCODE_RNDD,                1, 1 },
+   [TGSI_OPCODE_MOV]          = { GEN6_OPCODE_MOV,                 1, 1 },
    [TGSI_OPCODE_RCP]          = { TOY_OPCODE_INV,                 1, 1 },
    [TGSI_OPCODE_RSQ]          = { TOY_OPCODE_RSQ,                 1, 1 },
-   [TGSI_OPCODE_MUL]          = { BRW_OPCODE_MUL,                 1, 2 },
-   [TGSI_OPCODE_ADD]          = { BRW_OPCODE_ADD,                 1, 2 },
-   [TGSI_OPCODE_DP3]          = { BRW_OPCODE_DP3,                 1, 2 },
-   [TGSI_OPCODE_DP4]          = { BRW_OPCODE_DP4,                 1, 2 },
-   [TGSI_OPCODE_MIN]          = { BRW_OPCODE_SEL,                 1, 2 },
-   [TGSI_OPCODE_MAX]          = { BRW_OPCODE_SEL,                 1, 2 },
+   [TGSI_OPCODE_MUL]          = { GEN6_OPCODE_MUL,                 1, 2 },
+   [TGSI_OPCODE_ADD]          = { GEN6_OPCODE_ADD,                 1, 2 },
+   [TGSI_OPCODE_DP3]          = { GEN6_OPCODE_DP3,                 1, 2 },
+   [TGSI_OPCODE_DP4]          = { GEN6_OPCODE_DP4,                 1, 2 },
+   [TGSI_OPCODE_MIN]          = { GEN6_OPCODE_SEL,                 1, 2 },
+   [TGSI_OPCODE_MAX]          = { GEN6_OPCODE_SEL,                 1, 2 },
    /* a later pass will move src[2] to accumulator */
-   [TGSI_OPCODE_MAD]          = { BRW_OPCODE_MAC,                 1, 3 },
-   [TGSI_OPCODE_SUB]          = { BRW_OPCODE_ADD,                 1, 2 },
+   [TGSI_OPCODE_MAD]          = { GEN6_OPCODE_MAC,                 1, 3 },
+   [TGSI_OPCODE_SUB]          = { GEN6_OPCODE_ADD,                 1, 2 },
    [TGSI_OPCODE_SQRT]         = { TOY_OPCODE_SQRT,                1, 1 },
-   [TGSI_OPCODE_FRC]          = { BRW_OPCODE_FRC,                 1, 1 },
-   [TGSI_OPCODE_FLR]          = { BRW_OPCODE_RNDD,                1, 1 },
-   [TGSI_OPCODE_ROUND]        = { BRW_OPCODE_RNDE,                1, 1 },
+   [TGSI_OPCODE_FRC]          = { GEN6_OPCODE_FRC,                 1, 1 },
+   [TGSI_OPCODE_FLR]          = { GEN6_OPCODE_RNDD,                1, 1 },
+   [TGSI_OPCODE_ROUND]        = { GEN6_OPCODE_RNDE,                1, 1 },
    [TGSI_OPCODE_EX2]          = { TOY_OPCODE_EXP,                 1, 1 },
    [TGSI_OPCODE_LG2]          = { TOY_OPCODE_LOG,                 1, 1 },
    [TGSI_OPCODE_POW]          = { TOY_OPCODE_POW,                 1, 2 },
-   [TGSI_OPCODE_ABS]          = { BRW_OPCODE_MOV,                 1, 1 },
-   [TGSI_OPCODE_DPH]          = { BRW_OPCODE_DPH,                 1, 2 },
+   [TGSI_OPCODE_ABS]          = { GEN6_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_DPH]          = { GEN6_OPCODE_DPH,                 1, 2 },
    [TGSI_OPCODE_COS]          = { TOY_OPCODE_COS,                 1, 1 },
    [TGSI_OPCODE_KILL]         = { TOY_OPCODE_KIL,                 0, 0 },
    [TGSI_OPCODE_SIN]          = { TOY_OPCODE_SIN,                 1, 1 },
-   [TGSI_OPCODE_ARR]          = { BRW_OPCODE_RNDZ,                1, 1 },
-   [TGSI_OPCODE_DP2]          = { BRW_OPCODE_DP2,                 1, 2 },
-   [TGSI_OPCODE_IF]           = { BRW_OPCODE_IF,                  0, 1 },
-   [TGSI_OPCODE_UIF]          = { BRW_OPCODE_IF,                  0, 1 },
-   [TGSI_OPCODE_ELSE]         = { BRW_OPCODE_ELSE,                0, 0 },
-   [TGSI_OPCODE_ENDIF]        = { BRW_OPCODE_ENDIF,               0, 0 },
-   [TGSI_OPCODE_I2F]          = { BRW_OPCODE_MOV,                 1, 1 },
-   [TGSI_OPCODE_NOT]          = { BRW_OPCODE_NOT,                 1, 1 },
-   [TGSI_OPCODE_TRUNC]        = { BRW_OPCODE_RNDZ,                1, 1 },
-   [TGSI_OPCODE_SHL]          = { BRW_OPCODE_SHL,                 1, 2 },
-   [TGSI_OPCODE_AND]          = { BRW_OPCODE_AND,                 1, 2 },
-   [TGSI_OPCODE_OR]           = { BRW_OPCODE_OR,                  1, 2 },
+   [TGSI_OPCODE_ARR]          = { GEN6_OPCODE_RNDZ,                1, 1 },
+   [TGSI_OPCODE_DP2]          = { GEN6_OPCODE_DP2,                 1, 2 },
+   [TGSI_OPCODE_IF]           = { GEN6_OPCODE_IF,                  0, 1 },
+   [TGSI_OPCODE_UIF]          = { GEN6_OPCODE_IF,                  0, 1 },
+   [TGSI_OPCODE_ELSE]         = { GEN6_OPCODE_ELSE,                0, 0 },
+   [TGSI_OPCODE_ENDIF]        = { GEN6_OPCODE_ENDIF,               0, 0 },
+   [TGSI_OPCODE_I2F]          = { GEN6_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_NOT]          = { GEN6_OPCODE_NOT,                 1, 1 },
+   [TGSI_OPCODE_TRUNC]        = { GEN6_OPCODE_RNDZ,                1, 1 },
+   [TGSI_OPCODE_SHL]          = { GEN6_OPCODE_SHL,                 1, 2 },
+   [TGSI_OPCODE_AND]          = { GEN6_OPCODE_AND,                 1, 2 },
+   [TGSI_OPCODE_OR]           = { GEN6_OPCODE_OR,                  1, 2 },
    [TGSI_OPCODE_MOD]          = { TOY_OPCODE_INT_DIV_REMAINDER,   1, 2 },
-   [TGSI_OPCODE_XOR]          = { BRW_OPCODE_XOR,                 1, 2 },
+   [TGSI_OPCODE_XOR]          = { GEN6_OPCODE_XOR,                 1, 2 },
    [TGSI_OPCODE_EMIT]         = { TOY_OPCODE_EMIT,                0, 0 },
    [TGSI_OPCODE_ENDPRIM]      = { TOY_OPCODE_ENDPRIM,             0, 0 },
-   [TGSI_OPCODE_NOP]          = { BRW_OPCODE_NOP,                 0, 0 },
+   [TGSI_OPCODE_NOP]          = { GEN6_OPCODE_NOP,                 0, 0 },
    [TGSI_OPCODE_KILL_IF]      = { TOY_OPCODE_KIL,                 0, 1 },
-   [TGSI_OPCODE_END]          = { BRW_OPCODE_NOP,                 0, 0 },
-   [TGSI_OPCODE_F2I]          = { BRW_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_END]          = { GEN6_OPCODE_NOP,                 0, 0 },
+   [TGSI_OPCODE_F2I]          = { GEN6_OPCODE_MOV,                 1, 1 },
    [TGSI_OPCODE_IDIV]         = { TOY_OPCODE_INT_DIV_QUOTIENT,    1, 2 },
-   [TGSI_OPCODE_IMAX]         = { BRW_OPCODE_SEL,                 1, 2 },
-   [TGSI_OPCODE_IMIN]         = { BRW_OPCODE_SEL,                 1, 2 },
-   [TGSI_OPCODE_INEG]         = { BRW_OPCODE_MOV,                 1, 1 },
-   [TGSI_OPCODE_ISHR]         = { BRW_OPCODE_ASR,                 1, 2 },
-   [TGSI_OPCODE_F2U]          = { BRW_OPCODE_MOV,                 1, 1 },
-   [TGSI_OPCODE_U2F]          = { BRW_OPCODE_MOV,                 1, 1 },
-   [TGSI_OPCODE_UADD]         = { BRW_OPCODE_ADD,                 1, 2 },
+   [TGSI_OPCODE_IMAX]         = { GEN6_OPCODE_SEL,                 1, 2 },
+   [TGSI_OPCODE_IMIN]         = { GEN6_OPCODE_SEL,                 1, 2 },
+   [TGSI_OPCODE_INEG]         = { GEN6_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_ISHR]         = { GEN6_OPCODE_ASR,                 1, 2 },
+   [TGSI_OPCODE_F2U]          = { GEN6_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_U2F]          = { GEN6_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_UADD]         = { GEN6_OPCODE_ADD,                 1, 2 },
    [TGSI_OPCODE_UDIV]         = { TOY_OPCODE_INT_DIV_QUOTIENT,    1, 2 },
    /* a later pass will move src[2] to accumulator */
-   [TGSI_OPCODE_UMAD]         = { BRW_OPCODE_MAC,                 1, 3 },
-   [TGSI_OPCODE_UMAX]         = { BRW_OPCODE_SEL,                 1, 2 },
-   [TGSI_OPCODE_UMIN]         = { BRW_OPCODE_SEL,                 1, 2 },
+   [TGSI_OPCODE_UMAD]         = { GEN6_OPCODE_MAC,                 1, 3 },
+   [TGSI_OPCODE_UMAX]         = { GEN6_OPCODE_SEL,                 1, 2 },
+   [TGSI_OPCODE_UMIN]         = { GEN6_OPCODE_SEL,                 1, 2 },
    [TGSI_OPCODE_UMOD]         = { TOY_OPCODE_INT_DIV_REMAINDER,   1, 2 },
-   [TGSI_OPCODE_UMUL]         = { BRW_OPCODE_MUL,                 1, 2 },
-   [TGSI_OPCODE_USHR]         = { BRW_OPCODE_SHR,                 1, 2 },
-   [TGSI_OPCODE_UARL]         = { BRW_OPCODE_MOV,                 1, 1 },
-   [TGSI_OPCODE_IABS]         = { BRW_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_UMUL]         = { GEN6_OPCODE_MUL,                 1, 2 },
+   [TGSI_OPCODE_USHR]         = { GEN6_OPCODE_SHR,                 1, 2 },
+   [TGSI_OPCODE_UARL]         = { GEN6_OPCODE_MOV,                 1, 1 },
+   [TGSI_OPCODE_IABS]         = { GEN6_OPCODE_MOV,                 1, 1 },
 };
 
 static void
@@ -111,7 +111,7 @@ aos_simple(struct toy_compiler *tc,
 {
    struct toy_inst *inst;
    int opcode;
-   int cond_modifier = BRW_CONDITIONAL_NONE;
+   int cond_modifier = GEN6_COND_NONE;
    int num_dst = tgsi_inst->Instruction.NumDstRegs;
    int num_src = tgsi_inst->Instruction.NumSrcRegs;
    int i;
@@ -125,7 +125,7 @@ aos_simple(struct toy_compiler *tc,
    }
 
    /* no need to emit nop */
-   if (opcode == BRW_OPCODE_NOP)
+   if (opcode == GEN6_OPCODE_NOP)
       return;
 
    inst = tc_add(tc);
@@ -138,12 +138,12 @@ aos_simple(struct toy_compiler *tc,
    case TGSI_OPCODE_MIN:
    case TGSI_OPCODE_IMIN:
    case TGSI_OPCODE_UMIN:
-      cond_modifier = BRW_CONDITIONAL_L;
+      cond_modifier = GEN6_COND_L;
       break;
    case TGSI_OPCODE_MAX:
    case TGSI_OPCODE_IMAX:
    case TGSI_OPCODE_UMAX:
-      cond_modifier = BRW_CONDITIONAL_GE;
+      cond_modifier = GEN6_COND_GE;
       break;
    case TGSI_OPCODE_SUB:
       src[1] = tsrc_negate(src[1]);
@@ -153,14 +153,14 @@ aos_simple(struct toy_compiler *tc,
       src[0] = tsrc_absolute(src[0]);
       break;
    case TGSI_OPCODE_IF:
-      cond_modifier = BRW_CONDITIONAL_NEQ;
+      cond_modifier = GEN6_COND_NZ;
       num_src = 2;
       assert(src[0].type == TOY_TYPE_F);
       src[0] = tsrc_swizzle1(src[0], TOY_SWIZZLE_X);
       src[1] = tsrc_imm_f(0.0f);
       break;
    case TGSI_OPCODE_UIF:
-      cond_modifier = BRW_CONDITIONAL_NEQ;
+      cond_modifier = GEN6_COND_NZ;
       num_src = 2;
       assert(src[0].type == TOY_TYPE_UD);
       src[0] = tsrc_swizzle1(src[0], TOY_SWIZZLE_X);
@@ -190,7 +190,7 @@ aos_simple(struct toy_compiler *tc,
       inst->dst = dst[0];
    }
 
-   assert(num_src <= Elements(inst->src));
+   assert(num_src <= ARRAY_SIZE(inst->src));
    for (i = 0; i < num_src; i++)
       inst->src[i] = src[i];
 }
@@ -209,26 +209,30 @@ aos_set_on_cond(struct toy_compiler *tc,
    case TGSI_OPCODE_SLT:
    case TGSI_OPCODE_ISLT:
    case TGSI_OPCODE_USLT:
-      cond = BRW_CONDITIONAL_L;
+   case TGSI_OPCODE_FSLT:
+      cond = GEN6_COND_L;
       break;
    case TGSI_OPCODE_SGE:
    case TGSI_OPCODE_ISGE:
    case TGSI_OPCODE_USGE:
-      cond = BRW_CONDITIONAL_GE;
+   case TGSI_OPCODE_FSGE:
+      cond = GEN6_COND_GE;
       break;
    case TGSI_OPCODE_SEQ:
    case TGSI_OPCODE_USEQ:
-      cond = BRW_CONDITIONAL_EQ;
+   case TGSI_OPCODE_FSEQ:
+      cond = GEN6_COND_Z;
       break;
    case TGSI_OPCODE_SGT:
-      cond = BRW_CONDITIONAL_G;
+      cond = GEN6_COND_G;
       break;
    case TGSI_OPCODE_SLE:
-      cond = BRW_CONDITIONAL_LE;
+      cond = GEN6_COND_LE;
       break;
    case TGSI_OPCODE_SNE:
    case TGSI_OPCODE_USNE:
-      cond = BRW_CONDITIONAL_NEQ;
+   case TGSI_OPCODE_FSNE:
+      cond = GEN6_COND_NZ;
       break;
    default:
       assert(!"invalid aos_set_on_cond() call");
@@ -255,7 +259,7 @@ aos_set_on_cond(struct toy_compiler *tc,
    tc_MOV(tc, dst[0], zero);
    tc_CMP(tc, tdst_null(), src[0], src[1], cond);
    inst = tc_MOV(tc, dst[0], one);
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
+   inst->pred_ctrl = GEN6_PREDCTRL_NORMAL;
 }
 
 static void
@@ -279,9 +283,9 @@ aos_compare(struct toy_compiler *tc,
       return;
    }
 
-   tc_CMP(tc, tdst_null(), src[0], zero, BRW_CONDITIONAL_L);
-   inst = tc_SEL(tc, dst[0], src[1], src[2], BRW_CONDITIONAL_NONE);
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
+   tc_CMP(tc, tdst_null(), src[0], zero, GEN6_COND_L);
+   inst = tc_SEL(tc, dst[0], src[1], src[2], GEN6_COND_NONE);
+   inst->pred_ctrl = GEN6_PREDCTRL_NORMAL;
 }
 
 static void
@@ -311,13 +315,13 @@ aos_set_sign(struct toy_compiler *tc,
 
    tc_MOV(tc, dst[0], zero);
 
-   tc_CMP(tc, tdst_null(), src[0], zero, BRW_CONDITIONAL_G);
+   tc_CMP(tc, tdst_null(), src[0], zero, GEN6_COND_G);
    inst = tc_MOV(tc, dst[0], one);
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
+   inst->pred_ctrl = GEN6_PREDCTRL_NORMAL;
 
-   tc_CMP(tc, tdst_null(), src[0], zero, BRW_CONDITIONAL_L);
+   tc_CMP(tc, tdst_null(), src[0], zero, GEN6_COND_L);
    inst = tc_MOV(tc, dst[0], neg_one);
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
+   inst->pred_ctrl = GEN6_PREDCTRL_NORMAL;
 }
 
 static void
@@ -376,7 +380,7 @@ aos_tex(struct toy_compiler *tc,
    inst->opcode = opcode;
    inst->tex.target = tgsi_inst->Texture.Texture;
 
-   assert(tgsi_inst->Instruction.NumSrcRegs <= Elements(inst->src));
+   assert(tgsi_inst->Instruction.NumSrcRegs <= ARRAY_SIZE(inst->src));
    assert(tgsi_inst->Instruction.NumDstRegs == 1);
 
    inst->dst = dst[0];
@@ -445,7 +449,7 @@ aos_sample(struct toy_compiler *tc,
    inst = tc_add(tc);
    inst->opcode = opcode;
 
-   assert(tgsi_inst->Instruction.NumSrcRegs <= Elements(inst->src));
+   assert(tgsi_inst->Instruction.NumSrcRegs <= ARRAY_SIZE(inst->src));
    assert(tgsi_inst->Instruction.NumDstRegs == 1);
 
    inst->dst = dst[0];
@@ -471,19 +475,19 @@ aos_LIT(struct toy_compiler *tc,
    tc_CMP(tc, tdst_null(),
          tsrc_swizzle1(src[0], TOY_SWIZZLE_X),
          tsrc_imm_f(0.0f),
-         BRW_CONDITIONAL_G);
+         GEN6_COND_G);
 
    inst = tc_MOV(tc,
          tdst_writemask(dst[0], TOY_WRITEMASK_Y),
          tsrc_swizzle1(src[0], TOY_SWIZZLE_X));
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
+   inst->pred_ctrl = GEN6_PREDCTRL_NORMAL;
 
    /* clamp W to (-128, 128)? */
    inst = tc_POW(tc,
          tdst_writemask(dst[0], TOY_WRITEMASK_Z),
          tsrc_swizzle1(src[0], TOY_SWIZZLE_Y),
          tsrc_swizzle1(src[0], TOY_SWIZZLE_W));
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
+   inst->pred_ctrl = GEN6_PREDCTRL_NORMAL;
 }
 
 static void
@@ -565,21 +569,6 @@ aos_LRP(struct toy_compiler *tc,
 }
 
 static void
-aos_CND(struct toy_compiler *tc,
-        const struct tgsi_full_instruction *tgsi_inst,
-        struct toy_dst *dst,
-        struct toy_src *src)
-{
-   struct toy_inst *inst;
-
-   assert(!"CND untested");
-
-   tc_CMP(tc, tdst_null(), src[2], tsrc_imm_f(0.5f), BRW_CONDITIONAL_G);
-   inst = tc_SEL(tc, dst[0], src[0], src[1], BRW_CONDITIONAL_NONE);
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
-}
-
-static void
 aos_DP2A(struct toy_compiler *tc,
          const struct tgsi_full_instruction *tgsi_inst,
          struct toy_dst *dst,
@@ -601,8 +590,8 @@ aos_CLAMP(struct toy_compiler *tc,
 {
    assert(!"CLAMP untested");
 
-   tc_SEL(tc, dst[0], src[0], src[1], BRW_CONDITIONAL_GE);
-   tc_SEL(tc, dst[0], src[2], tsrc_from(dst[0]), BRW_CONDITIONAL_L);
+   tc_SEL(tc, dst[0], src[0], src[1], GEN6_COND_GE);
+   tc_SEL(tc, dst[0], src[2], tsrc_from(dst[0]), GEN6_COND_L);
 }
 
 static void
@@ -647,28 +636,6 @@ aos_PK2H(struct toy_compiler *tc,
 }
 
 static void
-aos_SFL(struct toy_compiler *tc,
-        const struct tgsi_full_instruction *tgsi_inst,
-        struct toy_dst *dst,
-        struct toy_src *src)
-{
-   assert(!"SFL untested");
-
-   tc_MOV(tc, dst[0], tsrc_imm_f(0.0f));
-}
-
-static void
-aos_STR(struct toy_compiler *tc,
-        const struct tgsi_full_instruction *tgsi_inst,
-        struct toy_dst *dst,
-        struct toy_src *src)
-{
-   assert(!"STR untested");
-
-   tc_MOV(tc, dst[0], tsrc_imm_f(1.0f));
-}
-
-static void
 aos_UP2H(struct toy_compiler *tc,
          const struct tgsi_full_instruction *tgsi_inst,
          struct toy_dst *dst,
@@ -701,24 +668,6 @@ aos_SCS(struct toy_compiler *tc,
 }
 
 static void
-aos_NRM(struct toy_compiler *tc,
-        const struct tgsi_full_instruction *tgsi_inst,
-        struct toy_dst *dst,
-        struct toy_src *src)
-{
-   struct toy_dst tmp = tc_alloc_tmp(tc);
-
-   assert(!"NRM untested");
-
-   tc_DP3(tc, tmp, src[0], src[0]);
-   tc_INV(tc, tmp, tsrc_from(tmp));
-   tc_MUL(tc, tdst_writemask(dst[0], TOY_WRITEMASK_XYZ),
-         src[0], tsrc_from(tmp));
-
-   tc_MOV(tc, tdst_writemask(dst[0], TOY_WRITEMASK_W), tsrc_imm_f(1.0f));
-}
-
-static void
 aos_DIV(struct toy_compiler *tc,
         const struct tgsi_full_instruction *tgsi_inst,
         struct toy_dst *dst,
@@ -738,7 +687,7 @@ aos_BRK(struct toy_compiler *tc,
         struct toy_dst *dst,
         struct toy_src *src)
 {
-   tc_add0(tc, BRW_OPCODE_BREAK);
+   tc_add0(tc, GEN6_OPCODE_BREAK);
 }
 
 static void
@@ -773,7 +722,7 @@ aos_CONT(struct toy_compiler *tc,
          struct toy_dst *dst,
          struct toy_src *src)
 {
-   tc_add0(tc, BRW_OPCODE_CONTINUE);
+   tc_add0(tc, GEN6_OPCODE_CONT);
 }
 
 static void
@@ -784,7 +733,7 @@ aos_BGNLOOP(struct toy_compiler *tc,
 {
    struct toy_inst *inst;
 
-   inst = tc_add0(tc, BRW_OPCODE_DO);
+   inst = tc_add0(tc, TOY_OPCODE_DO);
    /* this is just a marker */
    inst->marker = true;
 }
@@ -795,22 +744,7 @@ aos_ENDLOOP(struct toy_compiler *tc,
             struct toy_dst *dst,
             struct toy_src *src)
 {
-   tc_add0(tc, BRW_OPCODE_WHILE);
-}
-
-static void
-aos_NRM4(struct toy_compiler *tc,
-         const struct tgsi_full_instruction *tgsi_inst,
-         struct toy_dst *dst,
-         struct toy_src *src)
-{
-   struct toy_dst tmp = tc_alloc_tmp(tc);
-
-   assert(!"NRM4 untested");
-
-   tc_DP4(tc, tmp, src[0], src[0]);
-   tc_INV(tc, tmp, tsrc_from(tmp));
-   tc_MUL(tc, dst[0], tsrc_swizzle1(src[0], TOY_SWIZZLE_X), tsrc_from(tmp));
+   tc_add0(tc, GEN6_OPCODE_WHILE);
 }
 
 static void
@@ -846,11 +780,8 @@ static const toy_tgsi_translate aos_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_MAD]          = aos_simple,
    [TGSI_OPCODE_SUB]          = aos_simple,
    [TGSI_OPCODE_LRP]          = aos_LRP,
-   [TGSI_OPCODE_CND]          = aos_CND,
    [TGSI_OPCODE_SQRT]         = aos_simple,
    [TGSI_OPCODE_DP2A]         = aos_DP2A,
-   [22]                       = aos_unsupported,
-   [23]                       = aos_unsupported,
    [TGSI_OPCODE_FRC]          = aos_simple,
    [TGSI_OPCODE_CLAMP]        = aos_CLAMP,
    [TGSI_OPCODE_FLR]          = aos_simple,
@@ -859,9 +790,7 @@ static const toy_tgsi_translate aos_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_LG2]          = aos_simple,
    [TGSI_OPCODE_POW]          = aos_simple,
    [TGSI_OPCODE_XPD]          = aos_XPD,
-   [32]                       = aos_unsupported,
    [TGSI_OPCODE_ABS]          = aos_simple,
-   [TGSI_OPCODE_RCC]          = aos_unsupported,
    [TGSI_OPCODE_DPH]          = aos_simple,
    [TGSI_OPCODE_COS]          = aos_simple,
    [TGSI_OPCODE_DDX]          = aos_unsupported,
@@ -871,14 +800,11 @@ static const toy_tgsi_translate aos_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_PK2US]        = aos_unsupported,
    [TGSI_OPCODE_PK4B]         = aos_unsupported,
    [TGSI_OPCODE_PK4UB]        = aos_unsupported,
-   [TGSI_OPCODE_RFL]          = aos_unsupported,
    [TGSI_OPCODE_SEQ]          = aos_set_on_cond,
-   [TGSI_OPCODE_SFL]          = aos_SFL,
    [TGSI_OPCODE_SGT]          = aos_set_on_cond,
    [TGSI_OPCODE_SIN]          = aos_simple,
    [TGSI_OPCODE_SLE]          = aos_set_on_cond,
    [TGSI_OPCODE_SNE]          = aos_set_on_cond,
-   [TGSI_OPCODE_STR]          = aos_STR,
    [TGSI_OPCODE_TEX]          = aos_tex,
    [TGSI_OPCODE_TXD]          = aos_tex,
    [TGSI_OPCODE_TXP]          = aos_tex,
@@ -886,28 +812,21 @@ static const toy_tgsi_translate aos_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_UP2US]        = aos_unsupported,
    [TGSI_OPCODE_UP4B]         = aos_unsupported,
    [TGSI_OPCODE_UP4UB]        = aos_unsupported,
-   [TGSI_OPCODE_X2D]          = aos_unsupported,
-   [TGSI_OPCODE_ARA]          = aos_unsupported,
    [TGSI_OPCODE_ARR]          = aos_simple,
-   [TGSI_OPCODE_BRA]          = aos_unsupported,
    [TGSI_OPCODE_CAL]          = aos_unsupported,
    [TGSI_OPCODE_RET]          = aos_unsupported,
    [TGSI_OPCODE_SSG]          = aos_set_sign,
    [TGSI_OPCODE_CMP]          = aos_compare,
    [TGSI_OPCODE_SCS]          = aos_SCS,
    [TGSI_OPCODE_TXB]          = aos_tex,
-   [TGSI_OPCODE_NRM]          = aos_NRM,
    [TGSI_OPCODE_DIV]          = aos_DIV,
    [TGSI_OPCODE_DP2]          = aos_simple,
    [TGSI_OPCODE_TXL]          = aos_tex,
    [TGSI_OPCODE_BRK]          = aos_BRK,
    [TGSI_OPCODE_IF]           = aos_simple,
    [TGSI_OPCODE_UIF]          = aos_simple,
-   [76]                       = aos_unsupported,
    [TGSI_OPCODE_ELSE]         = aos_simple,
    [TGSI_OPCODE_ENDIF]        = aos_simple,
-   [79]                       = aos_unsupported,
-   [80]                       = aos_unsupported,
    [TGSI_OPCODE_PUSHA]        = aos_unsupported,
    [TGSI_OPCODE_POPA]         = aos_unsupported,
    [TGSI_OPCODE_CEIL]         = aos_CEIL,
@@ -915,7 +834,6 @@ static const toy_tgsi_translate aos_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_NOT]          = aos_simple,
    [TGSI_OPCODE_TRUNC]        = aos_simple,
    [TGSI_OPCODE_SHL]          = aos_simple,
-   [88]                       = aos_unsupported,
    [TGSI_OPCODE_AND]          = aos_simple,
    [TGSI_OPCODE_OR]           = aos_simple,
    [TGSI_OPCODE_MOD]          = aos_simple,
@@ -931,20 +849,15 @@ static const toy_tgsi_translate aos_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_ENDLOOP]      = aos_ENDLOOP,
    [TGSI_OPCODE_ENDSUB]       = aos_unsupported,
    [TGSI_OPCODE_TXQ_LZ]       = aos_tex,
-   [104]                      = aos_unsupported,
-   [105]                      = aos_unsupported,
-   [106]                      = aos_unsupported,
    [TGSI_OPCODE_NOP]          = aos_simple,
-   [108]                      = aos_unsupported,
-   [109]                      = aos_unsupported,
-   [110]                      = aos_unsupported,
-   [111]                      = aos_unsupported,
-   [TGSI_OPCODE_NRM4]         = aos_NRM4,
+   [TGSI_OPCODE_FSEQ]         = aos_set_on_cond,
+   [TGSI_OPCODE_FSGE]         = aos_set_on_cond,
+   [TGSI_OPCODE_FSLT]         = aos_set_on_cond,
+   [TGSI_OPCODE_FSNE]         = aos_set_on_cond,
    [TGSI_OPCODE_CALLNZ]       = aos_unsupported,
    [TGSI_OPCODE_BREAKC]       = aos_unsupported,
    [TGSI_OPCODE_KILL_IF]      = aos_simple,
    [TGSI_OPCODE_END]          = aos_simple,
-   [118]                      = aos_unsupported,
    [TGSI_OPCODE_F2I]          = aos_simple,
    [TGSI_OPCODE_IDIV]         = aos_simple,
    [TGSI_OPCODE_IMAX]         = aos_simple,
@@ -1173,9 +1086,9 @@ soa_if(struct toy_compiler *tc,
    tsrc_transpose(src_[0], src0);
 
    if (tgsi_inst->Instruction.Opcode == TGSI_OPCODE_IF)
-      tc_IF(tc, tdst_null(), src0[0], tsrc_imm_f(0.0f), BRW_CONDITIONAL_NEQ);
+      tc_IF(tc, tdst_null(), src0[0], tsrc_imm_f(0.0f), GEN6_COND_NZ);
    else
-      tc_IF(tc, tdst_null(), src0[0], tsrc_imm_d(0), BRW_CONDITIONAL_NEQ);
+      tc_IF(tc, tdst_null(), src0[0], tsrc_imm_d(0), GEN6_COND_NZ);
 }
 
 static void
@@ -1200,11 +1113,11 @@ soa_LIT(struct toy_compiler *tc,
     * POW is calculated first because math with pred_ctrl is broken here.
     * But, why?
     */
-   tc_CMP(tc, tdst_null(), src0[0], tsrc_imm_f(0.0f), BRW_CONDITIONAL_L);
+   tc_CMP(tc, tdst_null(), src0[0], tsrc_imm_f(0.0f), GEN6_COND_L);
    inst = tc_MOV(tc, dst0[1], tsrc_imm_f(0.0f));
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
+   inst->pred_ctrl = GEN6_PREDCTRL_NORMAL;
    inst = tc_MOV(tc, dst0[2], tsrc_imm_f(0.0f));
-   inst->pred_ctrl = BRW_PREDICATE_NORMAL;
+   inst->pred_ctrl = GEN6_PREDCTRL_NORMAL;
 }
 
 static void
@@ -1376,58 +1289,6 @@ soa_SCS(struct toy_compiler *tc,
 }
 
 static void
-soa_NRM(struct toy_compiler *tc,
-        const struct tgsi_full_instruction *tgsi_inst,
-        struct toy_dst *dst_,
-        struct toy_src *src_)
-{
-   const struct toy_dst tmp = tc_alloc_tmp(tc);
-   struct toy_dst dst0[4];
-   struct toy_src src0[4];
-
-   assert(!"SoA NRM untested");
-
-   tdst_transpose(dst_[0], dst0);
-   tsrc_transpose(src_[0], src0);
-
-   tc_MUL(tc, tmp, src0[2], src0[2]);
-   tc_MAC(tc, tmp, src0[1], src0[1], tsrc_from(tmp));
-   tc_MAC(tc, tmp, src0[0], src0[0], tsrc_from(tmp));
-   tc_INV(tc, tmp, tsrc_from(tmp));
-
-   tc_MUL(tc, dst0[0], src0[0], tsrc_from(tmp));
-   tc_MUL(tc, dst0[1], src0[1], tsrc_from(tmp));
-   tc_MUL(tc, dst0[2], src0[2], tsrc_from(tmp));
-   tc_MOV(tc, dst0[3], tsrc_imm_f(1.0f));
-}
-
-static void
-soa_NRM4(struct toy_compiler *tc,
-         const struct tgsi_full_instruction *tgsi_inst,
-         struct toy_dst *dst_,
-         struct toy_src *src_)
-{
-   const struct toy_dst tmp = tc_alloc_tmp(tc);
-   struct toy_dst dst0[4];
-   struct toy_src src0[4];
-   int i;
-
-   assert(!"SoA NRM4 untested");
-
-   tdst_transpose(dst_[0], dst0);
-   tsrc_transpose(src_[0], src0);
-
-   tc_MUL(tc, tmp, src0[3], src0[3]);
-   tc_MAC(tc, tmp, src0[2], src0[2], tsrc_from(tmp));
-   tc_MAC(tc, tmp, src0[1], src0[1], tsrc_from(tmp));
-   tc_MAC(tc, tmp, src0[0], src0[0], tsrc_from(tmp));
-   tc_INV(tc, tmp, tsrc_from(tmp));
-
-   for (i = 0; i < 4; i++)
-      tc_MUL(tc, dst0[i], src0[0], tsrc_from(tmp));
-}
-
-static void
 soa_unsupported(struct toy_compiler *tc,
                 const struct tgsi_full_instruction *tgsi_inst,
                 struct toy_dst *dst_,
@@ -1462,11 +1323,8 @@ static const toy_tgsi_translate soa_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_MAD]          = soa_per_channel,
    [TGSI_OPCODE_SUB]          = soa_per_channel,
    [TGSI_OPCODE_LRP]          = soa_per_channel,
-   [TGSI_OPCODE_CND]          = soa_per_channel,
    [TGSI_OPCODE_SQRT]         = soa_scalar_replicate,
    [TGSI_OPCODE_DP2A]         = soa_dot_product,
-   [22]                       = soa_unsupported,
-   [23]                       = soa_unsupported,
    [TGSI_OPCODE_FRC]          = soa_per_channel,
    [TGSI_OPCODE_CLAMP]        = soa_per_channel,
    [TGSI_OPCODE_FLR]          = soa_per_channel,
@@ -1475,9 +1333,7 @@ static const toy_tgsi_translate soa_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_LG2]          = soa_scalar_replicate,
    [TGSI_OPCODE_POW]          = soa_scalar_replicate,
    [TGSI_OPCODE_XPD]          = soa_XPD,
-   [32]                       = soa_unsupported,
    [TGSI_OPCODE_ABS]          = soa_per_channel,
-   [TGSI_OPCODE_RCC]          = soa_unsupported,
    [TGSI_OPCODE_DPH]          = soa_dot_product,
    [TGSI_OPCODE_COS]          = soa_scalar_replicate,
    [TGSI_OPCODE_DDX]          = soa_partial_derivative,
@@ -1487,14 +1343,11 @@ static const toy_tgsi_translate soa_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_PK2US]        = soa_unsupported,
    [TGSI_OPCODE_PK4B]         = soa_unsupported,
    [TGSI_OPCODE_PK4UB]        = soa_unsupported,
-   [TGSI_OPCODE_RFL]          = soa_unsupported,
    [TGSI_OPCODE_SEQ]          = soa_per_channel,
-   [TGSI_OPCODE_SFL]          = soa_per_channel,
    [TGSI_OPCODE_SGT]          = soa_per_channel,
    [TGSI_OPCODE_SIN]          = soa_scalar_replicate,
    [TGSI_OPCODE_SLE]          = soa_per_channel,
    [TGSI_OPCODE_SNE]          = soa_per_channel,
-   [TGSI_OPCODE_STR]          = soa_per_channel,
    [TGSI_OPCODE_TEX]          = soa_passthrough,
    [TGSI_OPCODE_TXD]          = soa_passthrough,
    [TGSI_OPCODE_TXP]          = soa_passthrough,
@@ -1502,28 +1355,21 @@ static const toy_tgsi_translate soa_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_UP2US]        = soa_unsupported,
    [TGSI_OPCODE_UP4B]         = soa_unsupported,
    [TGSI_OPCODE_UP4UB]        = soa_unsupported,
-   [TGSI_OPCODE_X2D]          = soa_unsupported,
-   [TGSI_OPCODE_ARA]          = soa_unsupported,
    [TGSI_OPCODE_ARR]          = soa_per_channel,
-   [TGSI_OPCODE_BRA]          = soa_unsupported,
    [TGSI_OPCODE_CAL]          = soa_unsupported,
    [TGSI_OPCODE_RET]          = soa_unsupported,
    [TGSI_OPCODE_SSG]          = soa_per_channel,
    [TGSI_OPCODE_CMP]          = soa_per_channel,
    [TGSI_OPCODE_SCS]          = soa_SCS,
    [TGSI_OPCODE_TXB]          = soa_passthrough,
-   [TGSI_OPCODE_NRM]          = soa_NRM,
    [TGSI_OPCODE_DIV]          = soa_per_channel,
    [TGSI_OPCODE_DP2]          = soa_dot_product,
    [TGSI_OPCODE_TXL]          = soa_passthrough,
    [TGSI_OPCODE_BRK]          = soa_passthrough,
    [TGSI_OPCODE_IF]           = soa_if,
    [TGSI_OPCODE_UIF]          = soa_if,
-   [76]                       = soa_unsupported,
    [TGSI_OPCODE_ELSE]         = soa_passthrough,
    [TGSI_OPCODE_ENDIF]        = soa_passthrough,
-   [79]                       = soa_unsupported,
-   [80]                       = soa_unsupported,
    [TGSI_OPCODE_PUSHA]        = soa_unsupported,
    [TGSI_OPCODE_POPA]         = soa_unsupported,
    [TGSI_OPCODE_CEIL]         = soa_per_channel,
@@ -1531,7 +1377,6 @@ static const toy_tgsi_translate soa_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_NOT]          = soa_per_channel,
    [TGSI_OPCODE_TRUNC]        = soa_per_channel,
    [TGSI_OPCODE_SHL]          = soa_per_channel,
-   [88]                       = soa_unsupported,
    [TGSI_OPCODE_AND]          = soa_per_channel,
    [TGSI_OPCODE_OR]           = soa_per_channel,
    [TGSI_OPCODE_MOD]          = soa_per_channel,
@@ -1547,20 +1392,15 @@ static const toy_tgsi_translate soa_translate_table[TGSI_OPCODE_LAST] = {
    [TGSI_OPCODE_ENDLOOP]      = soa_passthrough,
    [TGSI_OPCODE_ENDSUB]       = soa_unsupported,
    [TGSI_OPCODE_TXQ_LZ]       = soa_passthrough,
-   [104]                      = soa_unsupported,
-   [105]                      = soa_unsupported,
-   [106]                      = soa_unsupported,
    [TGSI_OPCODE_NOP]          = soa_passthrough,
-   [108]                      = soa_unsupported,
-   [109]                      = soa_unsupported,
-   [110]                      = soa_unsupported,
-   [111]                      = soa_unsupported,
-   [TGSI_OPCODE_NRM4]         = soa_NRM4,
+   [TGSI_OPCODE_FSEQ]         = soa_per_channel,
+   [TGSI_OPCODE_FSGE]         = soa_per_channel,
+   [TGSI_OPCODE_FSLT]         = soa_per_channel,
+   [TGSI_OPCODE_FSNE]         = soa_per_channel,
    [TGSI_OPCODE_CALLNZ]       = soa_unsupported,
    [TGSI_OPCODE_BREAKC]       = soa_unsupported,
    [TGSI_OPCODE_KILL_IF]          = soa_passthrough,
    [TGSI_OPCODE_END]          = soa_passthrough,
-   [118]                      = soa_unsupported,
    [TGSI_OPCODE_F2I]          = soa_per_channel,
    [TGSI_OPCODE_IDIV]         = soa_per_channel,
    [TGSI_OPCODE_IMAX]         = soa_per_channel,
@@ -1753,7 +1593,7 @@ ra_get_type(struct toy_tgsi *tgsi, const struct tgsi_full_instruction *tgsi_inst
       tgsi_inst->Src[operand].Register.File;
    switch (file) {
    case TGSI_FILE_SAMPLER:
-   case TGSI_FILE_RESOURCE:
+   case TGSI_FILE_IMAGE:
    case TGSI_FILE_SAMPLER_VIEW:
       type = TOY_TYPE_D;
       break;
@@ -1994,7 +1834,7 @@ ra_get_src_indirect(struct toy_tgsi *tgsi,
       src = tsrc_null();
       break;
    case TGSI_FILE_SAMPLER:
-   case TGSI_FILE_RESOURCE:
+   case TGSI_FILE_IMAGE:
    case TGSI_FILE_SAMPLER_VIEW:
       is_resource = true;
       /* fall through */
@@ -2078,7 +1918,7 @@ ra_get_src(struct toy_tgsi *tgsi,
       need_vrf = true;
       break;
    case TGSI_FILE_SAMPLER:
-   case TGSI_FILE_RESOURCE:
+   case TGSI_FILE_IMAGE:
    case TGSI_FILE_SAMPLER_VIEW:
       assert(!s->Register.Dimension);
       src = tsrc_imm_d(s->Register.Index);
@@ -2181,6 +2021,12 @@ parse_instruction(struct toy_tgsi *tgsi,
 
    /* translate the instruction */
    translate = tgsi->translate_table[tgsi_inst->Instruction.Opcode];
+   if (!translate) {
+      if (tgsi->translate_table == soa_translate_table)
+         soa_unsupported(tgsi->tc, tgsi_inst, dst, src);
+      else
+         aos_unsupported(tgsi->tc, tgsi_inst, dst, src);
+   }
    translate(tgsi->tc, tgsi_inst, dst, src);
 
    /* write the result to the real destinations if needed */
@@ -2189,9 +2035,6 @@ parse_instruction(struct toy_tgsi *tgsi,
 
       if (!dst_is_scratch[i])
          continue;
-
-      if (tgsi_inst->Instruction.Saturate == TGSI_SAT_MINUS_PLUS_ONE)
-         tc_fail(tgsi->tc, "TGSI_SAT_MINUS_PLUS_ONE unhandled");
 
       tgsi->tc->templ.saturate = tgsi_inst->Instruction.Saturate;
 
@@ -2244,6 +2087,12 @@ parse_instruction(struct toy_tgsi *tgsi,
       break;
    }
 
+   for (i = 0; i < tgsi_inst->Instruction.NumSrcRegs; i++) {
+      const struct tgsi_full_src_register *s = &tgsi_inst->Src[i];
+      if (s->Register.File == TGSI_FILE_CONSTANT && s->Register.Indirect)
+         tgsi->const_indirect = true;
+   }
+
    /* remember channels written */
    for (i = 0; i < tgsi_inst->Instruction.NumDstRegs; i++) {
       const struct tgsi_full_dst_register *d = &tgsi_inst->Dst[i];
@@ -2269,7 +2118,7 @@ decl_add_in(struct toy_tgsi *tgsi, const struct tgsi_full_declaration *decl)
       (decl->Declaration.Interpolate) ? &decl->Interp: &default_interp;
    int index;
 
-   if (decl->Range.Last >= Elements(tgsi->inputs)) {
+   if (decl->Range.Last >= ARRAY_SIZE(tgsi->inputs)) {
       assert(!"invalid IN");
       return;
    }
@@ -2288,7 +2137,7 @@ decl_add_in(struct toy_tgsi *tgsi, const struct tgsi_full_declaration *decl)
          tgsi->inputs[slot].semantic_index = index;
       }
       tgsi->inputs[slot].interp = interp->Interpolate;
-      tgsi->inputs[slot].centroid = interp->Centroid;
+      tgsi->inputs[slot].centroid = interp->Location == TGSI_INTERPOLATE_LOC_CENTROID;
    }
 }
 
@@ -2297,7 +2146,7 @@ decl_add_out(struct toy_tgsi *tgsi, const struct tgsi_full_declaration *decl)
 {
    int index;
 
-   if (decl->Range.Last >= Elements(tgsi->outputs)) {
+   if (decl->Range.Last >= ARRAY_SIZE(tgsi->outputs)) {
       assert(!"invalid OUT");
       return;
    }
@@ -2320,7 +2169,7 @@ decl_add_sv(struct toy_tgsi *tgsi, const struct tgsi_full_declaration *decl)
 {
    int index;
 
-   if (decl->Range.Last >= Elements(tgsi->system_values)) {
+   if (decl->Range.Last >= ARRAY_SIZE(tgsi->system_values)) {
       assert(!"invalid SV");
       return;
    }
@@ -2398,13 +2247,16 @@ parse_declaration(struct toy_tgsi *tgsi,
       /* immediates should be declared with TGSI_TOKEN_TYPE_IMMEDIATE */
       assert(!"unexpected immediate declaration");
       break;
-   case TGSI_FILE_NULL:
    case TGSI_FILE_CONSTANT:
+      if (tgsi->const_count <= decl->Range.Last)
+         tgsi->const_count = decl->Range.Last + 1;
+      break;
+   case TGSI_FILE_NULL:
    case TGSI_FILE_TEMPORARY:
    case TGSI_FILE_SAMPLER:
    case TGSI_FILE_PREDICATE:
    case TGSI_FILE_ADDRESS:
-   case TGSI_FILE_RESOURCE:
+   case TGSI_FILE_IMAGE:
    case TGSI_FILE_SAMPLER_VIEW:
       /* nothing to do */
       break;
@@ -2441,10 +2293,8 @@ add_imm(struct toy_tgsi *tgsi, enum toy_type type, const uint32_t *buf)
             cur_size * sizeof(new_types[0]),
             new_size * sizeof(new_types[0]));
       if (!new_buf || !new_types) {
-         if (new_buf)
-            FREE(new_buf);
-         if (new_types)
-            FREE(new_types);
+         FREE(new_buf);
+         FREE(new_types);
          return -1;
       }
 

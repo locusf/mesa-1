@@ -1,7 +1,7 @@
 /**************************************************************************
  *
  * Copyright 2009 Artur Wyszynski <harakash@gmail.com>
- * Copyright 2013 Alexander von Gluck IV <kallisti5@unixzen.com>
+ * Copyright 2013-2014 Alexander von Gluck IV <kallisti5@unixzen.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -25,20 +25,49 @@
  *
  **************************************************************************/
 
+#include <stdio.h>
 
 #include "pipe/p_compiler.h"
+#include "pipe/p_defines.h"
 #include "pipe/p_format.h"
 #include "util/u_inlines.h"
 #include "util/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "state_tracker/st_api.h"
+#include "state_tracker/sw_winsys.h"
 
-#include "hgl_sw_winsys.h"
 #include "bitmap_wrapper.h"
+#include "hgl_sw_winsys.h"
+
+
+#ifdef DEBUG
+#   define TRACE(x...) printf("hgl:winsys: " x)
+#   define CALLED() TRACE("CALLED: %s\n", __PRETTY_FUNCTION__)
+#else
+#   define TRACE(x...)
+#   define CALLED()
+#endif
+#define ERROR(x...) printf("hgl:winsys: " x)
+
+
+struct haiku_displaytarget
+{
+	enum pipe_format format;
+	color_space colorSpace;
+
+	unsigned width;
+	unsigned height;
+	unsigned stride;
+
+	unsigned size;
+
+	void* data;
+};
 
 
 // Cast
-static INLINE struct haiku_displaytarget*
+static inline struct haiku_displaytarget*
 hgl_sw_displaytarget(struct sw_displaytarget* target)
 {
 	return (struct haiku_displaytarget *)target;
@@ -57,9 +86,22 @@ hgl_winsys_is_displaytarget_format_supported(struct sw_winsys* winsys,
 	unsigned textureUsage, enum pipe_format format)
 {
 	// TODO STUB
-	return true;
+	return TRUE;
 }
 
+static color_space
+hgl_winsys_convert_cs(enum pipe_format format)
+{
+	// TODO: B_RGB24, B_RGB16, B_RGB15?
+	switch(format) {
+		case PIPE_FORMAT_B5G6R5_UNORM:
+			return B_CMAP8;
+		case PIPE_FORMAT_A8B8G8R8_UNORM:
+		case PIPE_FORMAT_X8B8G8R8_UNORM:
+		default:
+			return B_RGB32;
+	}
+}
 
 static struct sw_displaytarget*
 hgl_winsys_displaytarget_create(struct sw_winsys* winsys,
@@ -70,6 +112,9 @@ hgl_winsys_displaytarget_create(struct sw_winsys* winsys,
 		= CALLOC_STRUCT(haiku_displaytarget);
 	assert(haikuDisplayTarget);
 
+	TRACE("%s: %d x %d\n", __func__, width, height);
+
+	haikuDisplayTarget->colorSpace = hgl_winsys_convert_cs(format);
 	haikuDisplayTarget->format = format;
 	haikuDisplayTarget->width = width;
 	haikuDisplayTarget->height = height;
@@ -147,7 +192,8 @@ hgl_winsys_displaytarget_unmap(struct sw_winsys* winsys,
 
 static void
 hgl_winsys_displaytarget_display(struct sw_winsys* winsys,
-	struct sw_displaytarget* displayTarget, void* contextPrivate)
+	struct sw_displaytarget* displayTarget, void* contextPrivate,
+	struct pipe_box *box)
 {
 	assert(contextPrivate);
 
@@ -156,8 +202,12 @@ hgl_winsys_displaytarget_display(struct sw_winsys* winsys,
 	struct haiku_displaytarget* haikuDisplayTarget
 		= hgl_sw_displaytarget(displayTarget);
 
-	copy_bitmap_bits(bitmap, haikuDisplayTarget->data,
-		haikuDisplayTarget->size);
+	import_bitmap_bits(bitmap, haikuDisplayTarget->data,
+		haikuDisplayTarget->size, haikuDisplayTarget->stride,
+		haikuDisplayTarget->colorSpace);
+
+	// Dump the rendered bitmap to disk for debugging
+	//dump_bitmap(bitmap);
 
 	return;
 }

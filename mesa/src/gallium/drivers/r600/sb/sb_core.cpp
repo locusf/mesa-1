@@ -26,13 +26,11 @@
 
 #define SB_RA_SCHED_CHECK DEBUG
 
-extern "C" {
 #include "os/os_time.h"
 #include "r600_pipe.h"
 #include "r600_shader.h"
 
 #include "sb_public.h"
-}
 
 #include <stack>
 #include <map>
@@ -51,13 +49,13 @@ sb_context *r600_sb_context_create(struct r600_context *rctx) {
 
 	sb_context *sctx = new sb_context();
 
-	if (sctx->init(rctx->isa, translate_chip(rctx->family),
-			translate_chip_class(rctx->chip_class))) {
+	if (sctx->init(rctx->isa, translate_chip(rctx->b.family),
+			translate_chip_class(rctx->b.chip_class))) {
 		delete sctx;
 		sctx = NULL;
 	}
 
-	unsigned df = rctx->screen->debug_flags;
+	unsigned df = rctx->screen->b.debug_flags;
 
 	sb_context::dump_pass = df & DBG_SB_DUMP;
 	sb_context::dump_stat = df & DBG_SB_STAT;
@@ -184,12 +182,17 @@ int r600_sb_bytecode_process(struct r600_context *rctx,
 		SB_RUN_PASS(psi_ops,		1);
 
 	SB_RUN_PASS(liveness,			0);
+
+	sh->dce_flags = DF_REMOVE_DEAD | DF_EXPAND;
 	SB_RUN_PASS(dce_cleanup,		0);
 	SB_RUN_PASS(def_use,			0);
 
 	sh->set_undef(sh->root->live_before);
 
-	SB_RUN_PASS(if_conversion,		1);
+	// if conversion breaks the dependency tracking between CF_EMIT ops when it removes
+	// the phi nodes for SV_GEOMETRY_EMIT. Just disable it for GS
+	if (sh->target != TARGET_GS)
+		SB_RUN_PASS(if_conversion,		1);
 
 	// if_conversion breaks info about uses, but next pass (peephole)
 	// doesn't need it, so we can skip def/use update here
@@ -201,9 +204,10 @@ int r600_sb_bytecode_process(struct r600_context *rctx,
 
 	SB_RUN_PASS(gvn,				1);
 
-	SB_RUN_PASS(liveness,			0);
+	SB_RUN_PASS(def_use,			1);
+
+	sh->dce_flags = DF_REMOVE_DEAD | DF_REMOVE_UNUSED;
 	SB_RUN_PASS(dce_cleanup,		1);
-	SB_RUN_PASS(def_use,			0);
 
 	SB_RUN_PASS(ra_split,			0);
 	SB_RUN_PASS(def_use,			0);
@@ -216,6 +220,9 @@ int r600_sb_bytecode_process(struct r600_context *rctx,
 
 	sh->compute_interferences = true;
 	SB_RUN_PASS(liveness,			0);
+
+	sh->dce_flags = DF_REMOVE_DEAD;
+	SB_RUN_PASS(dce_cleanup,		1);
 
 	SB_RUN_PASS(ra_coalesce,		1);
 	SB_RUN_PASS(ra_init,			1);

@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,6 +29,7 @@
 #define DRAW_GS_H
 
 #include "draw_context.h"
+#include "tgsi/tgsi_exec.h"
 #include "draw_private.h"
 
 #define MAX_TGSI_PRIMITIVES 4
@@ -67,8 +68,7 @@ struct draw_geometry_shader {
    struct tgsi_shader_info info;
    unsigned position_output;
    unsigned viewport_index_output;
-   unsigned clipdistance_output[PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT];
-   unsigned culldistance_output[PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT];
+   unsigned ccdistance_output[PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT];
 
    unsigned max_output_vertices;
    unsigned primitive_boundary;
@@ -90,6 +90,8 @@ struct draw_geometry_shader {
    unsigned vector_length;
    unsigned max_out_prims;
 
+   unsigned num_invocations;
+   unsigned invocation_id;
 #ifdef HAVE_LLVM
    struct draw_gs_inputs *gs_input;
    struct draw_gs_jit_context *jit_context;

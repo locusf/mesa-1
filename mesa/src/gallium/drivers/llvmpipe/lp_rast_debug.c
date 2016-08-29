@@ -43,11 +43,22 @@ static const char *cmd_names[LP_RAST_OP_MAX] =
    "begin_query",
    "end_query",
    "set_state",
+   "triangle_32_1",
+   "triangle_32_2",
+   "triangle_32_3",
+   "triangle_32_4",
+   "triangle_32_5",
+   "triangle_32_6",
+   "triangle_32_7",
+   "triangle_32_8",
+   "triangle_32_3_4",
+   "triangle_32_3_16",
+   "triangle_32_4_16",
 };
 
 static const char *cmd_name(unsigned cmd)
 {
-   assert(Elements(cmd_names) > cmd);
+   assert(ARRAY_SIZE(cmd_names) > cmd);
    return cmd_names[cmd];
 }
 
@@ -195,8 +206,8 @@ debug_triangle(int tilex, int tiley,
    while (plane_mask) {
       plane[nr_planes] = tri_plane[u_bit_scan(&plane_mask)];
       plane[nr_planes].c = (plane[nr_planes].c +
-                            plane[nr_planes].dcdy * tiley -
-                            plane[nr_planes].dcdx * tilex);
+                            IMUL64(plane[nr_planes].dcdy, tiley) -
+                            IMUL64(plane[nr_planes].dcdx, tilex));
       nr_planes++;
    }
 
@@ -217,7 +228,7 @@ debug_triangle(int tilex, int tiley,
       }
 
       for (i = 0; i < nr_planes; i++) {
-         plane[i].c += plane[i].dcdx * TILE_SIZE;
+         plane[i].c += IMUL64(plane[i].dcdx, TILE_SIZE);
          plane[i].c += plane[i].dcdy;
       }
    }

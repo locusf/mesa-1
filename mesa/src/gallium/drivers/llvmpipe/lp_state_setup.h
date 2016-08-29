@@ -18,14 +18,14 @@ struct lp_setup_variant_key {
    unsigned size:16;
    unsigned num_inputs:8;
    int color_slot:8;
-
    int bcolor_slot:8;
    int spec_slot:8;
    int bspec_slot:8;
    unsigned flatshade_first:1;
    unsigned pixel_center_half:1;
    unsigned twoside:1;
-   unsigned pad:5;
+   unsigned floating_point_depth:1;
+   unsigned pad:4;
 
    /* TODO: get those floats out of the key and use a jit_context for setup */
    float pgon_offset_units;

@@ -41,76 +41,43 @@
 #include "brw_defines.h"
 #include "brw_state.h"
 #include "intel_batchbuffer.h"
-#include "intel_reg.h"
 
 /**
  * Emit PIPE_CONTROLs to write the current GPU timestamp into a buffer.
  */
-static void
-write_timestamp(struct brw_context *brw, drm_intel_bo *query_bo, int idx)
+void
+brw_write_timestamp(struct brw_context *brw, drm_intel_bo *query_bo, int idx)
 {
-   if (brw->gen >= 6) {
-      /* Emit workaround flushes: */
-      if (brw->gen == 6) {
-         /* The timestamp write below is a non-zero post-sync op, which on
-          * Gen6 necessitates a CS stall.  CS stalls need stall at scoreboard
-          * set.  See the comments for intel_emit_post_sync_nonzero_flush().
-          */
-         BEGIN_BATCH(4);
-         OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-         OUT_BATCH(PIPE_CONTROL_CS_STALL | PIPE_CONTROL_STALL_AT_SCOREBOARD);
-         OUT_BATCH(0);
-         OUT_BATCH(0);
-         ADVANCE_BATCH();
-      }
-
-      BEGIN_BATCH(5);
-      OUT_BATCH(_3DSTATE_PIPE_CONTROL | (5 - 2));
-      OUT_BATCH(PIPE_CONTROL_WRITE_TIMESTAMP);
-      OUT_RELOC(query_bo,
-                I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-                PIPE_CONTROL_GLOBAL_GTT_WRITE |
-                idx * sizeof(uint64_t));
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      ADVANCE_BATCH();
-   } else {
-      BEGIN_BATCH(4);
-      OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2) |
-                PIPE_CONTROL_WRITE_TIMESTAMP);
-      OUT_RELOC(query_bo,
-                I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-                PIPE_CONTROL_GLOBAL_GTT_WRITE |
-                idx * sizeof(uint64_t));
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      ADVANCE_BATCH();
+   if (brw->gen == 6) {
+      /* Emit Sandybridge workaround flush: */
+      brw_emit_pipe_control_flush(brw,
+                                  PIPE_CONTROL_CS_STALL |
+                                  PIPE_CONTROL_STALL_AT_SCOREBOARD);
    }
+
+   uint32_t flags = PIPE_CONTROL_WRITE_TIMESTAMP;
+
+   if (brw->gen == 9 && brw->gt == 4)
+      flags |= PIPE_CONTROL_CS_STALL;
+
+   brw_emit_pipe_control_write(brw, flags,
+                               query_bo, idx * sizeof(uint64_t), 0, 0);
 }
 
 /**
  * Emit PIPE_CONTROLs to write the PS_DEPTH_COUNT register into a buffer.
  */
-static void
-write_depth_count(struct brw_context *brw, drm_intel_bo *query_bo, int idx)
+void
+brw_write_depth_count(struct brw_context *brw, drm_intel_bo *query_bo, int idx)
 {
-   assert(brw->gen < 6);
+   uint32_t flags = PIPE_CONTROL_WRITE_DEPTH_COUNT | PIPE_CONTROL_DEPTH_STALL;
 
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2) |
-             PIPE_CONTROL_DEPTH_STALL | PIPE_CONTROL_WRITE_DEPTH_COUNT);
-   /* This object could be mapped cacheable, but we don't have an exposed
-    * mechanism to support that.  Since it's going uncached, tell GEM that
-    * we're writing to it.  The usual clflush should be all that's required
-    * to pick up the results.
-    */
-   OUT_RELOC(query_bo,
-             I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-             PIPE_CONTROL_GLOBAL_GTT_WRITE |
-             (idx * sizeof(uint64_t)));
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
+   if (brw->gen == 9 && brw->gt == 4)
+      flags |= PIPE_CONTROL_CS_STALL;
+
+   brw_emit_pipe_control_write(brw, flags,
+                               query_bo, idx * sizeof(uint64_t),
+                               0, 0);
 }
 
 /**
@@ -188,8 +155,7 @@ brw_queryobj_get_results(struct gl_context *ctx,
       break;
 
    default:
-      assert(!"Unrecognized query target in brw_queryobj_get_results()");
-      break;
+      unreachable("Unrecognized query target in brw_queryobj_get_results()");
    }
    drm_intel_bo_unmap(query->bo);
 
@@ -269,7 +235,7 @@ brw_begin_query(struct gl_context *ctx, struct gl_query_object *q)
        */
       drm_intel_bo_unreference(query->bo);
       query->bo = drm_intel_bo_alloc(brw->bufmgr, "timer query", 4096, 4096);
-      write_timestamp(brw, query->bo, 0);
+      brw_write_timestamp(brw, query->bo, 0);
       break;
 
    case GL_ANY_SAMPLES_PASSED:
@@ -293,12 +259,11 @@ brw_begin_query(struct gl_context *ctx, struct gl_query_object *q)
        * so turn them on now.
        */
       brw->stats_wm++;
-      brw->state.dirty.brw |= BRW_NEW_STATS_WM;
+      brw->ctx.NewDriverState |= BRW_NEW_STATS_WM;
       break;
 
    default:
-      assert(!"Unrecognized query target in brw_begin_query()");
-      break;
+      unreachable("Unrecognized query target in brw_begin_query()");
    }
 }
 
@@ -321,7 +286,7 @@ brw_end_query(struct gl_context *ctx, struct gl_query_object *q)
    switch (query->Base.Target) {
    case GL_TIME_ELAPSED_EXT:
       /* Write the final timestamp. */
-      write_timestamp(brw, query->bo, 1);
+      brw_write_timestamp(brw, query->bo, 1);
       break;
 
    case GL_ANY_SAMPLES_PASSED:
@@ -351,12 +316,11 @@ brw_end_query(struct gl_context *ctx, struct gl_query_object *q)
       brw->query.obj = NULL;
 
       brw->stats_wm--;
-      brw->state.dirty.brw |= BRW_NEW_STATS_WM;
+      brw->ctx.NewDriverState |= BRW_NEW_STATS_WM;
       break;
 
    default:
-      assert(!"Unrecognized query target in brw_end_query()");
-      break;
+      unreachable("Unrecognized query target in brw_end_query()");
    }
 }
 
@@ -470,7 +434,7 @@ brw_emit_query_begin(struct brw_context *brw)
 
    ensure_bo_has_space(ctx, query);
 
-   write_depth_count(brw, query->bo, query->last_index * 2);
+   brw_write_depth_count(brw, query->bo, query->last_index * 2);
 
    brw->query.begin_emitted = true;
 }
@@ -492,7 +456,7 @@ brw_emit_query_end(struct brw_context *brw)
    if (!brw->query.begin_emitted)
       return;
 
-   write_depth_count(brw, query->bo, query->last_index * 2 + 1);
+   brw_write_depth_count(brw, query->bo, query->last_index * 2 + 1);
 
    brw->query.begin_emitted = false;
    query->last_index++;
@@ -505,7 +469,7 @@ brw_emit_query_end(struct brw_context *brw)
  * current GPU time.  This is unlike GL_TIME_ELAPSED, which measures the
  * time while the query is active.
  */
-static void
+void
 brw_query_counter(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct brw_context *brw = brw_context(ctx);
@@ -515,7 +479,9 @@ brw_query_counter(struct gl_context *ctx, struct gl_query_object *q)
 
    drm_intel_bo_unreference(query->bo);
    query->bo = drm_intel_bo_alloc(brw->bufmgr, "timestamp query", 4096, 4096);
-   write_timestamp(brw, query->bo, 0);
+   brw_write_timestamp(brw, query->bo, 0);
+
+   query->flushed = false;
 }
 
 /**
@@ -529,14 +495,57 @@ brw_get_timestamp(struct gl_context *ctx)
    struct brw_context *brw = brw_context(ctx);
    uint64_t result = 0;
 
-   drm_intel_reg_read(brw->bufmgr, TIMESTAMP, &result);
+   switch (brw->intelScreen->hw_has_timestamp) {
+   case 3: /* New kernel, always full 36bit accuracy */
+      drm_intel_reg_read(brw->bufmgr, TIMESTAMP | 1, &result);
+      break;
+   case 2: /* 64bit kernel, result is left-shifted by 32bits, losing 4bits */
+      drm_intel_reg_read(brw->bufmgr, TIMESTAMP, &result);
+      result = result >> 32;
+      break;
+   case 1: /* 32bit kernel, result is 36bit wide but may be inaccurate! */
+      drm_intel_reg_read(brw->bufmgr, TIMESTAMP, &result);
+      break;
+   }
 
    /* See logic in brw_queryobj_get_results() */
-   result = result >> 32;
    result *= 80;
    result &= (1ull << 36) - 1;
-
    return result;
+}
+
+/**
+ * Is this type of query written by PIPE_CONTROL?
+ */
+bool
+brw_is_query_pipelined(struct brw_query_object *query)
+{
+   switch (query->Base.Target) {
+   case GL_TIMESTAMP:
+   case GL_TIME_ELAPSED:
+   case GL_ANY_SAMPLES_PASSED:
+   case GL_ANY_SAMPLES_PASSED_CONSERVATIVE:
+   case GL_SAMPLES_PASSED_ARB:
+      return true;
+
+   case GL_PRIMITIVES_GENERATED:
+   case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
+   case GL_VERTICES_SUBMITTED_ARB:
+   case GL_PRIMITIVES_SUBMITTED_ARB:
+   case GL_VERTEX_SHADER_INVOCATIONS_ARB:
+   case GL_GEOMETRY_SHADER_INVOCATIONS:
+   case GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED_ARB:
+   case GL_FRAGMENT_SHADER_INVOCATIONS_ARB:
+   case GL_CLIPPING_INPUT_PRIMITIVES_ARB:
+   case GL_CLIPPING_OUTPUT_PRIMITIVES_ARB:
+   case GL_COMPUTE_SHADER_INVOCATIONS_ARB:
+   case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
+   case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
+      return false;
+
+   default:
+      unreachable("Unrecognized query target in is_query_pipelined()");
+   }
 }
 
 /* Initialize query object functions used on all generations. */
@@ -544,7 +553,6 @@ void brw_init_common_queryobj_functions(struct dd_function_table *functions)
 {
    functions->NewQueryObject = brw_new_query_object;
    functions->DeleteQuery = brw_delete_query;
-   functions->QueryCounter = brw_query_counter;
    functions->GetTimestamp = brw_get_timestamp;
 }
 
@@ -555,4 +563,5 @@ void gen4_init_queryobj_functions(struct dd_function_table *functions)
    functions->EndQuery = brw_end_query;
    functions->CheckQuery = brw_check_query;
    functions->WaitQuery = brw_wait_query;
+   functions->QueryCounter = brw_query_counter;
 }

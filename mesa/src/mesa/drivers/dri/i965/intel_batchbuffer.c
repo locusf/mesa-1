@@ -1,78 +1,52 @@
-/**************************************************************************
- * 
- * Copyright 2006 Tungsten Graphics, Inc., Cedar Park, Texas.
+/*
+ * Copyright 2006 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
  * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
+ * distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
- **************************************************************************/
+ */
 
 #include "intel_batchbuffer.h"
 #include "intel_buffer_objects.h"
-#include "intel_reg.h"
 #include "intel_bufmgr.h"
 #include "intel_buffers.h"
+#include "intel_fbo.h"
 #include "brw_context.h"
+#include "brw_defines.h"
+#include "brw_state.h"
+
+#include <xf86drm.h>
+#include <i915_drm.h>
 
 static void
 intel_batchbuffer_reset(struct brw_context *brw);
-
-struct cached_batch_item {
-   struct cached_batch_item *next;
-   uint16_t header;
-   uint16_t size;
-};
-
-static void
-clear_cache(struct brw_context *brw)
-{
-   struct cached_batch_item *item = brw->batch.cached_items;
-
-   while (item) {
-      struct cached_batch_item *next = item->next;
-      free(item);
-      item = next;
-   }
-
-   brw->batch.cached_items = NULL;
-}
 
 void
 intel_batchbuffer_init(struct brw_context *brw)
 {
    intel_batchbuffer_reset(brw);
 
-   if (brw->gen >= 6) {
-      /* We can't just use brw_state_batch to get a chunk of space for
-       * the gen6 workaround because it involves actually writing to
-       * the buffer, and the kernel doesn't let us write to the batch.
-       */
-      brw->batch.workaround_bo = drm_intel_bo_alloc(brw->bufmgr,
-						      "pipe_control workaround",
-						      4096, 4096);
-   }
-
    if (!brw->has_llc) {
       brw->batch.cpu_map = malloc(BATCH_SZ);
       brw->batch.map = brw->batch.cpu_map;
+      brw->batch.map_next = brw->batch.cpu_map;
    }
 }
 
@@ -85,7 +59,7 @@ intel_batchbuffer_reset(struct brw_context *brw)
    }
    brw->batch.last_bo = brw->batch.bo;
 
-   clear_cache(brw);
+   brw_render_cache_set_clear(brw);
 
    brw->batch.bo = drm_intel_bo_alloc(brw->bufmgr, "batchbuffer",
 					BATCH_SZ, 4096);
@@ -93,17 +67,23 @@ intel_batchbuffer_reset(struct brw_context *brw)
       drm_intel_bo_map(brw->batch.bo, true);
       brw->batch.map = brw->batch.bo->virtual;
    }
+   brw->batch.map_next = brw->batch.map;
 
    brw->batch.reserved_space = BATCH_RESERVED;
    brw->batch.state_batch_offset = brw->batch.bo->size;
-   brw->batch.used = 0;
    brw->batch.needs_sol_reset = false;
+   brw->batch.state_base_address_emitted = false;
+
+   /* We don't know what ring the new batch will be sent to until we see the
+    * first BEGIN_BATCH or BEGIN_BATCH_BLT.  Mark it as unknown.
+    */
+   brw->batch.ring = UNKNOWN_RING;
 }
 
 void
 intel_batchbuffer_save_state(struct brw_context *brw)
 {
-   brw->batch.saved.used = brw->batch.used;
+   brw->batch.saved.map_next = brw->batch.map_next;
    brw->batch.saved.reloc_count =
       drm_intel_gem_bo_get_reloc_count(brw->batch.bo);
 }
@@ -113,12 +93,9 @@ intel_batchbuffer_reset_to_saved(struct brw_context *brw)
 {
    drm_intel_gem_bo_clear_relocs(brw->batch.bo, brw->batch.saved.reloc_count);
 
-   brw->batch.used = brw->batch.saved.used;
-
-   /* Cached batch state is dead, since we just cleared some unknown part of the
-    * batchbuffer.  Assume that the caller resets any other state necessary.
-    */
-   clear_cache(brw);
+   brw->batch.map_next = brw->batch.saved.map_next;
+   if (USED_BATCH(brw->batch) == 0)
+      brw->batch.ring = UNKNOWN_RING;
 }
 
 void
@@ -127,8 +104,32 @@ intel_batchbuffer_free(struct brw_context *brw)
    free(brw->batch.cpu_map);
    drm_intel_bo_unreference(brw->batch.last_bo);
    drm_intel_bo_unreference(brw->batch.bo);
-   drm_intel_bo_unreference(brw->batch.workaround_bo);
-   clear_cache(brw);
+}
+
+void
+intel_batchbuffer_require_space(struct brw_context *brw, GLuint sz,
+                                enum brw_gpu_ring ring)
+{
+   /* If we're switching rings, implicitly flush the batch. */
+   if (unlikely(ring != brw->batch.ring) && brw->batch.ring != UNKNOWN_RING &&
+       brw->gen >= 6) {
+      intel_batchbuffer_flush(brw);
+   }
+
+#ifdef DEBUG
+   assert(sz < BATCH_SZ - BATCH_RESERVED);
+#endif
+   if (intel_batchbuffer_space(brw) < sz)
+      intel_batchbuffer_flush(brw);
+
+   enum brw_gpu_ring prev_ring = brw->batch.ring;
+   /* The intel_batchbuffer_flush() calls above might have changed
+    * brw->batch.ring to UNKNOWN_RING, so we need to set it here at the end.
+    */
+   brw->batch.ring = ring;
+
+   if (unlikely(prev_ring == UNKNOWN_RING && ring == RENDER_RING))
+      intel_batchbuffer_emit_render_ring_prelude(brw);
 }
 
 static void
@@ -146,8 +147,8 @@ do_batch_dump(struct brw_context *brw)
    if (ret == 0) {
       drm_intel_decode_set_batch_pointer(decode,
 					 batch->bo->virtual,
-					 batch->bo->offset,
-					 batch->used);
+					 batch->bo->offset64,
+                                         USED_BATCH(*batch));
    } else {
       fprintf(stderr,
 	      "WARNING: failed to map batchbuffer (%s), "
@@ -155,10 +156,11 @@ do_batch_dump(struct brw_context *brw)
 
       drm_intel_decode_set_batch_pointer(decode,
 					 batch->map,
-					 batch->bo->offset,
-					 batch->used);
+					 batch->bo->offset64,
+                                         USED_BATCH(*batch));
    }
 
+   drm_intel_decode_set_output_file(decode, stderr);
    drm_intel_decode(decode);
 
    drm_intel_decode_context_free(decode);
@@ -169,6 +171,150 @@ do_batch_dump(struct brw_context *brw)
       brw_debug_batch(brw);
    }
 }
+
+void
+intel_batchbuffer_emit_render_ring_prelude(struct brw_context *brw)
+{
+   /* We may need to enable and snapshot OA counters. */
+   brw_perf_monitor_new_batch(brw);
+}
+
+/**
+ * Called when starting a new batch buffer.
+ */
+static void
+brw_new_batch(struct brw_context *brw)
+{
+   /* Create a new batchbuffer and reset the associated state: */
+   drm_intel_gem_bo_clear_relocs(brw->batch.bo, 0);
+   intel_batchbuffer_reset(brw);
+
+   /* If the kernel supports hardware contexts, then most hardware state is
+    * preserved between batches; we only need to re-emit state that is required
+    * to be in every batch.  Otherwise we need to re-emit all the state that
+    * would otherwise be stored in the context (which for all intents and
+    * purposes means everything).
+    */
+   if (brw->hw_ctx == NULL)
+      brw->ctx.NewDriverState |= BRW_NEW_CONTEXT;
+
+   brw->ctx.NewDriverState |= BRW_NEW_BATCH;
+
+   brw->state_batch_count = 0;
+
+   brw->ib.type = -1;
+
+   /* We need to periodically reap the shader time results, because rollover
+    * happens every few seconds.  We also want to see results every once in a
+    * while, because many programs won't cleanly destroy our context, so the
+    * end-of-run printout may not happen.
+    */
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME)
+      brw_collect_and_report_shader_time(brw);
+
+   if (INTEL_DEBUG & DEBUG_PERFMON)
+      brw_dump_perf_monitors(brw);
+}
+
+/**
+ * Called from intel_batchbuffer_flush before emitting MI_BATCHBUFFER_END and
+ * sending it off.
+ *
+ * This function can emit state (say, to preserve registers that aren't saved
+ * between batches).  All of this state MUST fit in the reserved space at the
+ * end of the batchbuffer.  If you add more GPU state, increase the reserved
+ * space by updating the BATCH_RESERVED macro.
+ */
+static void
+brw_finish_batch(struct brw_context *brw)
+{
+   /* Capture the closing pipeline statistics register values necessary to
+    * support query objects (in the non-hardware context world).
+    */
+   brw_emit_query_end(brw);
+
+   if (brw->batch.ring == RENDER_RING) {
+      /* Work around L3 state leaks into contexts set MI_RESTORE_INHIBIT which
+       * assume that the L3 cache is configured according to the hardware
+       * defaults.
+       */
+      if (brw->gen >= 7)
+         gen7_restore_default_l3_config(brw);
+
+      /* We may also need to snapshot and disable OA counters. */
+      brw_perf_monitor_finish_batch(brw);
+
+      if (brw->is_haswell) {
+         /* From the Haswell PRM, Volume 2b, Command Reference: Instructions,
+          * 3DSTATE_CC_STATE_POINTERS > "Note":
+          *
+          * "SW must program 3DSTATE_CC_STATE_POINTERS command at the end of every
+          *  3D batch buffer followed by a PIPE_CONTROL with RC flush and CS stall."
+          *
+          * From the example in the docs, it seems to expect a regular pipe control
+          * flush here as well. We may have done it already, but meh.
+          *
+          * See also WaAvoidRCZCounterRollover.
+          */
+         brw_emit_mi_flush(brw);
+         BEGIN_BATCH(2);
+         OUT_BATCH(_3DSTATE_CC_STATE_POINTERS << 16 | (2 - 2));
+         OUT_BATCH(brw->cc.state_offset | 1);
+         ADVANCE_BATCH();
+         brw_emit_pipe_control_flush(brw, PIPE_CONTROL_RENDER_TARGET_FLUSH |
+                                          PIPE_CONTROL_CS_STALL);
+      }
+   }
+
+   /* Mark that the current program cache BO has been used by the GPU.
+    * It will be reallocated if we need to put new programs in for the
+    * next batch.
+    */
+   brw->cache.bo_used_by_gpu = true;
+}
+
+static void
+throttle(struct brw_context *brw)
+{
+   /* Wait for the swapbuffers before the one we just emitted, so we
+    * don't get too many swaps outstanding for apps that are GPU-heavy
+    * but not CPU-heavy.
+    *
+    * We're using intelDRI2Flush (called from the loader before
+    * swapbuffer) and glFlush (for front buffer rendering) as the
+    * indicator that a frame is done and then throttle when we get
+    * here as we prepare to render the next frame.  At this point for
+    * round trips for swap/copy and getting new buffers are done and
+    * we'll spend less time waiting on the GPU.
+    *
+    * Unfortunately, we don't have a handle to the batch containing
+    * the swap, and getting our hands on that doesn't seem worth it,
+    * so we just use the first batch we emitted after the last swap.
+    */
+   if (brw->need_swap_throttle && brw->throttle_batch[0]) {
+      if (brw->throttle_batch[1]) {
+         if (!brw->disable_throttling)
+            drm_intel_bo_wait_rendering(brw->throttle_batch[1]);
+         drm_intel_bo_unreference(brw->throttle_batch[1]);
+      }
+      brw->throttle_batch[1] = brw->throttle_batch[0];
+      brw->throttle_batch[0] = NULL;
+      brw->need_swap_throttle = false;
+      /* Throttling here is more precise than the throttle ioctl, so skip it */
+      brw->need_flush_throttle = false;
+   }
+
+   if (brw->need_flush_throttle) {
+      __DRIscreen *psp = brw->intelScreen->driScrnPriv;
+      drmCommandNone(psp->fd, DRM_I915_GEM_THROTTLE);
+      brw->need_flush_throttle = false;
+   }
+}
+
+/* Drop when RS headers get pulled to libdrm */
+#ifndef I915_EXEC_RESOURCE_STREAMER
+#define I915_EXEC_RESOURCE_STREAMER (1<<15)
+#endif
 
 /* TODO: Push this whole function into bufmgr.
  */
@@ -181,7 +327,7 @@ do_flush_locked(struct brw_context *brw)
    if (brw->has_llc) {
       drm_intel_bo_unmap(batch->bo);
    } else {
-      ret = drm_intel_bo_subdata(batch->bo, 0, 4*batch->used, batch->map);
+      ret = drm_intel_bo_subdata(batch->bo, 0, 4 * USED_BATCH(*batch), batch->map);
       if (ret == 0 && batch->state_batch_offset != batch->bo->size) {
 	 ret = drm_intel_bo_subdata(batch->bo,
 				    batch->state_batch_offset,
@@ -193,36 +339,41 @@ do_flush_locked(struct brw_context *brw)
    if (!brw->intelScreen->no_hw) {
       int flags;
 
-      if (brw->gen < 6 || !batch->is_blit) {
-	 flags = I915_EXEC_RENDER;
+      if (brw->gen >= 6 && batch->ring == BLT_RING) {
+         flags = I915_EXEC_BLT;
       } else {
-	 flags = I915_EXEC_BLT;
+         flags = I915_EXEC_RENDER |
+            (brw->use_resource_streamer ? I915_EXEC_RESOURCE_STREAMER : 0);
       }
-
       if (batch->needs_sol_reset)
 	 flags |= I915_EXEC_GEN7_SOL_RESET;
 
       if (ret == 0) {
          if (unlikely(INTEL_DEBUG & DEBUG_AUB))
             brw_annotate_aub(brw);
-	 if (brw->hw_ctx == NULL || batch->is_blit) {
-	    ret = drm_intel_bo_mrb_exec(batch->bo, 4 * batch->used, NULL, 0, 0,
-					flags);
+
+	 if (brw->hw_ctx == NULL || batch->ring != RENDER_RING) {
+            ret = drm_intel_bo_mrb_exec(batch->bo, 4 * USED_BATCH(*batch),
+                                        NULL, 0, 0, flags);
 	 } else {
 	    ret = drm_intel_gem_bo_context_exec(batch->bo, brw->hw_ctx,
-						4 * batch->used, flags);
+                                                4 * USED_BATCH(*batch), flags);
 	 }
       }
+
+      throttle(brw);
    }
 
    if (unlikely(INTEL_DEBUG & DEBUG_BATCH))
       do_batch_dump(brw);
 
+   if (brw->ctx.Const.ResetStrategy == GL_LOSE_CONTEXT_ON_RESET_ARB)
+      brw_check_for_reset(brw);
+
    if (ret != 0) {
       fprintf(stderr, "intel_do_flush_locked failed: %s\n", strerror(-ret));
       exit(1);
    }
-   brw->vtbl.new_batch(brw);
 
    return ret;
 }
@@ -233,26 +384,32 @@ _intel_batchbuffer_flush(struct brw_context *brw,
 {
    int ret;
 
-   if (brw->batch.used == 0)
+   if (USED_BATCH(brw->batch) == 0)
       return 0;
 
-   if (brw->first_post_swapbuffers_batch == NULL) {
-      brw->first_post_swapbuffers_batch = brw->batch.bo;
-      drm_intel_bo_reference(brw->first_post_swapbuffers_batch);
+   if (brw->throttle_batch[0] == NULL) {
+      brw->throttle_batch[0] = brw->batch.bo;
+      drm_intel_bo_reference(brw->throttle_batch[0]);
    }
 
-   if (unlikely(INTEL_DEBUG & DEBUG_BATCH))
-      fprintf(stderr, "%s:%d: Batchbuffer flush with %db used\n", file, line,
-	      4*brw->batch.used);
+   if (unlikely(INTEL_DEBUG & DEBUG_BATCH)) {
+      int bytes_for_commands = 4 * USED_BATCH(brw->batch);
+      int bytes_for_state = brw->batch.bo->size - brw->batch.state_batch_offset;
+      int total_bytes = bytes_for_commands + bytes_for_state;
+      fprintf(stderr, "%s:%d: Batchbuffer flush with %4db (pkt) + "
+              "%4db (state) = %4db (%0.1f%%)\n", file, line,
+              bytes_for_commands, bytes_for_state,
+              total_bytes,
+              100.0f * total_bytes / BATCH_SZ);
+   }
 
    brw->batch.reserved_space = 0;
 
-   if (brw->vtbl.finish_batch)
-      brw->vtbl.finish_batch(brw);
+   brw_finish_batch(brw);
 
    /* Mark the end of the buffer. */
    intel_batchbuffer_emit_dword(brw, MI_BATCH_BUFFER_END);
-   if (brw->batch.used & 1) {
+   if (USED_BATCH(brw->batch) & 1) {
       /* Round batchbuffer usage to 2 DWORDs. */
       intel_batchbuffer_emit_dword(brw, MI_NOOP);
    }
@@ -269,9 +426,11 @@ _intel_batchbuffer_flush(struct brw_context *brw,
       drm_intel_bo_wait_rendering(brw->batch.bo);
    }
 
-   /* Reset the buffer:
-    */
-   intel_batchbuffer_reset(brw);
+   if (brw->use_resource_streamer)
+      gen7_reset_hw_bt_pool_offsets(brw);
+
+   /* Start a new batch buffer. */
+   brw_new_batch(brw);
 
    return ret;
 }
@@ -279,278 +438,280 @@ _intel_batchbuffer_flush(struct brw_context *brw,
 
 /*  This is the only way buffers get added to the validate list.
  */
-bool
-intel_batchbuffer_emit_reloc(struct brw_context *brw,
-                             drm_intel_bo *buffer,
-                             uint32_t read_domains, uint32_t write_domain,
-			     uint32_t delta)
+uint32_t
+intel_batchbuffer_reloc(struct brw_context *brw,
+                        drm_intel_bo *buffer, uint32_t offset,
+                        uint32_t read_domains, uint32_t write_domain,
+                        uint32_t delta)
 {
    int ret;
 
-   ret = drm_intel_bo_emit_reloc(brw->batch.bo, 4*brw->batch.used,
+   ret = drm_intel_bo_emit_reloc(brw->batch.bo, offset,
 				 buffer, delta,
 				 read_domains, write_domain);
    assert(ret == 0);
    (void)ret;
 
-   /*
-    * Using the old buffer offset, write in what the right data would be, in case
-    * the buffer doesn't move and we can short-circuit the relocation processing
-    * in the kernel
+   /* Using the old buffer offset, write in what the right data would be, in
+    * case the buffer doesn't move and we can short-circuit the relocation
+    * processing in the kernel
     */
-   intel_batchbuffer_emit_dword(brw, buffer->offset + delta);
-
-   return true;
+   return buffer->offset64 + delta;
 }
 
-bool
-intel_batchbuffer_emit_reloc_fenced(struct brw_context *brw,
-				    drm_intel_bo *buffer,
-				    uint32_t read_domains,
-				    uint32_t write_domain,
-				    uint32_t delta)
+uint64_t
+intel_batchbuffer_reloc64(struct brw_context *brw,
+                          drm_intel_bo *buffer, uint32_t offset,
+                          uint32_t read_domains, uint32_t write_domain,
+                          uint32_t delta)
 {
-   int ret;
-
-   ret = drm_intel_bo_emit_reloc_fence(brw->batch.bo, 4*brw->batch.used,
-				       buffer, delta,
-				       read_domains, write_domain);
+   int ret = drm_intel_bo_emit_reloc(brw->batch.bo, offset,
+                                     buffer, delta,
+                                     read_domains, write_domain);
    assert(ret == 0);
-   (void)ret;
+   (void) ret;
 
-   /*
-    * Using the old buffer offset, write in what the right data would
-    * be, in case the buffer doesn't move and we can short-circuit the
-    * relocation processing in the kernel
+   /* Using the old buffer offset, write in what the right data would be, in
+    * case the buffer doesn't move and we can short-circuit the relocation
+    * processing in the kernel
     */
-   intel_batchbuffer_emit_dword(brw, buffer->offset + delta);
-
-   return true;
+   return buffer->offset64 + delta;
 }
+
 
 void
 intel_batchbuffer_data(struct brw_context *brw,
-                       const void *data, GLuint bytes, bool is_blit)
+                       const void *data, GLuint bytes, enum brw_gpu_ring ring)
 {
    assert((bytes & 3) == 0);
-   intel_batchbuffer_require_space(brw, bytes, is_blit);
-   __memcpy(brw->batch.map + brw->batch.used, data, bytes);
-   brw->batch.used += bytes >> 2;
+   intel_batchbuffer_require_space(brw, bytes, ring);
+   memcpy(brw->batch.map_next, data, bytes);
+   brw->batch.map_next += bytes >> 2;
 }
 
-void
-intel_batchbuffer_cached_advance(struct brw_context *brw)
+static void
+load_sized_register_mem(struct brw_context *brw,
+                        uint32_t reg,
+                        drm_intel_bo *bo,
+                        uint32_t read_domains, uint32_t write_domain,
+                        uint32_t offset,
+                        int size)
 {
-   struct cached_batch_item **prev = &brw->batch.cached_items, *item;
-   uint32_t sz = (brw->batch.used - brw->batch.emit) * sizeof(uint32_t);
-   uint32_t *start = brw->batch.map + brw->batch.emit;
-   uint16_t op = *start >> 16;
+   int i;
 
-   while (*prev) {
-      uint32_t *old;
+   /* MI_LOAD_REGISTER_MEM only exists on Gen7+. */
+   assert(brw->gen >= 7);
 
-      item = *prev;
-      old = brw->batch.map + item->header;
-      if (op == *old >> 16) {
-	 if (item->size == sz && memcmp(old, start, sz) == 0) {
-	    if (prev != &brw->batch.cached_items) {
-	       *prev = item->next;
-	       item->next = brw->batch.cached_items;
-	       brw->batch.cached_items = item;
-	    }
-	    brw->batch.used = brw->batch.emit;
-	    return;
-	 }
-
-	 goto emit;
+   if (brw->gen >= 8) {
+      BEGIN_BATCH(4 * size);
+      for (i = 0; i < size; i++) {
+         OUT_BATCH(GEN7_MI_LOAD_REGISTER_MEM | (4 - 2));
+         OUT_BATCH(reg + i * 4);
+         OUT_RELOC64(bo, read_domains, write_domain, offset + i * 4);
       }
-      prev = &item->next;
-   }
-
-   item = malloc(sizeof(struct cached_batch_item));
-   if (item == NULL)
-      return;
-
-   item->next = brw->batch.cached_items;
-   brw->batch.cached_items = item;
-
-emit:
-   item->size = sz;
-   item->header = brw->batch.emit;
-}
-
-/**
- * Restriction [DevSNB, DevIVB]:
- *
- * Prior to changing Depth/Stencil Buffer state (i.e. any combination of
- * 3DSTATE_DEPTH_BUFFER, 3DSTATE_CLEAR_PARAMS, 3DSTATE_STENCIL_BUFFER,
- * 3DSTATE_HIER_DEPTH_BUFFER) SW must first issue a pipelined depth stall
- * (PIPE_CONTROL with Depth Stall bit set), followed by a pipelined depth
- * cache flush (PIPE_CONTROL with Depth Flush Bit set), followed by
- * another pipelined depth stall (PIPE_CONTROL with Depth Stall bit set),
- * unless SW can otherwise guarantee that the pipeline from WM onwards is
- * already flushed (e.g., via a preceding MI_FLUSH).
- */
-void
-intel_emit_depth_stall_flushes(struct brw_context *brw)
-{
-   assert(brw->gen >= 6 && brw->gen <= 7);
-
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-   OUT_BATCH(PIPE_CONTROL_DEPTH_STALL);
-   OUT_BATCH(0); /* address */
-   OUT_BATCH(0); /* write data */
-   ADVANCE_BATCH()
-
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-   OUT_BATCH(PIPE_CONTROL_DEPTH_CACHE_FLUSH);
-   OUT_BATCH(0); /* address */
-   OUT_BATCH(0); /* write data */
-   ADVANCE_BATCH();
-
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-   OUT_BATCH(PIPE_CONTROL_DEPTH_STALL);
-   OUT_BATCH(0); /* address */
-   OUT_BATCH(0); /* write data */
-   ADVANCE_BATCH();
-}
-
-/**
- * From the Ivybridge PRM, Volume 2 Part 1, Section 3.2 (VS Stage Input):
- * "A PIPE_CONTROL with Post-Sync Operation set to 1h and a depth
- *  stall needs to be sent just prior to any 3DSTATE_VS, 3DSTATE_URB_VS,
- *  3DSTATE_CONSTANT_VS, 3DSTATE_BINDING_TABLE_POINTER_VS,
- *  3DSTATE_SAMPLER_STATE_POINTER_VS command.  Only one PIPE_CONTROL needs
- *  to be sent before any combination of VS associated 3DSTATE."
- */
-void
-gen7_emit_vs_workaround_flush(struct brw_context *brw)
-{
-   assert(brw->gen == 7);
-
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-   OUT_BATCH(PIPE_CONTROL_DEPTH_STALL | PIPE_CONTROL_WRITE_IMMEDIATE);
-   OUT_RELOC(brw->batch.workaround_bo,
-	     I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION, 0);
-   OUT_BATCH(0); /* write data */
-   ADVANCE_BATCH();
-}
-
-/**
- * Emits a PIPE_CONTROL with a non-zero post-sync operation, for
- * implementing two workarounds on gen6.  From section 1.4.7.1
- * "PIPE_CONTROL" of the Sandy Bridge PRM volume 2 part 1:
- *
- * [DevSNB-C+{W/A}] Before any depth stall flush (including those
- * produced by non-pipelined state commands), software needs to first
- * send a PIPE_CONTROL with no bits set except Post-Sync Operation !=
- * 0.
- *
- * [Dev-SNB{W/A}]: Before a PIPE_CONTROL with Write Cache Flush Enable
- * =1, a PIPE_CONTROL with any non-zero post-sync-op is required.
- *
- * And the workaround for these two requires this workaround first:
- *
- * [Dev-SNB{W/A}]: Pipe-control with CS-stall bit set must be sent
- * BEFORE the pipe-control with a post-sync op and no write-cache
- * flushes.
- *
- * And this last workaround is tricky because of the requirements on
- * that bit.  From section 1.4.7.2.3 "Stall" of the Sandy Bridge PRM
- * volume 2 part 1:
- *
- *     "1 of the following must also be set:
- *      - Render Target Cache Flush Enable ([12] of DW1)
- *      - Depth Cache Flush Enable ([0] of DW1)
- *      - Stall at Pixel Scoreboard ([1] of DW1)
- *      - Depth Stall ([13] of DW1)
- *      - Post-Sync Operation ([13] of DW1)
- *      - Notify Enable ([8] of DW1)"
- *
- * The cache flushes require the workaround flush that triggered this
- * one, so we can't use it.  Depth stall would trigger the same.
- * Post-sync nonzero is what triggered this second workaround, so we
- * can't use that one either.  Notify enable is IRQs, which aren't
- * really our business.  That leaves only stall at scoreboard.
- */
-void
-intel_emit_post_sync_nonzero_flush(struct brw_context *brw)
-{
-   if (!brw->batch.need_workaround_flush)
-      return;
-
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-   OUT_BATCH(PIPE_CONTROL_CS_STALL |
-	     PIPE_CONTROL_STALL_AT_SCOREBOARD);
-   OUT_BATCH(0); /* address */
-   OUT_BATCH(0); /* write data */
-   ADVANCE_BATCH();
-
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-   OUT_BATCH(PIPE_CONTROL_WRITE_IMMEDIATE);
-   OUT_RELOC(brw->batch.workaround_bo,
-	     I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION, 0);
-   OUT_BATCH(0); /* write data */
-   ADVANCE_BATCH();
-
-   brw->batch.need_workaround_flush = false;
-}
-
-/* Emit a pipelined flush to either flush render and texture cache for
- * reading from a FBO-drawn texture, or flush so that frontbuffer
- * render appears on the screen in DRI1.
- *
- * This is also used for the always_flush_cache driconf debug option.
- */
-void
-intel_batchbuffer_emit_mi_flush(struct brw_context *brw)
-{
-   if (brw->gen >= 6) {
-      if (brw->batch.is_blit) {
-	 BEGIN_BATCH_BLT(4);
-	 OUT_BATCH(MI_FLUSH_DW);
-	 OUT_BATCH(0);
-	 OUT_BATCH(0);
-	 OUT_BATCH(0);
-	 ADVANCE_BATCH();
-      } else {
-	 if (brw->gen == 6) {
-	    /* Hardware workaround: SNB B-Spec says:
-	     *
-	     * [Dev-SNB{W/A}]: Before a PIPE_CONTROL with Write Cache
-	     * Flush Enable =1, a PIPE_CONTROL with any non-zero
-	     * post-sync-op is required.
-	     */
-	    intel_emit_post_sync_nonzero_flush(brw);
-	 }
-
-	 BEGIN_BATCH(4);
-	 OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-	 OUT_BATCH(PIPE_CONTROL_INSTRUCTION_FLUSH |
-		   PIPE_CONTROL_WRITE_FLUSH |
-		   PIPE_CONTROL_DEPTH_CACHE_FLUSH |
-                   PIPE_CONTROL_VF_CACHE_INVALIDATE |
-		   PIPE_CONTROL_TC_FLUSH |
-		   PIPE_CONTROL_NO_WRITE |
-                   PIPE_CONTROL_CS_STALL);
-	 OUT_BATCH(0); /* write address */
-	 OUT_BATCH(0); /* write data */
-	 ADVANCE_BATCH();
-      }
+      ADVANCE_BATCH();
    } else {
-      BEGIN_BATCH(4);
-      OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2) |
-		PIPE_CONTROL_WRITE_FLUSH |
-		PIPE_CONTROL_NO_WRITE);
-      OUT_BATCH(0); /* write address */
-      OUT_BATCH(0); /* write data */
-      OUT_BATCH(0); /* write data */
+      BEGIN_BATCH(3 * size);
+      for (i = 0; i < size; i++) {
+         OUT_BATCH(GEN7_MI_LOAD_REGISTER_MEM | (3 - 2));
+         OUT_BATCH(reg + i * 4);
+         OUT_RELOC(bo, read_domains, write_domain, offset + i * 4);
+      }
       ADVANCE_BATCH();
    }
+}
+
+void
+brw_load_register_mem(struct brw_context *brw,
+                      uint32_t reg,
+                      drm_intel_bo *bo,
+                      uint32_t read_domains, uint32_t write_domain,
+                      uint32_t offset)
+{
+   load_sized_register_mem(brw, reg, bo, read_domains, write_domain, offset, 1);
+}
+
+void
+brw_load_register_mem64(struct brw_context *brw,
+                        uint32_t reg,
+                        drm_intel_bo *bo,
+                        uint32_t read_domains, uint32_t write_domain,
+                        uint32_t offset)
+{
+   load_sized_register_mem(brw, reg, bo, read_domains, write_domain, offset, 2);
+}
+
+/*
+ * Write an arbitrary 32-bit register to a buffer via MI_STORE_REGISTER_MEM.
+ */
+void
+brw_store_register_mem32(struct brw_context *brw,
+                         drm_intel_bo *bo, uint32_t reg, uint32_t offset)
+{
+   assert(brw->gen >= 6);
+
+   if (brw->gen >= 8) {
+      BEGIN_BATCH(4);
+      OUT_BATCH(MI_STORE_REGISTER_MEM | (4 - 2));
+      OUT_BATCH(reg);
+      OUT_RELOC64(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                  offset);
+      ADVANCE_BATCH();
+   } else {
+      BEGIN_BATCH(3);
+      OUT_BATCH(MI_STORE_REGISTER_MEM | (3 - 2));
+      OUT_BATCH(reg);
+      OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                offset);
+      ADVANCE_BATCH();
+   }
+}
+
+/*
+ * Write an arbitrary 64-bit register to a buffer via MI_STORE_REGISTER_MEM.
+ */
+void
+brw_store_register_mem64(struct brw_context *brw,
+                         drm_intel_bo *bo, uint32_t reg, uint32_t offset)
+{
+   assert(brw->gen >= 6);
+
+   /* MI_STORE_REGISTER_MEM only stores a single 32-bit value, so to
+    * read a full 64-bit register, we need to do two of them.
+    */
+   if (brw->gen >= 8) {
+      BEGIN_BATCH(8);
+      OUT_BATCH(MI_STORE_REGISTER_MEM | (4 - 2));
+      OUT_BATCH(reg);
+      OUT_RELOC64(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                  offset);
+      OUT_BATCH(MI_STORE_REGISTER_MEM | (4 - 2));
+      OUT_BATCH(reg + sizeof(uint32_t));
+      OUT_RELOC64(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                  offset + sizeof(uint32_t));
+      ADVANCE_BATCH();
+   } else {
+      BEGIN_BATCH(6);
+      OUT_BATCH(MI_STORE_REGISTER_MEM | (3 - 2));
+      OUT_BATCH(reg);
+      OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                offset);
+      OUT_BATCH(MI_STORE_REGISTER_MEM | (3 - 2));
+      OUT_BATCH(reg + sizeof(uint32_t));
+      OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                offset + sizeof(uint32_t));
+      ADVANCE_BATCH();
+   }
+}
+
+/*
+ * Write a 32-bit register using immediate data.
+ */
+void
+brw_load_register_imm32(struct brw_context *brw, uint32_t reg, uint32_t imm)
+{
+   assert(brw->gen >= 6);
+
+   BEGIN_BATCH(3);
+   OUT_BATCH(MI_LOAD_REGISTER_IMM | (3 - 2));
+   OUT_BATCH(reg);
+   OUT_BATCH(imm);
+   ADVANCE_BATCH();
+}
+
+/*
+ * Write a 64-bit register using immediate data.
+ */
+void
+brw_load_register_imm64(struct brw_context *brw, uint32_t reg, uint64_t imm)
+{
+   assert(brw->gen >= 6);
+
+   BEGIN_BATCH(5);
+   OUT_BATCH(MI_LOAD_REGISTER_IMM | (5 - 2));
+   OUT_BATCH(reg);
+   OUT_BATCH(imm & 0xffffffff);
+   OUT_BATCH(reg + 4);
+   OUT_BATCH(imm >> 32);
+   ADVANCE_BATCH();
+}
+
+/*
+ * Copies a 32-bit register.
+ */
+void
+brw_load_register_reg(struct brw_context *brw, uint32_t src, uint32_t dest)
+{
+   assert(brw->gen >= 8 || brw->is_haswell);
+
+   BEGIN_BATCH(3);
+   OUT_BATCH(MI_LOAD_REGISTER_REG | (3 - 2));
+   OUT_BATCH(src);
+   OUT_BATCH(dest);
+   ADVANCE_BATCH();
+}
+
+/*
+ * Copies a 64-bit register.
+ */
+void
+brw_load_register_reg64(struct brw_context *brw, uint32_t src, uint32_t dest)
+{
+   assert(brw->gen >= 8 || brw->is_haswell);
+
+   BEGIN_BATCH(6);
+   OUT_BATCH(MI_LOAD_REGISTER_REG | (3 - 2));
+   OUT_BATCH(src);
+   OUT_BATCH(dest);
+   OUT_BATCH(MI_LOAD_REGISTER_REG | (3 - 2));
+   OUT_BATCH(src + sizeof(uint32_t));
+   OUT_BATCH(dest + sizeof(uint32_t));
+   ADVANCE_BATCH();
+}
+
+/*
+ * Write 32-bits of immediate data to a GPU memory buffer.
+ */
+void
+brw_store_data_imm32(struct brw_context *brw, drm_intel_bo *bo,
+                     uint32_t offset, uint32_t imm)
+{
+   assert(brw->gen >= 6);
+
+   BEGIN_BATCH(4);
+   OUT_BATCH(MI_STORE_DATA_IMM | (4 - 2));
+   if (brw->gen >= 8)
+      OUT_RELOC64(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                  offset);
+   else {
+      OUT_BATCH(0); /* MBZ */
+      OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                offset);
+   }
+   OUT_BATCH(imm);
+   ADVANCE_BATCH();
+}
+
+/*
+ * Write 64-bits of immediate data to a GPU memory buffer.
+ */
+void
+brw_store_data_imm64(struct brw_context *brw, drm_intel_bo *bo,
+                     uint32_t offset, uint64_t imm)
+{
+   assert(brw->gen >= 6);
+
+   BEGIN_BATCH(5);
+   OUT_BATCH(MI_STORE_DATA_IMM | (5 - 2));
+   if (brw->gen >= 8)
+      OUT_RELOC64(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                  offset);
+   else {
+      OUT_BATCH(0); /* MBZ */
+      OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
+                offset);
+   }
+   OUT_BATCH(imm & 0xffffffffu);
+   OUT_BATCH(imm >> 32);
+   ADVANCE_BATCH();
 }

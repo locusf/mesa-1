@@ -22,12 +22,11 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com> Brian Paul
+ *    Keith Whitwell <keithw@vmware.com> Brian Paul
  */
 
 #include "main/imports.h"
 #include "main/bufferobj.h"
-#include "main/colormac.h"
 #include "main/mtypes.h"
 #include "main/samplerobj.h"
 #include "main/teximage.h"
@@ -61,7 +60,7 @@ _swrast_update_rasterflags( struct gl_context *ctx )
    if (ctx->Color.BlendEnabled)           rasterMask |= BLEND_BIT;
    if (ctx->Depth.Test)                   rasterMask |= DEPTH_BIT;
    if (swrast->_FogEnabled)               rasterMask |= FOG_BIT;
-   if (ctx->Scissor.Enabled)              rasterMask |= CLIP_BIT;
+   if (ctx->Scissor.EnableFlags)          rasterMask |= CLIP_BIT;
    if (ctx->Stencil._Enabled)             rasterMask |= STENCIL_BIT;
    for (i = 0; i < ctx->Const.MaxDrawBuffers; i++) {
       if (!ctx->Color.ColorMask[i][0] ||
@@ -73,11 +72,11 @@ _swrast_update_rasterflags( struct gl_context *ctx )
       }
    }
    if (ctx->Color.ColorLogicOpEnabled) rasterMask |= LOGIC_OP_BIT;
-   if (ctx->Texture._EnabledUnits)     rasterMask |= TEXTURE_BIT;
-   if (   ctx->Viewport.X < 0
-       || ctx->Viewport.X + ctx->Viewport.Width > (GLint) ctx->DrawBuffer->Width
-       || ctx->Viewport.Y < 0
-       || ctx->Viewport.Y + ctx->Viewport.Height > (GLint) ctx->DrawBuffer->Height) {
+   if (ctx->Texture._MaxEnabledTexImageUnit >= 0) rasterMask |= TEXTURE_BIT;
+   if (   ctx->ViewportArray[0].X < 0
+       || ctx->ViewportArray[0].X + ctx->ViewportArray[0].Width > (GLfloat) ctx->DrawBuffer->Width
+       || ctx->ViewportArray[0].Y < 0
+       || ctx->ViewportArray[0].Y + ctx->ViewportArray[0].Height > (GLfloat) ctx->DrawBuffer->Height) {
       rasterMask |= CLIP_BIT;
    }
 
@@ -251,6 +250,7 @@ _swrast_update_fog_state( struct gl_context *ctx )
    const struct gl_fragment_program *fp = ctx->FragmentProgram._Current;
 
    assert(fp == NULL || fp->Base.Target == GL_FRAGMENT_PROGRAM_ARB);
+   (void) fp; /* silence unused var warning */
 
    /* determine if fog is needed, and if so, which fog mode */
    swrast->_FogEnabled = (!_swrast_use_fragment_program(ctx) &&
@@ -286,7 +286,7 @@ _swrast_update_specular_vertex_add(struct gl_context *ctx)
        ctx->Light.Model.ColorControl == GL_SEPARATE_SPECULAR_COLOR);
 
    swrast->SpecularVertexAdd = (separateSpecular
-                                && ctx->Texture._EnabledUnits == 0x0
+                                && ctx->Texture._MaxEnabledTexImageUnit == -1
                                 && !_swrast_use_fragment_program(ctx)
                                 && !ctx->ATIFragmentShader._Enabled);
 }
@@ -351,7 +351,7 @@ _swrast_validate_triangle( struct gl_context *ctx,
 
    _swrast_validate_derived( ctx );
    swrast->choose_triangle( ctx );
-   ASSERT(swrast->Triangle);
+   assert(swrast->Triangle);
 
    if (swrast->SpecularVertexAdd) {
       /* separate specular color, but no texture */
@@ -373,7 +373,7 @@ _swrast_validate_line( struct gl_context *ctx, const SWvertex *v0, const SWverte
 
    _swrast_validate_derived( ctx );
    swrast->choose_line( ctx );
-   ASSERT(swrast->Line);
+   assert(swrast->Line);
 
    if (swrast->SpecularVertexAdd) {
       swrast->SpecLine = swrast->Line;
@@ -408,7 +408,7 @@ _swrast_validate_point( struct gl_context *ctx, const SWvertex *v0 )
  * Called via swrast->BlendFunc.  Examine GL state to choose a blending
  * function, then call it.
  */
-static void _ASMAPI
+static void
 _swrast_validate_blend_func(struct gl_context *ctx, GLuint n, const GLubyte mask[],
                             GLvoid *src, const GLvoid *dst,
                             GLenum chanType )
@@ -504,7 +504,8 @@ _swrast_update_active_attribs(struct gl_context *ctx)
       attribsMask &= ~VARYING_BIT_POS; /* WPOS is always handled specially */
    }
    else if (ctx->ATIFragmentShader._Enabled) {
-      attribsMask = ~0;  /* XXX fix me */
+      attribsMask = VARYING_BIT_COL0 | VARYING_BIT_COL1 |
+                    VARYING_BIT_FOGC | VARYING_BITS_TEX_ANY;
    }
    else {
       /* fixed function */
@@ -523,7 +524,7 @@ _swrast_update_active_attribs(struct gl_context *ctx)
       if (swrast->_FogEnabled)
          attribsMask |= VARYING_BIT_FOGC;
 
-      attribsMask |= (ctx->Texture._EnabledUnits << VARYING_SLOT_TEX0);
+      attribsMask |= (ctx->Texture._EnabledCoordUnits << VARYING_SLOT_TEX0);
    }
 
    swrast->_ActiveAttribMask = attribsMask;
@@ -794,9 +795,9 @@ _swrast_CreateContext( struct gl_context *ctx )
    swrast->PointSpan.facing = 0;
    swrast->PointSpan.array = swrast->SpanArrays;
 
-   init_program_native_limits(&ctx->Const.VertexProgram);
-   init_program_native_limits(&ctx->Const.GeometryProgram);
-   init_program_native_limits(&ctx->Const.FragmentProgram);
+   init_program_native_limits(&ctx->Const.Program[MESA_SHADER_VERTEX]);
+   init_program_native_limits(&ctx->Const.Program[MESA_SHADER_GEOMETRY]);
+   init_program_native_limits(&ctx->Const.Program[MESA_SHADER_FRAGMENT]);
 
    ctx->swrast_context = swrast;
 
@@ -900,11 +901,16 @@ void
 _swrast_render_finish( struct gl_context *ctx )
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
+   struct gl_query_object *query = ctx->Query.CurrentOcclusionObject;
 
    _swrast_flush(ctx);
 
    if (swrast->Driver.SpanRenderFinish)
       swrast->Driver.SpanRenderFinish( ctx );
+
+   if (query && (query->Target == GL_ANY_SAMPLES_PASSED ||
+                 query->Target == GL_ANY_SAMPLES_PASSED_CONSERVATIVE))
+      query->Result = !!query->Result;
 }
 
 
@@ -923,7 +929,7 @@ _swrast_print_vertex( struct gl_context *ctx, const SWvertex *v )
                   v->attrib[VARYING_SLOT_POS][3]);
 
       for (i = 0 ; i < ctx->Const.MaxTextureCoordUnits ; i++)
-	 if (ctx->Texture.Unit[i]._ReallyEnabled)
+	 if (ctx->Texture.Unit[i]._Current)
 	    _mesa_debug(ctx, "texcoord[%d] %f %f %f %f\n", i,
                         v->attrib[VARYING_SLOT_TEX0 + i][0],
                         v->attrib[VARYING_SLOT_TEX0 + i][1],

@@ -21,9 +21,11 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 #include "r600_pipe.h"
+#include "compute_memory_pool.h"
+#include "evergreen_compute.h"
 #include "util/u_surface.h"
-#include "util/u_blitter.h"
 #include "util/u_format.h"
+#include "evergreend.h"
 
 enum r600_blitter_op /* bitmask */
 {
@@ -41,30 +43,30 @@ enum r600_blitter_op /* bitmask */
 	R600_COPY_TEXTURE  = R600_SAVE_FRAGMENT_STATE | R600_SAVE_FRAMEBUFFER | R600_SAVE_TEXTURES |
 			     R600_DISABLE_RENDER_COND,
 
-	R600_BLIT          = R600_SAVE_FRAGMENT_STATE | R600_SAVE_FRAMEBUFFER | R600_SAVE_TEXTURES |
-			     R600_DISABLE_RENDER_COND,
+	R600_BLIT          = R600_SAVE_FRAGMENT_STATE | R600_SAVE_FRAMEBUFFER | R600_SAVE_TEXTURES,
 
 	R600_DECOMPRESS    = R600_SAVE_FRAGMENT_STATE | R600_SAVE_FRAMEBUFFER | R600_DISABLE_RENDER_COND,
 
-	R600_COLOR_RESOLVE = R600_SAVE_FRAGMENT_STATE | R600_SAVE_FRAMEBUFFER | R600_DISABLE_RENDER_COND
+	R600_COLOR_RESOLVE = R600_SAVE_FRAGMENT_STATE | R600_SAVE_FRAMEBUFFER
 };
 
 static void r600_blitter_begin(struct pipe_context *ctx, enum r600_blitter_op op)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
-	r600_suspend_nontimer_queries(rctx);
-
 	util_blitter_save_vertex_buffer_slot(rctx->blitter, rctx->vertex_buffer_state.vb);
 	util_blitter_save_vertex_elements(rctx->blitter, rctx->vertex_fetch_shader.cso);
 	util_blitter_save_vertex_shader(rctx->blitter, rctx->vs_shader);
-	util_blitter_save_so_targets(rctx->blitter, rctx->streamout.num_targets,
-				     (struct pipe_stream_output_target**)rctx->streamout.targets);
+	util_blitter_save_geometry_shader(rctx->blitter, rctx->gs_shader);
+	util_blitter_save_tessctrl_shader(rctx->blitter, rctx->tcs_shader);
+	util_blitter_save_tesseval_shader(rctx->blitter, rctx->tes_shader);
+	util_blitter_save_so_targets(rctx->blitter, rctx->b.streamout.num_targets,
+				     (struct pipe_stream_output_target**)rctx->b.streamout.targets);
 	util_blitter_save_rasterizer(rctx->blitter, rctx->rasterizer_state.cso);
 
 	if (op & R600_SAVE_FRAGMENT_STATE) {
-		util_blitter_save_viewport(rctx->blitter, &rctx->viewport.state);
-		util_blitter_save_scissor(rctx->blitter, &rctx->scissor.scissor);
+		util_blitter_save_viewport(rctx->blitter, &rctx->b.viewports.states[0]);
+		util_blitter_save_scissor(rctx->blitter, &rctx->b.scissors.states[0]);
 		util_blitter_save_fragment_shader(rctx->blitter, rctx->ps_shader);
 		util_blitter_save_blend(rctx->blitter, rctx->blend_state.cso);
 		util_blitter_save_depth_stencil_alpha(rctx->blitter, rctx->dsa_state.cso);
@@ -85,18 +87,15 @@ static void r600_blitter_begin(struct pipe_context *ctx, enum r600_blitter_op op
 			(struct pipe_sampler_view**)rctx->samplers[PIPE_SHADER_FRAGMENT].views.views);
 	}
 
-	if ((op & R600_DISABLE_RENDER_COND) && rctx->current_render_cond) {
-           util_blitter_save_render_condition(rctx->blitter,
-                                              rctx->current_render_cond,
-                                              rctx->current_render_cond_cond,
-                                              rctx->current_render_cond_mode);
-        }
+	if (op & R600_DISABLE_RENDER_COND)
+		rctx->b.render_cond_force_off = true;
 }
 
 static void r600_blitter_end(struct pipe_context *ctx)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
-        r600_resume_nontimer_queries(rctx);
+
+	rctx->b.render_cond_force_off = false;
 }
 
 static unsigned u_max_sample(struct pipe_resource *r)
@@ -104,12 +103,12 @@ static unsigned u_max_sample(struct pipe_resource *r)
 	return r->nr_samples ? r->nr_samples - 1 : 0;
 }
 
-void r600_blit_decompress_depth(struct pipe_context *ctx,
-		struct r600_texture *texture,
-		struct r600_texture *staging,
-		unsigned first_level, unsigned last_level,
-		unsigned first_layer, unsigned last_layer,
-		unsigned first_sample, unsigned last_sample)
+static void r600_blit_decompress_depth(struct pipe_context *ctx,
+				       struct r600_texture *texture,
+				       struct r600_texture *staging,
+				       unsigned first_level, unsigned last_level,
+				       unsigned first_layer, unsigned last_layer,
+				       unsigned first_sample, unsigned last_sample)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	unsigned layer, level, sample, checked_last_layer, max_layer, max_sample;
@@ -127,13 +126,13 @@ void r600_blit_decompress_depth(struct pipe_context *ctx,
 	/* XXX Decompressing MSAA depth textures is broken on R6xx.
 	 * There is also a hardlock if CMASK and FMASK are not present.
 	 * Just skip this until we find out how to fix it. */
-	if (rctx->chip_class == R600 && max_sample > 0) {
+	if (rctx->b.chip_class == R600 && max_sample > 0) {
 		texture->dirty_level_mask = 0;
 		return;
 	}
 
-	if (rctx->family == CHIP_RV610 || rctx->family == CHIP_RV630 ||
-	    rctx->family == CHIP_RV620 || rctx->family == CHIP_RV635)
+	if (rctx->b.family == CHIP_RV610 || rctx->b.family == CHIP_RV630 ||
+	    rctx->b.family == CHIP_RV620 || rctx->b.family == CHIP_RV635)
 		depth = 0.0f;
 	else
 		depth = 1.0f;
@@ -143,7 +142,7 @@ void r600_blit_decompress_depth(struct pipe_context *ctx,
 	rctx->db_misc_state.copy_depth = util_format_has_depth(desc);
 	rctx->db_misc_state.copy_stencil = util_format_has_stencil(desc);
 	rctx->db_misc_state.copy_sample = first_sample;
-	rctx->db_misc_state.atom.dirty = true;
+	r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 
 	for (level = first_level; level <= last_level; level++) {
 		if (!staging && !(texture->dirty_level_mask & (1 << level)))
@@ -160,7 +159,7 @@ void r600_blit_decompress_depth(struct pipe_context *ctx,
 
 				if (sample != rctx->db_misc_state.copy_sample) {
 					rctx->db_misc_state.copy_sample = sample;
-					rctx->db_misc_state.atom.dirty = true;
+					r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 				}
 
 				surf_tmpl.format = texture->resource.b.b.format;
@@ -171,9 +170,6 @@ void r600_blit_decompress_depth(struct pipe_context *ctx,
 				zsurf = ctx->create_surface(ctx, &texture->resource.b.b, &surf_tmpl);
 
 				surf_tmpl.format = flushed_depth_texture->resource.b.b.format;
-				surf_tmpl.u.tex.level = level;
-				surf_tmpl.u.tex.first_layer = layer;
-				surf_tmpl.u.tex.last_layer = layer;
 				cbsurf = ctx->create_surface(ctx,
 						&flushed_depth_texture->resource.b.b, &surf_tmpl);
 
@@ -198,25 +194,33 @@ void r600_blit_decompress_depth(struct pipe_context *ctx,
 
 	/* reenable compression in DB_RENDER_CONTROL */
 	rctx->db_misc_state.flush_depthstencil_through_cb = false;
-	rctx->db_misc_state.atom.dirty = true;
+	r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 }
 
 static void r600_blit_decompress_depth_in_place(struct r600_context *rctx,
                                                 struct r600_texture *texture,
+						bool is_stencil_sampler,
                                                 unsigned first_level, unsigned last_level,
                                                 unsigned first_layer, unsigned last_layer)
 {
 	struct pipe_surface *zsurf, surf_tmpl = {{0}};
 	unsigned layer, max_layer, checked_last_layer, level;
+	unsigned *dirty_level_mask;
 
 	/* Enable decompression in DB_RENDER_CONTROL */
-	rctx->db_misc_state.flush_depthstencil_in_place = true;
-	rctx->db_misc_state.atom.dirty = true;
+	if (is_stencil_sampler) {
+		rctx->db_misc_state.flush_stencil_inplace = true;
+		dirty_level_mask = &texture->stencil_dirty_level_mask;
+	} else {
+		rctx->db_misc_state.flush_depth_inplace = true;
+		dirty_level_mask = &texture->dirty_level_mask;
+	}
+	r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 
 	surf_tmpl.format = texture->resource.b.b.format;
 
 	for (level = first_level; level <= last_level; level++) {
-		if (!(texture->dirty_level_mask & (1 << level)))
+		if (!(*dirty_level_mask & (1 << level)))
 			continue;
 
 		surf_tmpl.u.tex.level = level;
@@ -230,12 +234,12 @@ static void r600_blit_decompress_depth_in_place(struct r600_context *rctx,
 			surf_tmpl.u.tex.first_layer = layer;
 			surf_tmpl.u.tex.last_layer = layer;
 
-			zsurf = rctx->context.create_surface(&rctx->context, &texture->resource.b.b, &surf_tmpl);
+			zsurf = rctx->b.b.create_surface(&rctx->b.b, &texture->resource.b.b, &surf_tmpl);
 
-			r600_blitter_begin(&rctx->context, R600_DECOMPRESS);
+			r600_blitter_begin(&rctx->b.b, R600_DECOMPRESS);
 			util_blitter_custom_depth_stencil(rctx->blitter, zsurf, NULL, ~0,
 							  rctx->custom_dsa_flush, 1.0f);
-			r600_blitter_end(&rctx->context);
+			r600_blitter_end(&rctx->b.b);
 
 			pipe_surface_reference(&zsurf, NULL);
 		}
@@ -243,13 +247,14 @@ static void r600_blit_decompress_depth_in_place(struct r600_context *rctx,
 		/* The texture will always be dirty if some layers or samples aren't flushed.
 		 * I don't think this case occurs often though. */
 		if (first_layer == 0 && last_layer == max_layer) {
-			texture->dirty_level_mask &= ~(1 << level);
+			*dirty_level_mask &= ~(1 << level);
 		}
 	}
 
 	/* Disable decompression in DB_RENDER_CONTROL */
-	rctx->db_misc_state.flush_depthstencil_in_place = false;
-	rctx->db_misc_state.atom.dirty = true;
+	rctx->db_misc_state.flush_depth_inplace = false;
+	rctx->db_misc_state.flush_stencil_inplace = false;
+	r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 }
 
 void r600_decompress_depth_textures(struct r600_context *rctx,
@@ -260,23 +265,25 @@ void r600_decompress_depth_textures(struct r600_context *rctx,
 
 	while (depth_texture_mask) {
 		struct pipe_sampler_view *view;
+		struct r600_pipe_sampler_view *rview;
 		struct r600_texture *tex;
 
 		i = u_bit_scan(&depth_texture_mask);
 
 		view = &textures->views[i]->base;
 		assert(view);
+		rview = (struct r600_pipe_sampler_view*)view;
 
 		tex = (struct r600_texture *)view->texture;
-		assert(tex->is_depth && !tex->is_flushing_texture);
+		assert(tex->db_compatible);
 
-		if (rctx->chip_class >= EVERGREEN ||
-		    r600_can_read_depth(tex)) {
+		if (r600_can_sample_zs(tex, rview->is_stencil_sampler)) {
 			r600_blit_decompress_depth_in_place(rctx, tex,
+						   rview->is_stencil_sampler,
 						   view->u.tex.first_level, view->u.tex.last_level,
 						   0, util_max_layer(&tex->resource.b.b, view->u.tex.first_level));
 		} else {
-			r600_blit_decompress_depth(&rctx->context, tex, NULL,
+			r600_blit_decompress_depth(&rctx->b.b, tex, NULL,
 						   view->u.tex.first_level, view->u.tex.last_level,
 						   0, util_max_layer(&tex->resource.b.b, view->u.tex.first_level),
 						   0, u_max_sample(&tex->resource.b.b));
@@ -314,7 +321,8 @@ static void r600_blit_decompress_color(struct pipe_context *ctx,
 			cbsurf = ctx->create_surface(ctx, &rtex->resource.b.b, &surf_tmpl);
 
 			r600_blitter_begin(ctx, R600_DECOMPRESS);
-			util_blitter_custom_color(rctx->blitter, cbsurf, rctx->custom_blend_decompress);
+			util_blitter_custom_color(rctx->blitter, cbsurf,
+				rtex->fmask.size ? rctx->custom_blend_decompress : rctx->custom_blend_fastclear);
 			r600_blitter_end(ctx);
 
 			pipe_surface_reference(&cbsurf, NULL);
@@ -344,9 +352,9 @@ void r600_decompress_color_textures(struct r600_context *rctx,
 		assert(view);
 
 		tex = (struct r600_texture *)view->texture;
-		assert(tex->cmask_size && tex->fmask_size);
+		assert(tex->cmask.size);
 
-		r600_blit_decompress_color(&rctx->context, tex,
+		r600_blit_decompress_color(&rctx->b.b, tex,
 					   view->u.tex.first_level, view->u.tex.last_level,
 					   0, util_max_layer(&tex->resource.b.b, view->u.tex.first_level));
 	}
@@ -364,12 +372,16 @@ static bool r600_decompress_subresource(struct pipe_context *ctx,
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct r600_texture *rtex = (struct r600_texture*)tex;
 
-	if (rtex->is_depth && !rtex->is_flushing_texture) {
-		if (rctx->chip_class >= EVERGREEN ||
-		    r600_can_read_depth(rtex)) {
-			r600_blit_decompress_depth_in_place(rctx, rtex,
+	if (rtex->db_compatible) {
+		if (r600_can_sample_zs(rtex, false)) {
+			r600_blit_decompress_depth_in_place(rctx, rtex, false,
 						   level, level,
 						   first_layer, last_layer);
+			if (rtex->surface.flags & RADEON_SURF_SBUFFER) {
+				r600_blit_decompress_depth_in_place(rctx, rtex, true,
+							   level, level,
+							   first_layer, last_layer);
+			}
 		} else {
 			if (!r600_init_flushed_depth_texture(ctx, tex, NULL))
 				return false; /* error */
@@ -379,91 +391,10 @@ static bool r600_decompress_subresource(struct pipe_context *ctx,
 						   first_layer, last_layer,
 						   0, u_max_sample(tex));
 		}
-	} else if (rtex->fmask_size && rtex->cmask_size) {
+	} else if (rtex->cmask.size) {
 		r600_blit_decompress_color(ctx, rtex, level, level,
 					   first_layer, last_layer);
 	}
-	return true;
-}
-
-static boolean is_simple_msaa_resolve(const struct pipe_blit_info *info)
-{
-	unsigned dst_width = u_minify(info->dst.resource->width0, info->dst.level);
-	unsigned dst_height = u_minify(info->dst.resource->height0, info->dst.level);
-	struct r600_texture *dst = (struct r600_texture*)info->dst.resource;
-	unsigned dst_tile_mode = dst->surface.level[info->dst.level].mode;
-
-	return info->dst.resource->format == info->src.resource->format &&
-		info->dst.resource->format == info->dst.format &&
-		info->src.resource->format == info->src.format &&
-		!info->scissor_enable &&
-		info->mask == PIPE_MASK_RGBA &&
-		dst_width == info->src.resource->width0 &&
-		dst_height == info->src.resource->height0 &&
-		info->dst.box.x == 0 &&
-		info->dst.box.y == 0 &&
-		info->dst.box.width == dst_width &&
-		info->dst.box.height == dst_height &&
-		info->src.box.x == 0 &&
-		info->src.box.y == 0 &&
-		info->src.box.width == dst_width &&
-		info->src.box.height == dst_height &&
-		/* Dst must be tiled. If it's not, we have to use a temporary
-		 * resource which is tiled. */
-		dst_tile_mode >= RADEON_SURF_MODE_1D;
-}
-
-static void r600_clear_buffer(struct pipe_context *ctx, struct pipe_resource *dst,
-			      unsigned offset, unsigned size, unsigned char value);
-
-static void evergreen_set_clear_color(struct pipe_surface *cbuf,
-				      const union pipe_color_union *color)
-{
-	unsigned *clear_value = ((struct r600_texture *)cbuf->texture)->color_clear_value;
-	union util_color uc;
-
-	memset(&uc, 0, sizeof(uc));
-
-	if (util_format_is_pure_uint(cbuf->format)) {
-		util_format_write_4ui(cbuf->format, color->ui, 0, &uc, 0, 0, 0, 1, 1);
-	} else if (util_format_is_pure_sint(cbuf->format)) {
-		util_format_write_4i(cbuf->format, color->i, 0, &uc, 0, 0, 0, 1, 1);
-	} else {
-		util_pack_color(color->f, cbuf->format, &uc);
-	}
-
-	memcpy(clear_value, &uc, 2 * sizeof(uint32_t));
-}
-
-static bool can_fast_clear_color(struct pipe_context *ctx)
-{
-	struct r600_context *rctx = (struct r600_context *)ctx;
-	struct pipe_framebuffer_state *fb = &rctx->framebuffer.state;
-	int i;
-
-	if (rctx->chip_class < EVERGREEN) {
-		return false;
-	}
-
-	for (i = 0; i < fb->nr_cbufs; i++) {
-		struct r600_texture *tex = (struct r600_texture *)fb->cbufs[i]->texture;
-
-		if (tex->cmask_size == 0) {
-			return false;
-		}
-
-		/* 128-bit formats are unuspported */
-		if (util_format_get_blocksizebits(fb->cbufs[i]->format) > 64) {
-			return false;
-		}
-
-		/* the clear is allowed if all layers are bound */
-		if (fb->cbufs[i]->u.tex.first_layer != 0 ||
-		    fb->cbufs[i]->u.tex.last_layer != util_max_layer(&tex->resource.b.b, 0)) {
-			return false;
-		}
-	}
-
 	return true;
 }
 
@@ -474,24 +405,31 @@ static void r600_clear(struct pipe_context *ctx, unsigned buffers,
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct pipe_framebuffer_state *fb = &rctx->framebuffer.state;
 
-	/* fast color clear on AA framebuffers (EG+) */
-	if ((buffers & PIPE_CLEAR_COLOR) && can_fast_clear_color(ctx)) {
+	if (buffers & PIPE_CLEAR_COLOR && rctx->b.chip_class >= EVERGREEN) {
+		evergreen_do_fast_color_clear(&rctx->b, fb, &rctx->framebuffer.atom,
+					      &buffers, NULL, color);
+		if (!buffers)
+			return; /* all buffers have been fast cleared */
+	}
+
+	if (buffers & PIPE_CLEAR_COLOR) {
 		int i;
 
+		/* These buffers cannot use fast clear, make sure to disable expansion. */
 		for (i = 0; i < fb->nr_cbufs; i++) {
-			struct r600_texture *tex = (struct r600_texture *)fb->cbufs[i]->texture;
+			struct r600_texture *tex;
 
-			evergreen_set_clear_color(fb->cbufs[i], color);
-			r600_clear_buffer(ctx, fb->cbufs[i]->texture,
-					tex->cmask_offset, tex->cmask_size, 0);
-			tex->dirty_level_mask |= 1 << fb->cbufs[i]->u.tex.level;
+			/* If not clearing this buffer, skip. */
+			if (!(buffers & (PIPE_CLEAR_COLOR0 << i)))
+				continue;
+
+			if (!fb->cbufs[i])
+				continue;
+
+			tex = (struct r600_texture *)fb->cbufs[i]->texture;
+			if (tex->fmask.size == 0)
+				tex->dirty_level_mask &= ~(1 << fb->cbufs[i]->u.tex.level);
 		}
-
-		rctx->framebuffer.atom.dirty = true;
-
-		buffers &= ~PIPE_CLEAR_COLOR;
-		if (!buffers)
-			return;
 	}
 
 	/* if hyperz enabled just clear hyperz */
@@ -506,25 +444,28 @@ static void r600_clear(struct pipe_context *ctx, unsigned buffers,
 		 * disable fast clear for texture array.
 		 */
 		/* Only use htile for first level */
-		if (rtex->htile && !level && rtex->surface.array_size == 1) {
-			if (rtex->depth_clear != depth) {
-				rtex->depth_clear = depth;
-				rctx->db_state.atom.dirty = true;
+		if (rtex->htile_buffer && !level &&
+                   fb->zsbuf->u.tex.first_layer == 0 &&
+                   fb->zsbuf->u.tex.last_layer == util_max_layer(&rtex->resource.b.b, level)) {
+			if (rtex->depth_clear_value != depth) {
+				rtex->depth_clear_value = depth;
+				r600_mark_atom_dirty(rctx, &rctx->db_state.atom);
 			}
 			rctx->db_misc_state.htile_clear = true;
-			rctx->db_misc_state.atom.dirty = true;
+			r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 		}
 	}
 
 	r600_blitter_begin(ctx, R600_CLEAR);
 	util_blitter_clear(rctx->blitter, fb->width, fb->height,
+			   util_framebuffer_get_num_layers(fb),
 			   buffers, color, depth, stencil);
 	r600_blitter_end(ctx);
 
 	/* disable fast clear */
 	if (rctx->db_misc_state.htile_clear) {
 		rctx->db_misc_state.htile_clear = false;
-		rctx->db_misc_state.atom.dirty = true;
+		r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 	}
 }
 
@@ -532,11 +473,13 @@ static void r600_clear_render_target(struct pipe_context *ctx,
 				     struct pipe_surface *dst,
 				     const union pipe_color_union *color,
 				     unsigned dstx, unsigned dsty,
-				     unsigned width, unsigned height)
+				     unsigned width, unsigned height,
+				     bool render_condition_enabled)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
-	r600_blitter_begin(ctx, R600_CLEAR_SURFACE);
+	r600_blitter_begin(ctx, R600_CLEAR_SURFACE |
+			   (render_condition_enabled ? 0 : R600_DISABLE_RENDER_COND));
 	util_blitter_clear_render_target(rctx->blitter, dst, color,
 					 dstx, dsty, width, height);
 	r600_blitter_end(ctx);
@@ -548,112 +491,142 @@ static void r600_clear_depth_stencil(struct pipe_context *ctx,
 				     double depth,
 				     unsigned stencil,
 				     unsigned dstx, unsigned dsty,
-				     unsigned width, unsigned height)
+				     unsigned width, unsigned height,
+				     bool render_condition_enabled)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
-	r600_blitter_begin(ctx, R600_CLEAR_SURFACE);
+	r600_blitter_begin(ctx, R600_CLEAR_SURFACE |
+			   (render_condition_enabled ? 0 : R600_DISABLE_RENDER_COND));
 	util_blitter_clear_depth_stencil(rctx->blitter, dst, clear_flags, depth, stencil,
 					 dstx, dsty, width, height);
 	r600_blitter_end(ctx);
 }
 
-void r600_copy_buffer(struct pipe_context *ctx, struct pipe_resource *dst, unsigned dstx,
-		      struct pipe_resource *src, const struct pipe_box *src_box)
+static void r600_copy_buffer(struct pipe_context *ctx, struct pipe_resource *dst, unsigned dstx,
+			     struct pipe_resource *src, const struct pipe_box *src_box)
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
 
-	if (rctx->screen->has_cp_dma) {
+	if (rctx->screen->b.has_cp_dma) {
 		r600_cp_dma_copy_buffer(rctx, dst, dstx, src, src_box->x, src_box->width);
 	}
-	else if (rctx->screen->has_streamout &&
+	else if (rctx->screen->b.has_streamout &&
 		 /* Require 4-byte alignment. */
 		 dstx % 4 == 0 && src_box->x % 4 == 0 && src_box->width % 4 == 0) {
-
-		/* Flush both resources. */
-		r600_flag_resource_cache_flush(rctx, src);
-		r600_flag_resource_cache_flush(rctx, dst);
 
 		r600_blitter_begin(ctx, R600_COPY_BUFFER);
 		util_blitter_copy_buffer(rctx->blitter, dst, dstx, src, src_box->x, src_box->width);
 		r600_blitter_end(ctx);
-
-		/* Flush the dst in case the 3D engine has been prefetching the resource. */
-		r600_flag_resource_cache_flush(rctx, dst);
 	} else {
 		util_resource_copy_region(ctx, dst, 0, dstx, 0, 0, src, 0, src_box);
 	}
 }
 
-static void r600_clear_buffer(struct pipe_context *ctx, struct pipe_resource *dst,
-			      unsigned offset, unsigned size, unsigned char value)
+/**
+ * Global buffers are not really resources, they are are actually offsets
+ * into a single global resource (r600_screen::global_pool).  The means
+ * they don't have their own buf handle, so they cannot be passed
+ * to r600_copy_buffer() and must be handled separately.
+ */
+static void r600_copy_global_buffer(struct pipe_context *ctx,
+				    struct pipe_resource *dst, unsigned
+				    dstx, struct pipe_resource *src,
+				    const struct pipe_box *src_box)
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
-	uint32_t v = value;
+	struct compute_memory_pool *pool = rctx->screen->global_pool;
+	struct pipe_box new_src_box = *src_box;
 
-	if (rctx->screen->has_cp_dma &&
-	    rctx->chip_class >= EVERGREEN &&
+	if (src->bind & PIPE_BIND_GLOBAL) {
+		struct r600_resource_global *rsrc =
+			(struct r600_resource_global *)src;
+		struct compute_memory_item *item = rsrc->chunk;
+
+		if (is_item_in_pool(item)) {
+			new_src_box.x += 4 * item->start_in_dw;
+			src = (struct pipe_resource *)pool->bo;
+		} else {
+			if (item->real_buffer == NULL) {
+				item->real_buffer =
+					r600_compute_buffer_alloc_vram(pool->screen,
+								       item->size_in_dw * 4);
+			}
+			src = (struct pipe_resource*)item->real_buffer;
+		}
+	}
+	if (dst->bind & PIPE_BIND_GLOBAL) {
+		struct r600_resource_global *rdst =
+			(struct r600_resource_global *)dst;
+		struct compute_memory_item *item = rdst->chunk;
+
+		if (is_item_in_pool(item)) {
+			dstx += 4 * item->start_in_dw;
+			dst = (struct pipe_resource *)pool->bo;
+		} else {
+			if (item->real_buffer == NULL) {
+				item->real_buffer =
+					r600_compute_buffer_alloc_vram(pool->screen,
+								       item->size_in_dw * 4);
+			}
+			dst = (struct pipe_resource*)item->real_buffer;
+		}
+	}
+
+	r600_copy_buffer(ctx, dst, dstx, src, &new_src_box);
+}
+
+static void r600_clear_buffer(struct pipe_context *ctx, struct pipe_resource *dst,
+			      uint64_t offset, uint64_t size, unsigned value,
+			      enum r600_coherency coher)
+{
+	struct r600_context *rctx = (struct r600_context*)ctx;
+
+	if (rctx->screen->b.has_cp_dma &&
+	    rctx->b.chip_class >= EVERGREEN &&
 	    offset % 4 == 0 && size % 4 == 0) {
-		uint32_t clear_value = v | (v << 8) | (v << 16) | (v << 24);
-
-		evergreen_cp_dma_clear_buffer(rctx, dst, offset, size, clear_value);
-	} else if (rctx->screen->has_streamout && offset % 4 == 0 && size % 4 == 0) {
+		evergreen_cp_dma_clear_buffer(rctx, dst, offset, size, value, coher);
+	} else if (rctx->screen->b.has_streamout && offset % 4 == 0 && size % 4 == 0) {
 		union pipe_color_union clear_value;
-
-		clear_value.ui[0] = v | (v << 8) | (v << 16) | (v << 24);
-
-		r600_flag_resource_cache_flush(rctx, dst);
+		clear_value.ui[0] = value;
 
 		r600_blitter_begin(ctx, R600_DISABLE_RENDER_COND);
 		util_blitter_clear_buffer(rctx->blitter, dst, offset, size,
 					  1, &clear_value);
 		r600_blitter_end(ctx);
-
-		/* Flush again in case the 3D engine has been prefetching the resource. */
-		r600_flag_resource_cache_flush(rctx, dst);
 	} else {
-		char *map = r600_buffer_mmap_sync_with_rings(rctx, r600_resource(dst),
-							     PIPE_TRANSFER_WRITE);
-		memset(map + offset, value, size);
+		uint32_t *map = r600_buffer_map_sync_with_rings(&rctx->b, r600_resource(dst),
+								 PIPE_TRANSFER_WRITE);
+		map += offset / 4;
+		size /= 4;
+		for (unsigned i = 0; i < size; i++)
+			*map++ = value;
 	}
 }
 
-void r600_screen_clear_buffer(struct r600_screen *rscreen, struct pipe_resource *dst,
-			      unsigned offset, unsigned size, unsigned char value)
-{
-	pipe_mutex_lock(rscreen->aux_context_lock);
-	r600_clear_buffer(rscreen->aux_context, dst, offset, size, value);
-	rscreen->aux_context->flush(rscreen->aux_context, NULL, 0);
-	pipe_mutex_unlock(rscreen->aux_context_lock);
-}
-
-static bool util_format_is_subsampled_2x1_32bpp(enum pipe_format format)
-{
-	const struct util_format_description *desc = util_format_description(format);
-
-	return desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED &&
-	       desc->block.width == 2 &&
-	       desc->block.height == 1 &&
-	       desc->block.bits == 32;
-}
-
-static void r600_resource_copy_region(struct pipe_context *ctx,
-				      struct pipe_resource *dst,
-				      unsigned dst_level,
-				      unsigned dstx, unsigned dsty, unsigned dstz,
-				      struct pipe_resource *src,
-				      unsigned src_level,
-				      const struct pipe_box *src_box)
+void r600_resource_copy_region(struct pipe_context *ctx,
+			       struct pipe_resource *dst,
+			       unsigned dst_level,
+			       unsigned dstx, unsigned dsty, unsigned dstz,
+			       struct pipe_resource *src,
+			       unsigned src_level,
+			       const struct pipe_box *src_box)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct pipe_surface *dst_view, dst_templ;
 	struct pipe_sampler_view src_templ, *src_view;
 	unsigned dst_width, dst_height, src_width0, src_height0, src_widthFL, src_heightFL;
+	unsigned src_force_level = 0;
 	struct pipe_box sbox, dstbox;
 
 	/* Handle buffers first. */
 	if (dst->target == PIPE_BUFFER && src->target == PIPE_BUFFER) {
-		r600_copy_buffer(ctx, dst, dstx, src, src_box);
+		if ((src->bind & PIPE_BIND_GLOBAL) ||
+					(dst->bind & PIPE_BIND_GLOBAL)) {
+			r600_copy_global_buffer(ctx, dst, dstx, src, src_box);
+		} else {
+			r600_copy_buffer(ctx, dst, dstx, src, src_box);
+		}
 		return;
 	}
 
@@ -676,7 +649,8 @@ static void r600_resource_copy_region(struct pipe_context *ctx,
 	util_blitter_default_dst_texture(&dst_templ, dst, dst_level, dstz);
 	util_blitter_default_src_texture(&src_templ, src, src_level);
 
-	if (util_format_is_compressed(src->format)) {
+	if (util_format_is_compressed(src->format) ||
+	    util_format_is_compressed(dst->format)) {
 		unsigned blocksize = util_format_get_blocksize(src->format);
 
 		if (blocksize == 8)
@@ -702,9 +676,10 @@ static void r600_resource_copy_region(struct pipe_context *ctx,
 		sbox.height = util_format_get_nblocksy(src->format, src_box->height);
 		sbox.depth = src_box->depth;
 		src_box = &sbox;
-	} else if (!util_blitter_is_copy_supported(rctx->blitter, dst, src,
-						   PIPE_MASK_RGBAZS)) {
-		if (util_format_is_subsampled_2x1_32bpp(src->format)) {
+
+		src_force_level = src_level;
+	} else if (!util_blitter_is_copy_supported(rctx->blitter, dst, src)) {
+		if (util_format_is_subsampled_422(src->format)) {
 
 			src_templ.format = PIPE_FORMAT_R8G8B8A8_UINT;
 			dst_templ.format = PIPE_FORMAT_R8G8B8A8_UINT;
@@ -727,7 +702,7 @@ static void r600_resource_copy_region(struct pipe_context *ctx,
 				dst_templ.format = PIPE_FORMAT_R8_UNORM;
 				src_templ.format = PIPE_FORMAT_R8_UNORM;
 				break;
-                        case 2:
+			case 2:
 				dst_templ.format = PIPE_FORMAT_R8G8_UNORM;
 				src_templ.format = PIPE_FORMAT_R8G8_UNORM;
 				break;
@@ -735,14 +710,14 @@ static void r600_resource_copy_region(struct pipe_context *ctx,
 				dst_templ.format = PIPE_FORMAT_R8G8B8A8_UNORM;
 				src_templ.format = PIPE_FORMAT_R8G8B8A8_UNORM;
 				break;
-                        case 8:
-                                dst_templ.format = PIPE_FORMAT_R16G16B16A16_UINT;
-                                src_templ.format = PIPE_FORMAT_R16G16B16A16_UINT;
-                                break;
-                        case 16:
-                                dst_templ.format = PIPE_FORMAT_R32G32B32A32_UINT;
-                                src_templ.format = PIPE_FORMAT_R32G32B32A32_UINT;
-                                break;
+			case 8:
+				dst_templ.format = PIPE_FORMAT_R16G16B16A16_UINT;
+				src_templ.format = PIPE_FORMAT_R16G16B16A16_UINT;
+				break;
+			case 16:
+				dst_templ.format = PIPE_FORMAT_R32G32B32A32_UINT;
+				src_templ.format = PIPE_FORMAT_R32G32B32A32_UINT;
+				break;
 			default:
 				fprintf(stderr, "Unhandled format %s with blocksize %u\n",
 					util_format_short_name(src->format), blocksize);
@@ -753,9 +728,10 @@ static void r600_resource_copy_region(struct pipe_context *ctx,
 
 	dst_view = r600_create_surface_custom(ctx, dst, &dst_templ, dst_width, dst_height);
 
-	if (rctx->chip_class >= EVERGREEN) {
+	if (rctx->b.chip_class >= EVERGREEN) {
 		src_view = evergreen_create_sampler_view_custom(ctx, src, &src_templ,
-								src_width0, src_height0);
+								src_width0, src_height0,
+								src_force_level);
 	} else {
 		src_view = r600_create_sampler_view_custom(ctx, src, &src_templ,
 							   src_widthFL, src_heightFL);
@@ -769,98 +745,91 @@ static void r600_resource_copy_region(struct pipe_context *ctx,
 	util_blitter_blit_generic(rctx->blitter, dst_view, &dstbox,
 				  src_view, src_box, src_width0, src_height0,
 				  PIPE_MASK_RGBAZS, PIPE_TEX_FILTER_NEAREST, NULL,
-				  TRUE);
+				  FALSE);
 	r600_blitter_end(ctx);
 
 	pipe_surface_reference(&dst_view, NULL);
 	pipe_sampler_view_reference(&src_view, NULL);
 }
 
-/* For MSAA integer resolving to work, we change the format to NORM using this function. */
-static enum pipe_format int_to_norm_format(enum pipe_format format)
+static bool do_hardware_msaa_resolve(struct pipe_context *ctx,
+				     const struct pipe_blit_info *info)
 {
-	switch (format) {
-#define REPLACE_FORMAT_SIGN(format,sign) \
-	case PIPE_FORMAT_##format##_##sign##INT: \
-		return PIPE_FORMAT_##format##_##sign##NORM
-#define REPLACE_FORMAT(format) \
-		REPLACE_FORMAT_SIGN(format, U); \
-		REPLACE_FORMAT_SIGN(format, S)
-
-	REPLACE_FORMAT_SIGN(B10G10R10A2, U);
-	REPLACE_FORMAT(R8);
-	REPLACE_FORMAT(R8G8);
-	REPLACE_FORMAT(R8G8B8X8);
-	REPLACE_FORMAT(R8G8B8A8);
-	REPLACE_FORMAT(A8);
-	REPLACE_FORMAT(I8);
-	REPLACE_FORMAT(L8);
-	REPLACE_FORMAT(L8A8);
-	REPLACE_FORMAT(R16);
-	REPLACE_FORMAT(R16G16);
-	REPLACE_FORMAT(R16G16B16X16);
-	REPLACE_FORMAT(R16G16B16A16);
-	REPLACE_FORMAT(A16);
-	REPLACE_FORMAT(I16);
-	REPLACE_FORMAT(L16);
-	REPLACE_FORMAT(L16A16);
-
-#undef REPLACE_FORMAT
-#undef REPLACE_FORMAT_SIGN
-	default:
-		return format;
-	}
-}
-
-static void r600_msaa_color_resolve(struct pipe_context *ctx,
-			      const struct pipe_blit_info *info)
-{
-	struct r600_context *rctx = (struct r600_context *)ctx;
-	struct pipe_screen *screen = ctx->screen;
+	struct r600_context *rctx = (struct r600_context*)ctx;
+	struct r600_texture *dst = (struct r600_texture*)info->dst.resource;
+	unsigned dst_width = u_minify(info->dst.resource->width0, info->dst.level);
+	unsigned dst_height = u_minify(info->dst.resource->height0, info->dst.level);
+	enum pipe_format format = info->src.format;
+	unsigned sample_mask =
+		rctx->b.chip_class == CAYMAN ? ~0 :
+		((1ull << MAX2(1, info->src.resource->nr_samples)) - 1);
 	struct pipe_resource *tmp, templ;
 	struct pipe_blit_info blit;
-	unsigned sample_mask =
-		rctx->chip_class == CAYMAN ? ~0 :
-		((1ull << MAX2(1, info->src.resource->nr_samples)) - 1);
 
-	assert(info->src.level == 0);
-	assert(info->src.box.depth == 1);
-	assert(info->dst.box.depth == 1);
+	/* Check basic requirements for hw resolve. */
+	if (!(info->src.resource->nr_samples > 1 &&
+	      info->dst.resource->nr_samples <= 1 &&
+	      !util_format_is_pure_integer(format) &&
+	      !util_format_is_depth_or_stencil(format) &&
+	      util_max_layer(info->src.resource, 0) == 0))
+		return false;
 
-	if (is_simple_msaa_resolve(info)) {
-		r600_blitter_begin(ctx, R600_COLOR_RESOLVE);
+	/* Check the remaining requirements for hw resolve. */
+	if (util_max_layer(info->dst.resource, info->dst.level) == 0 &&
+	    util_is_format_compatible(util_format_description(info->src.format),
+				      util_format_description(info->dst.format)) &&
+	    !info->scissor_enable &&
+	    (info->mask & PIPE_MASK_RGBA) == PIPE_MASK_RGBA &&
+	    dst_width == info->src.resource->width0 &&
+	    dst_height == info->src.resource->height0 &&
+	    info->dst.box.x == 0 &&
+	    info->dst.box.y == 0 &&
+	    info->dst.box.width == dst_width &&
+	    info->dst.box.height == dst_height &&
+	    info->dst.box.depth == 1 &&
+	    info->src.box.x == 0 &&
+	    info->src.box.y == 0 &&
+	    info->src.box.width == dst_width &&
+	    info->src.box.height == dst_height &&
+	    info->src.box.depth == 1 &&
+	    dst->surface.level[info->dst.level].mode >= RADEON_SURF_MODE_1D &&
+	    (!dst->cmask.size || !dst->dirty_level_mask) /* dst cannot be fast-cleared */) {
+		r600_blitter_begin(ctx, R600_COLOR_RESOLVE |
+				   (info->render_condition_enable ? 0 : R600_DISABLE_RENDER_COND));
 		util_blitter_custom_resolve_color(rctx->blitter,
 						  info->dst.resource, info->dst.level,
 						  info->dst.box.z,
 						  info->src.resource, info->src.box.z,
 						  sample_mask, rctx->custom_blend_resolve,
-                                                  int_to_norm_format(info->dst.format));
+						  format);
 		r600_blitter_end(ctx);
-		return;
+		return true;
 	}
 
-	/* resolve into a temporary texture, then blit */
+	/* Shader-based resolve is VERY SLOW. Instead, resolve into
+	 * a temporary texture and blit.
+	 */
+	memset(&templ, 0, sizeof(templ));
 	templ.target = PIPE_TEXTURE_2D;
 	templ.format = info->src.resource->format;
 	templ.width0 = info->src.resource->width0;
 	templ.height0 = info->src.resource->height0;
 	templ.depth0 = 1;
 	templ.array_size = 1;
-	templ.last_level = 0;
-	templ.nr_samples = 0;
-	templ.usage = PIPE_USAGE_STATIC;
-	templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
-	templ.flags = R600_RESOURCE_FLAG_FORCE_TILING; /* dst must not have a linear layout */
+	templ.usage = PIPE_USAGE_DEFAULT;
+	templ.flags = R600_RESOURCE_FLAG_FORCE_TILING;
 
-	tmp = screen->resource_create(screen, &templ);
+	tmp = ctx->screen->resource_create(ctx->screen, &templ);
+	if (!tmp)
+		return false;
 
 	/* resolve */
-	r600_blitter_begin(ctx, R600_COLOR_RESOLVE);
-	util_blitter_custom_resolve_color(rctx->blitter,
-					  tmp, 0, 0,
+	r600_blitter_begin(ctx, R600_COLOR_RESOLVE |
+			   (info->render_condition_enable ? 0 : R600_DISABLE_RENDER_COND));
+	util_blitter_custom_resolve_color(rctx->blitter, tmp, 0, 0,
 					  info->src.resource, info->src.box.z,
 					  sample_mask, rctx->custom_blend_resolve,
-                                          int_to_norm_format(tmp->format));
+					  format);
 	r600_blitter_end(ctx);
 
 	/* blit */
@@ -868,27 +837,44 @@ static void r600_msaa_color_resolve(struct pipe_context *ctx,
 	blit.src.resource = tmp;
 	blit.src.box.z = 0;
 
-	r600_blitter_begin(ctx, R600_BLIT);
+	r600_blitter_begin(ctx, R600_BLIT |
+			   (info->render_condition_enable ? 0 : R600_DISABLE_RENDER_COND));
 	util_blitter_blit(rctx->blitter, &blit);
 	r600_blitter_end(ctx);
 
 	pipe_resource_reference(&tmp, NULL);
+	return true;
 }
 
 static void r600_blit(struct pipe_context *ctx,
                       const struct pipe_blit_info *info)
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
+	struct r600_texture *rdst = (struct r600_texture *)info->dst.resource;
 
-	assert(util_blitter_is_blit_supported(rctx->blitter, info));
-
-	if (info->src.resource->nr_samples > 1 &&
-	    info->dst.resource->nr_samples <= 1 &&
-	    !util_format_is_depth_or_stencil(info->src.resource->format) &&
-	    !util_format_is_pure_integer(int_to_norm_format(info->src.resource->format))) {
-		r600_msaa_color_resolve(ctx, info);
+	if (do_hardware_msaa_resolve(ctx, info)) {
 		return;
 	}
+
+	/* Using SDMA for copying to a linear texture in GTT is much faster.
+	 * This improves DRI PRIME performance.
+	 *
+	 * resource_copy_region can't do this yet, because dma_copy calls it
+	 * on failure (recursion).
+	 */
+	if (rdst->surface.level[info->dst.level].mode ==
+	    RADEON_SURF_MODE_LINEAR_ALIGNED &&
+	    rctx->b.dma_copy &&
+	    util_can_blit_via_copy_region(info, false)) {
+		rctx->b.dma_copy(ctx, info->dst.resource, info->dst.level,
+				 info->dst.box.x, info->dst.box.y,
+				 info->dst.box.z,
+				 info->src.resource, info->src.level,
+				 &info->src.box);
+		return;
+	}
+
+	assert(util_blitter_is_blit_supported(rctx->blitter, info));
 
 	/* The driver doesn't decompress resources automatically while
 	 * u_blitter is rendering. */
@@ -898,16 +884,37 @@ static void r600_blit(struct pipe_context *ctx,
 		return; /* error */
 	}
 
-	r600_blitter_begin(ctx, R600_BLIT);
+	if (rctx->screen->b.debug_flags & DBG_FORCE_DMA &&
+	    util_try_blit_via_copy_region(ctx, info))
+		return;
+
+	r600_blitter_begin(ctx, R600_BLIT |
+			   (info->render_condition_enable ? 0 : R600_DISABLE_RENDER_COND));
 	util_blitter_blit(rctx->blitter, info);
 	r600_blitter_end(ctx);
 }
 
+static void r600_flush_resource(struct pipe_context *ctx,
+				struct pipe_resource *res)
+{
+	struct r600_texture *rtex = (struct r600_texture*)res;
+
+	assert(res->target != PIPE_BUFFER);
+
+	if (!rtex->is_depth && rtex->cmask.size) {
+		r600_blit_decompress_color(ctx, rtex, 0, res->last_level,
+					   0, util_max_layer(res, 0));
+	}
+}
+
 void r600_init_blit_functions(struct r600_context *rctx)
 {
-	rctx->context.clear = r600_clear;
-	rctx->context.clear_render_target = r600_clear_render_target;
-	rctx->context.clear_depth_stencil = r600_clear_depth_stencil;
-	rctx->context.resource_copy_region = r600_resource_copy_region;
-	rctx->context.blit = r600_blit;
+	rctx->b.b.clear = r600_clear;
+	rctx->b.b.clear_render_target = r600_clear_render_target;
+	rctx->b.b.clear_depth_stencil = r600_clear_depth_stencil;
+	rctx->b.b.resource_copy_region = r600_resource_copy_region;
+	rctx->b.b.blit = r600_blit;
+	rctx->b.b.flush_resource = r600_flush_resource;
+	rctx->b.clear_buffer = r600_clear_buffer;
+	rctx->b.blit_decompress_depth = r600_blit_decompress_depth;
 }

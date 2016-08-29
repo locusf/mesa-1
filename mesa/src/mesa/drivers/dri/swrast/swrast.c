@@ -32,6 +32,7 @@
  * The back-buffer is allocated by the driver and is private.
  */
 
+#include <stdio.h>
 #include "main/api_exec.h"
 #include "main/context.h"
 #include "main/extensions.h"
@@ -54,11 +55,21 @@
 
 #include "main/teximage.h"
 #include "main/texformat.h"
+#include "main/texobj.h"
 #include "main/texstate.h"
 
 #include "swrast_priv.h"
 #include "swrast/s_context.h"
 
+#include <sys/types.h>
+#ifdef HAVE_SYS_SYSCTL_H
+# include <sys/sysctl.h>
+#endif
+
+const __DRIextension **__driDriverGetExtensions_swrast(void);
+
+const char * const swrast_vendor_string = "Mesa Project";
+const char * const swrast_renderer_string = "Software Rasterizer";
 
 /**
  * Screen and config-related functions
@@ -70,19 +81,17 @@ static void swrastSetTexBuffer2(__DRIcontext *pDRICtx, GLint target,
     struct dri_context *dri_ctx;
     int x, y, w, h;
     __DRIscreen *sPriv = dPriv->driScreenPriv;
-    struct gl_texture_unit *texUnit;
     struct gl_texture_object *texObj;
     struct gl_texture_image *texImage;
     struct swrast_texture_image *swImage;
     uint32_t internalFormat;
-    gl_format texFormat;
+    mesa_format texFormat;
 
     dri_ctx = pDRICtx->driverPrivate;
 
     internalFormat = (texture_format == __DRI_TEXTURE_FORMAT_RGB ? 3 : 4);
 
-    texUnit = _mesa_get_current_tex_unit(&dri_ctx->Base);
-    texObj = _mesa_select_tex_object(&dri_ctx->Base, texUnit, target);
+    texObj = _mesa_get_current_tex_object(&dri_ctx->Base, target);
     texImage = _mesa_get_tex_image(&dri_ctx->Base, texObj, target, 0);
     swImage = swrast_texture_image(texImage);
 
@@ -91,9 +100,9 @@ static void swrastSetTexBuffer2(__DRIcontext *pDRICtx, GLint target,
     sPriv->swrast_loader->getDrawableInfo(dPriv, &x, &y, &w, &h, dPriv->loaderPrivate);
 
     if (texture_format == __DRI_TEXTURE_FORMAT_RGB)
-	texFormat = MESA_FORMAT_XRGB8888;
+	texFormat = MESA_FORMAT_B8G8R8X8_UNORM;
     else
-	texFormat = MESA_FORMAT_ARGB8888;
+	texFormat = MESA_FORMAT_B8G8R8A8_UNORM;
 
     _mesa_init_teximage_fields(&dri_ctx->Base, texImage,
 			       w, h, 1, 0, internalFormat, texFormat);
@@ -111,13 +120,94 @@ static void swrastSetTexBuffer(__DRIcontext *pDRICtx, GLint target,
 }
 
 static const __DRItexBufferExtension swrastTexBufferExtension = {
-    { __DRI_TEX_BUFFER, __DRI_TEX_BUFFER_VERSION },
-    swrastSetTexBuffer,
-    swrastSetTexBuffer2,
+   .base = { __DRI_TEX_BUFFER, 3 },
+
+   .setTexBuffer        = swrastSetTexBuffer,
+   .setTexBuffer2       = swrastSetTexBuffer2,
+   .releaseTexBuffer    = NULL,
+};
+
+
+static int
+swrast_query_renderer_integer(__DRIscreen *psp, int param,
+			       unsigned int *value)
+{
+   switch (param) {
+   case __DRI2_RENDERER_VENDOR_ID:
+   case __DRI2_RENDERER_DEVICE_ID:
+      /* Return 0xffffffff for both vendor and device id */
+      value[0] = 0xffffffff;
+      return 0;
+   case __DRI2_RENDERER_ACCELERATED:
+      value[0] = 0;
+      return 0;
+   case __DRI2_RENDERER_VIDEO_MEMORY: {
+      /* This should probably share code with os_get_total_physical_memory()
+       * from src/gallium/auxiliary/os/os_misc.c
+       */
+#if defined(CTL_HW) && defined(HW_MEMSIZE)
+        int mib[2] = { CTL_HW, HW_MEMSIZE };
+        unsigned long system_memory_bytes;
+        size_t len = sizeof(system_memory_bytes);
+        if (sysctl(mib, 2, &system_memory_bytes, &len, NULL, 0) != 0)
+            return -1;
+#elif defined(_SC_PHYS_PAGES) && defined(_SC_PAGE_SIZE)
+      /* XXX: Do we want to return the full amount of system memory ? */
+      const long system_memory_pages = sysconf(_SC_PHYS_PAGES);
+      const long system_page_size = sysconf(_SC_PAGE_SIZE);
+
+      if (system_memory_pages <= 0 || system_page_size <= 0)
+         return -1;
+
+      const uint64_t system_memory_bytes = (uint64_t) system_memory_pages
+         * (uint64_t) system_page_size;
+#else
+#error "Unsupported platform"
+#endif
+
+      const unsigned system_memory_megabytes =
+         (unsigned) (system_memory_bytes / (1024 * 1024));
+
+      value[0] = system_memory_megabytes;
+      return 0;
+   }
+   case __DRI2_RENDERER_UNIFIED_MEMORY_ARCHITECTURE:
+      /**
+       * XXX: Perhaps we should return 1 ?
+       * See issue #7 from the spec, currently UNRESOLVED.
+       */
+      value[0] = 0;
+      return 0;
+   default:
+      return driQueryRendererIntegerCommon(psp, param, value);
+   }
+}
+
+static int
+swrast_query_renderer_string(__DRIscreen *psp, int param, const char **value)
+{
+   switch (param) {
+   case __DRI2_RENDERER_VENDOR_ID:
+      value[0] = swrast_vendor_string;
+      return 0;
+   case __DRI2_RENDERER_DEVICE_ID:
+      value[0] = swrast_renderer_string;
+      return 0;
+   default:
+      return -1;
+   }
+}
+
+static const __DRI2rendererQueryExtension swrast_query_renderer_extension = {
+   .base = { __DRI2_RENDERER_QUERY, 1 },
+
+   .queryInteger        = swrast_query_renderer_integer,
+   .queryString         = swrast_query_renderer_string
 };
 
 static const __DRIextension *dri_screen_extensions[] = {
     &swrastTexBufferExtension.base,
+    &swrast_query_renderer_extension.base,
     NULL
 };
 
@@ -129,7 +219,7 @@ swrastFillInModes(__DRIscreen *psp,
     __DRIconfig **configs;
     unsigned depth_buffer_factor;
     unsigned back_buffer_factor;
-    gl_format format;
+    mesa_format format;
 
     /* GLX_SWAP_COPY_OML is only supported because the Intel driver doesn't
      * support pageflipping at all.
@@ -165,13 +255,13 @@ swrastFillInModes(__DRIscreen *psp,
 
     switch (pixel_bits) {
     case 16:
-	format = MESA_FORMAT_RGB565;
+	format = MESA_FORMAT_B5G6R5_UNORM;
 	break;
     case 24:
-        format = MESA_FORMAT_XRGB8888;
+        format = MESA_FORMAT_B8G8R8X8_UNORM;
 	break;
     case 32:
-	format = MESA_FORMAT_ARGB8888;
+	format = MESA_FORMAT_B8G8R8A8_UNORM;
 	break;
     default:
 	fprintf(stderr, "[%s:%u] bad depth %d\n", __func__, __LINE__,
@@ -183,7 +273,7 @@ swrastFillInModes(__DRIscreen *psp,
 			       depth_bits_array, stencil_bits_array,
 			       depth_buffer_factor, back_buffer_modes,
 			       back_buffer_factor, msaa_samples_array, 1,
-			       GL_TRUE);
+			       GL_TRUE, GL_FALSE);
     if (configs == NULL) {
 	fprintf(stderr, "[%s:%u] Error creating FBConfig!\n", __func__,
 		__LINE__);
@@ -199,6 +289,10 @@ dri_init_screen(__DRIscreen * psp)
     __DRIconfig **configs16, **configs24, **configs32;
 
     TRACE;
+
+    psp->max_gl_compat_version = 21;
+    psp->max_gl_es1_version = 11;
+    psp->max_gl_es2_version = 20;
 
     psp->extensions = dri_screen_extensions;
 
@@ -250,7 +344,7 @@ choose_pixel_format(const struct gl_config *v)
 	     && v->blueMask  == 0xc0)
 	return PF_R3G3B2;
 
-    _mesa_problem( NULL, "unexpected format in %s", __FUNCTION__ );
+    _mesa_problem( NULL, "unexpected format in %s", __func__ );
     return 0;
 }
 
@@ -266,7 +360,7 @@ swrast_delete_renderbuffer(struct gl_context *ctx, struct gl_renderbuffer *rb)
 }
 
 /* see bytes_per_line in libGL */
-static INLINE int
+static inline int
 bytes_per_line(unsigned pitch_bits, unsigned mul)
 {
    unsigned mask = mul - 1;
@@ -340,25 +434,25 @@ swrast_new_renderbuffer(const struct gl_config *visual, __DRIdrawable *dPriv,
 
     switch (pixel_format) {
     case PF_A8R8G8B8:
-	rb->Format = MESA_FORMAT_ARGB8888;
+	rb->Format = MESA_FORMAT_B8G8R8A8_UNORM;
 	rb->InternalFormat = GL_RGBA;
 	rb->_BaseFormat = GL_RGBA;
 	xrb->bpp = 32;
 	break;
     case PF_X8R8G8B8:
-	rb->Format = MESA_FORMAT_ARGB8888; /* XXX */
+	rb->Format = MESA_FORMAT_B8G8R8A8_UNORM; /* XXX */
 	rb->InternalFormat = GL_RGB;
 	rb->_BaseFormat = GL_RGB;
 	xrb->bpp = 32;
 	break;
     case PF_R5G6B5:
-	rb->Format = MESA_FORMAT_RGB565;
+	rb->Format = MESA_FORMAT_B5G6R5_UNORM;
 	rb->InternalFormat = GL_RGB;
 	rb->_BaseFormat = GL_RGB;
 	xrb->bpp = 16;
 	break;
     case PF_R3G3B2:
-	rb->Format = MESA_FORMAT_RGB332;
+	rb->Format = MESA_FORMAT_B2G3R3_UNORM;
 	rb->InternalFormat = GL_RGB;
 	rb->_BaseFormat = GL_RGB;
 	xrb->bpp = 8;
@@ -390,14 +484,14 @@ swrast_map_renderbuffer(struct gl_context *ctx,
 
       xrb->map_mode = mode;
       xrb->map_x = x;
-      xrb->map_y = y;
+      xrb->map_y = rb->Height - y - h;
       xrb->map_w = w;
       xrb->map_h = h;
 
       stride = w * cpp;
       xrb->Base.Buffer = malloc(h * stride);
 
-      sPriv->swrast_loader->getImage(dPriv, x, rb->Height - y - h, w, h,
+      sPriv->swrast_loader->getImage(dPriv, x, xrb->map_y, w, h,
 				     (char *) xrb->Base.Buffer,
 				     dPriv->loaderPrivate);
 
@@ -406,7 +500,7 @@ swrast_map_renderbuffer(struct gl_context *ctx,
       return;
    }
 
-   ASSERT(xrb->Base.Buffer);
+   assert(xrb->Base.Buffer);
 
    if (rb->AllocStorage == swrast_alloc_back_storage) {
       map += (rb->Height - 1) * stride;
@@ -594,9 +688,9 @@ get_string(struct gl_context *ctx, GLenum pname)
     (void) ctx;
     switch (pname) {
 	case GL_VENDOR:
-	    return (const GLubyte *) "Mesa Project";
+	    return (const GLubyte *) swrast_vendor_string;
 	case GL_RENDERER:
-	    return (const GLubyte *) "Software Rasterizer";
+	    return (const GLubyte *) swrast_renderer_string;
 	default:
 	    return NULL;
     }
@@ -613,27 +707,23 @@ update_state( struct gl_context *ctx, GLuint new_state )
 }
 
 static void
-viewport(struct gl_context *ctx, GLint x, GLint y, GLsizei w, GLsizei h)
+viewport(struct gl_context *ctx)
 {
     struct gl_framebuffer *draw = ctx->WinSysDrawBuffer;
     struct gl_framebuffer *read = ctx->WinSysReadBuffer;
 
-    (void) x;
-    (void) y;
-    (void) w;
-    (void) h;
     swrast_check_and_update_window_size(ctx, draw);
     swrast_check_and_update_window_size(ctx, read);
 }
 
-static gl_format swrastChooseTextureFormat(struct gl_context * ctx,
+static mesa_format swrastChooseTextureFormat(struct gl_context * ctx,
                                            GLenum target,
 					   GLint internalFormat,
 					   GLenum format,
 					   GLenum type)
 {
     if (internalFormat == GL_RGB)
-	return MESA_FORMAT_XRGB8888;
+	return MESA_FORMAT_B8G8R8X8_UNORM;
     return _mesa_choose_tex_format(ctx, target, internalFormat, format, type);
 }
 
@@ -659,6 +749,7 @@ dri_create_context(gl_api api,
 		   unsigned major_version,
 		   unsigned minor_version,
 		   uint32_t flags,
+		   bool notify_reset,
 		   unsigned *error,
 		   void *sharedContextPrivate)
 {
@@ -673,22 +764,6 @@ dri_create_context(gl_api api,
     /* Flag filtering is handled in dri2CreateContextAttribs.
      */
     (void) flags;
-
-    switch (api) {
-    case API_OPENGL_COMPAT:
-        if (major_version > 2
-	    || (major_version == 2 && minor_version > 1)) {
-            *error = __DRI_CTX_ERROR_BAD_VERSION;
-            return GL_FALSE;
-        }
-        break;
-    case API_OPENGLES:
-    case API_OPENGLES2:
-        break;
-    case API_OPENGL_CORE:
-        *error = __DRI_CTX_ERROR_BAD_API;
-        return GL_FALSE;
-    }
 
     ctx = CALLOC_STRUCT(dri_context);
     if (ctx == NULL) {
@@ -715,8 +790,7 @@ dri_create_context(gl_api api,
 	goto context_fail;
     }
 
-    /* do bounds checking to prevent segfaults and server crashes! */
-    mesaCtx->Const.CheckArrayBounds = GL_TRUE;
+    driContextSetFlags(mesaCtx, flags);
 
     /* create module contexts */
     _swrast_CreateContext( mesaCtx );
@@ -830,8 +904,41 @@ dri_unbind_context(__DRIcontext * cPriv)
     return GL_TRUE;
 }
 
+static void
+dri_copy_sub_buffer(__DRIdrawable *dPriv, int x, int y,
+                    int w, int h)
+{
+    __DRIscreen *sPriv = dPriv->driScreenPriv;
+    void *data;
+    int iy;
+    struct dri_drawable *drawable = dri_drawable(dPriv);
+    struct gl_framebuffer *fb;
+    struct dri_swrast_renderbuffer *frontrb, *backrb;
 
-const struct __DriverAPIRec driDriverAPI = {
+    TRACE;
+
+    fb = &drawable->Base;
+
+    frontrb =
+	dri_swrast_renderbuffer(fb->Attachment[BUFFER_FRONT_LEFT].Renderbuffer);
+    backrb =
+	dri_swrast_renderbuffer(fb->Attachment[BUFFER_BACK_LEFT].Renderbuffer);
+
+    /* check for signle-buffered */
+    if (backrb == NULL)
+       return;
+
+    iy = frontrb->Base.Base.Height - y - h;
+    data = (char *)backrb->Base.Buffer + (iy * backrb->pitch) + (x * ((backrb->bpp + 7) / 8));
+    sPriv->swrast_loader->putImage2(dPriv, __DRI_SWRAST_IMAGE_OP_SWAP,
+                                    x, iy, w, h,
+                                    frontrb->pitch,
+                                    data,
+                                    dPriv->loaderPrivate);
+}
+
+
+static const struct __DriverAPIRec swrast_driver_api = {
     .InitScreen = dri_init_screen,
     .DestroyScreen = dri_destroy_screen,
     .CreateContext = dri_create_context,
@@ -841,11 +948,26 @@ const struct __DriverAPIRec driDriverAPI = {
     .SwapBuffers = dri_swap_buffers,
     .MakeCurrent = dri_make_current,
     .UnbindContext = dri_unbind_context,
+    .CopySubBuffer = dri_copy_sub_buffer,
 };
 
-/* This is the table of extensions that the loader will dlsym() for. */
-PUBLIC const __DRIextension *__driDriverExtensions[] = {
+static const struct __DRIDriverVtableExtensionRec swrast_vtable = {
+   .base = { __DRI_DRIVER_VTABLE, 1 },
+   .vtable = &swrast_driver_api,
+};
+
+static const __DRIextension *swrast_driver_extensions[] = {
     &driCoreExtension.base,
     &driSWRastExtension.base,
+    &driCopySubBufferExtension.base,
+    &dri2ConfigQueryExtension.base,
+    &swrast_vtable.base,
     NULL
 };
+
+PUBLIC const __DRIextension **__driDriverGetExtensions_swrast(void)
+{
+   globalDriverAPI = &swrast_driver_api;
+
+   return swrast_driver_extensions;
+}

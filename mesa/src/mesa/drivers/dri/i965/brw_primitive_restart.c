@@ -28,6 +28,7 @@
 #include "main/imports.h"
 #include "main/bufferobj.h"
 #include "main/varray.h"
+#include "vbo/vbo.h"
 
 #include "brw_context.h"
 #include "brw_defines.h"
@@ -62,8 +63,7 @@ can_cut_index_handle_restart_index(struct gl_context *ctx,
       cut_index_will_work = ctx->Array.RestartIndex == 0xffffffff;
       break;
    default:
-      cut_index_will_work = false;
-      assert(0);
+      unreachable("not reached");
    }
 
    return cut_index_will_work;
@@ -92,13 +92,17 @@ can_cut_index_handle_prims(struct gl_context *ctx,
       return false;
    }
 
-   for ( ; nr_prims > 0; nr_prims--) {
-      switch(prim->mode) {
+   for (unsigned i = 0; i < nr_prims; i++) {
+      switch (prim[i].mode) {
       case GL_POINTS:
       case GL_LINES:
       case GL_LINE_STRIP:
       case GL_TRIANGLES:
       case GL_TRIANGLE_STRIP:
+      case GL_LINES_ADJACENCY:
+      case GL_LINE_STRIP_ADJACENCY:
+      case GL_TRIANGLES_ADJACENCY:
+      case GL_TRIANGLE_STRIP_ADJACENCY:
          /* Cut index supports these primitive types */
          break;
       default:
@@ -123,22 +127,15 @@ can_cut_index_handle_prims(struct gl_context *ctx,
  */
 GLboolean
 brw_handle_primitive_restart(struct gl_context *ctx,
-                             const struct _mesa_prim *prim,
+                             const struct _mesa_prim *prims,
                              GLuint nr_prims,
-                             const struct _mesa_index_buffer *ib)
+                             const struct _mesa_index_buffer *ib,
+                             struct gl_buffer_object *indirect)
 {
    struct brw_context *brw = brw_context(ctx);
 
    /* We only need to handle cases where there is an index buffer. */
    if (ib == NULL) {
-      return GL_FALSE;
-   }
-
-   /* If the driver has requested software handling of primitive restarts,
-    * then the VBO module has already taken care of things, and we can
-    * just draw as normal.
-    */
-   if (ctx->Const.PrimitiveRestartInSoftware) {
       return GL_FALSE;
    }
 
@@ -161,17 +158,18 @@ brw_handle_primitive_restart(struct gl_context *ctx,
     */
    brw->prim_restart.in_progress = true;
 
-   if (can_cut_index_handle_prims(ctx, prim, nr_prims, ib)) {
+   if (can_cut_index_handle_prims(ctx, prims, nr_prims, ib)) {
       /* Cut index should work for primitive restart, so use it
        */
       brw->prim_restart.enable_cut_index = true;
-      brw_draw_prims(ctx, prim, nr_prims, ib, GL_FALSE, -1, -1, NULL);
+      brw_draw_prims(ctx, prims, nr_prims, ib, GL_FALSE, -1, -1, NULL, 0,
+                     indirect);
       brw->prim_restart.enable_cut_index = false;
    } else {
       /* Not all the primitive draw modes are supported by the cut index,
        * so take the software path
        */
-      vbo_sw_primitive_restart(ctx, prim, nr_prims, ib);
+      vbo_sw_primitive_restart(ctx, prims, nr_prims, ib, indirect);
    }
 
    brw->prim_restart.in_progress = false;
@@ -186,7 +184,7 @@ haswell_upload_cut_index(struct brw_context *brw)
    struct gl_context *ctx = &brw->ctx;
 
    /* Don't trigger on Ivybridge */
-   if (!brw->is_haswell)
+   if (brw->gen < 8 && !brw->is_haswell)
       return;
 
    const unsigned cut_index_setting =
@@ -214,8 +212,8 @@ haswell_upload_cut_index(struct brw_context *brw)
 const struct brw_tracked_state haswell_cut_index = {
    .dirty = {
       .mesa  = _NEW_TRANSFORM,
-      .brw   = BRW_NEW_INDEX_BUFFER,
-      .cache = 0,
+      .brw   = BRW_NEW_BLORP |
+               BRW_NEW_INDEX_BUFFER,
    },
    .emit = haswell_upload_cut_index,
 };

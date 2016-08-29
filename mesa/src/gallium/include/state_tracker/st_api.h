@@ -89,6 +89,7 @@ enum st_api_feature
 #define ST_CONTEXT_FLAG_DEBUG               (1 << 0)
 #define ST_CONTEXT_FLAG_FORWARD_COMPATIBLE  (1 << 1)
 #define ST_CONTEXT_FLAG_ROBUST_ACCESS       (1 << 2)
+#define ST_CONTEXT_FLAG_RESET_NOTIFICATION_ENABLED (1 << 3)
 
 /**
  * Reasons that context creation might fail.
@@ -174,11 +175,6 @@ enum st_manager_param {
    ST_MANAGER_BROKEN_INVALIDATE
 };
 
-/**
- * The return type of st_api->get_proc_address.
- */
-typedef void (*st_proc_t)(void);
-
 struct pipe_context;
 struct pipe_resource;
 struct pipe_fence_handle;
@@ -245,6 +241,8 @@ struct st_config_options
    boolean force_glsl_extensions_warn;
    unsigned force_glsl_version;
    boolean force_s3tc_enable;
+   boolean allow_glsl_extension_directive_midshader;
+   boolean glsl_zero_init;
 };
 
 /**
@@ -485,11 +483,15 @@ struct st_api
    void (*destroy)(struct st_api *stapi);
 
    /**
-    * Return an API entry point.
-    *
-    * For GL this is the same as _glapi_get_proc_address.
+    * Query supported OpenGL versions. (if applicable)
+    * The format is (major*10+minor).
     */
-   st_proc_t (*get_proc_address)(struct st_api *stapi, const char *procname);
+   void (*query_versions)(struct st_api *stapi, struct st_manager *sm,
+                          struct st_config_options *options,
+                          int *gl_core_version,
+                          int *gl_compat_version,
+                          int *gl_es1_version,
+                          int *gl_es2_version);
 
    /**
     * Create a rendering context.
@@ -520,7 +522,7 @@ struct st_api
 /**
  * Return true if the visual has the specified buffers.
  */
-static INLINE boolean
+static inline boolean
 st_visual_have_buffers(const struct st_visual *visual, unsigned mask)
 {
    return ((visual->buffer_mask & mask) == mask);

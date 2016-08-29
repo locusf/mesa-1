@@ -34,9 +34,20 @@ struct gl_context;
 extern void GLAPIENTRY
 _mesa_Scissor( GLint x, GLint y, GLsizei width, GLsizei height );
 
+extern void GLAPIENTRY
+_mesa_ScissorArrayv(GLuint first, GLsizei count, const GLint * v);
+
+extern void GLAPIENTRY
+_mesa_ScissorIndexed(GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height);
+
+extern void GLAPIENTRY
+_mesa_ScissorIndexedv(GLuint index, const GLint * v);
+
+extern void GLAPIENTRY
+_mesa_WindowRectanglesEXT(GLenum mode, GLsizei count, const GLint *box);
 
 extern void
-_mesa_set_scissor(struct gl_context *ctx, 
+_mesa_set_scissor(struct gl_context *ctx, unsigned idx,
                   GLint x, GLint y, GLsizei width, GLsizei height);
 
 

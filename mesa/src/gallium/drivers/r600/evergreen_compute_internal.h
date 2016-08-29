@@ -26,27 +26,26 @@
 #define EVERGREEN_COMPUTE_INTERNAL_H
 
 #include "r600_asm.h"
-
-struct r600_kernel {
-	unsigned count;
 #ifdef HAVE_OPENCL
-	LLVMModuleRef llvm_module;
+#include "radeon/radeon_llvm.h"
+#include <llvm-c/Core.h>
 #endif
-	struct r600_resource *code_bo;
-	struct r600_bytecode bc;
-};
 
 struct r600_pipe_compute {
 	struct r600_context *ctx;
 
-	unsigned num_kernels;
-	struct r600_kernel *kernels;
+	struct radeon_shader_binary binary;
+	struct r600_resource *code_bo;
+	struct r600_bytecode bc;
 
-	struct r600_kernel *active_kernel;
 	unsigned local_size;
 	unsigned private_size;
 	unsigned input_size;
 	struct r600_resource *kernel_param;
+
+#ifdef HAVE_OPENCL
+	LLVMContextRef llvm_ctx;
+#endif
 };
 
 struct r600_resource* r600_compute_buffer_alloc_vram(struct r600_screen *screen, unsigned size);

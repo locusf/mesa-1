@@ -50,10 +50,6 @@ _mesa_register_file_name(gl_register_file f)
    switch (f) {
    case PROGRAM_TEMPORARY:
       return "TEMP";
-   case PROGRAM_LOCAL_PARAM:
-      return "LOCAL";
-   case PROGRAM_ENV_PARAM:
-      return "ENV";
    case PROGRAM_STATE_VAR:
       return "STATE";
    case PROGRAM_INPUT:
@@ -86,7 +82,7 @@ _mesa_register_file_name(gl_register_file f)
  * Return ARB_v/f_prog-style input attrib string.
  */
 static const char *
-arb_input_attrib_string(GLint index, GLenum progType)
+arb_input_attrib_string(GLuint index, GLenum progType)
 {
    /*
     * These strings should match the VERT_ATTRIB_x and VARYING_SLOT_x tokens.
@@ -148,8 +144,13 @@ arb_input_attrib_string(GLint index, GLenum progType)
       "fragment.(eighteen)", /* VARYING_SLOT_CLIP_DIST1 */
       "fragment.(nineteen)", /* VARYING_SLOT_PRIMITIVE_ID */
       "fragment.(twenty)", /* VARYING_SLOT_LAYER */
-      "fragment.(twenty-one)", /* VARYING_SLOT_FACE */
-      "fragment.(twenty-two)", /* VARYING_SLOT_PNTC */
+      "fragment.(twenty-one)", /* VARYING_SLOT_VIEWPORT */
+      "fragment.(twenty-two)", /* VARYING_SLOT_FACE */
+      "fragment.(twenty-three)", /* VARYING_SLOT_PNTC */
+      "fragment.(twenty-four)", /* VARYING_SLOT_TESS_LEVEL_OUTER */
+      "fragment.(twenty-five)", /* VARYING_SLOT_TESS_LEVEL_INNER */
+      "fragment.(twenty-six)", /* VARYING_SLOT_CULL_DIST0 */
+      "fragment.(twenty-seven)", /* VARYING_SLOT_CULL_DIST1 */
       "fragment.varying[0]",
       "fragment.varying[1]",
       "fragment.varying[2]",
@@ -185,20 +186,20 @@ arb_input_attrib_string(GLint index, GLenum progType)
    };
 
    /* sanity checks */
-   STATIC_ASSERT(Elements(vertAttribs) == VERT_ATTRIB_MAX);
-   STATIC_ASSERT(Elements(fragAttribs) == VARYING_SLOT_MAX);
+   STATIC_ASSERT(ARRAY_SIZE(vertAttribs) == VERT_ATTRIB_MAX);
+   STATIC_ASSERT(ARRAY_SIZE(fragAttribs) == VARYING_SLOT_MAX);
    assert(strcmp(vertAttribs[VERT_ATTRIB_TEX0], "vertex.texcoord[0]") == 0);
    assert(strcmp(vertAttribs[VERT_ATTRIB_GENERIC15], "vertex.attrib[15]") == 0);
    assert(strcmp(fragAttribs[VARYING_SLOT_TEX0], "fragment.texcoord[0]") == 0);
    assert(strcmp(fragAttribs[VARYING_SLOT_VAR0+15], "fragment.varying[15]") == 0);
 
    if (progType == GL_VERTEX_PROGRAM_ARB) {
-      assert(index < Elements(vertAttribs));
+      assert(index < ARRAY_SIZE(vertAttribs));
       return vertAttribs[index];
    }
    else {
       assert(progType == GL_FRAGMENT_PROGRAM_ARB);
-      assert(index < Elements(fragAttribs));
+      assert(index < ARRAY_SIZE(fragAttribs));
       return fragAttribs[index];
    }
 }
@@ -245,7 +246,7 @@ _mesa_print_fp_inputs(GLbitfield inputs)
  * Return ARB_v/f_prog-style output attrib string.
  */
 static const char *
-arb_output_attrib_string(GLint index, GLenum progType)
+arb_output_attrib_string(GLuint index, GLenum progType)
 {
    /*
     * These strings should match the VARYING_SLOT_x and FRAG_RESULT_x tokens.
@@ -272,8 +273,13 @@ arb_output_attrib_string(GLint index, GLenum progType)
       "result.(eighteen)", /* VARYING_SLOT_CLIP_DIST1 */
       "result.(nineteen)", /* VARYING_SLOT_PRIMITIVE_ID */
       "result.(twenty)", /* VARYING_SLOT_LAYER */
-      "result.(twenty-one)", /* VARYING_SLOT_FACE */
-      "result.(twenty-two)", /* VARYING_SLOT_PNTC */
+      "result.(twenty-one)", /* VARYING_SLOT_VIEWPORT */
+      "result.(twenty-two)", /* VARYING_SLOT_FACE */
+      "result.(twenty-three)", /* VARYING_SLOT_PNTC */
+      "result.(twenty-four)", /* VARYING_SLOT_TESS_LEVEL_OUTER */
+      "result.(twenty-five)", /* VARYING_SLOT_TESS_LEVEL_INNER */
+      "result.(twenty-six)", /* VARYING_SLOT_CULL_DIST0 */
+      "result.(twenty-seven)", /* VARYING_SLOT_CULL_DIST1 */
       "result.varying[0]",
       "result.varying[1]",
       "result.varying[2]",
@@ -311,6 +317,7 @@ arb_output_attrib_string(GLint index, GLenum progType)
       "result.depth", /* FRAG_RESULT_DEPTH */
       "result.(one)", /* FRAG_RESULT_STENCIL */
       "result.color", /* FRAG_RESULT_COLOR */
+      "result.samplemask", /* FRAG_RESULT_SAMPLE_MASK */
       "result.color[0]", /* FRAG_RESULT_DATA0 (named for GLSL's gl_FragData) */
       "result.color[1]",
       "result.color[2]",
@@ -322,19 +329,19 @@ arb_output_attrib_string(GLint index, GLenum progType)
    };
 
    /* sanity checks */
-   STATIC_ASSERT(Elements(vertResults) == VARYING_SLOT_MAX);
-   STATIC_ASSERT(Elements(fragResults) == FRAG_RESULT_MAX);
+   STATIC_ASSERT(ARRAY_SIZE(vertResults) == VARYING_SLOT_MAX);
+   STATIC_ASSERT(ARRAY_SIZE(fragResults) == FRAG_RESULT_MAX);
    assert(strcmp(vertResults[VARYING_SLOT_POS], "result.position") == 0);
    assert(strcmp(vertResults[VARYING_SLOT_VAR0], "result.varying[0]") == 0);
    assert(strcmp(fragResults[FRAG_RESULT_DATA0], "result.color[0]") == 0);
 
    if (progType == GL_VERTEX_PROGRAM_ARB) {
-      assert(index < Elements(vertResults));
+      assert(index < ARRAY_SIZE(vertResults));
       return vertResults[index];
    }
    else {
       assert(progType == GL_FRAGMENT_PROGRAM_ARB);
-      assert(index < Elements(fragResults));
+      assert(index < ARRAY_SIZE(fragResults));
       return fragResults[index];
    }
 }
@@ -351,8 +358,7 @@ arb_output_attrib_string(GLint index, GLenum progType)
  */
 static const char *
 reg_string(gl_register_file f, GLint index, gl_prog_print_mode mode,
-           GLboolean relAddr, const struct gl_program *prog,
-           GLboolean hasIndex2, GLboolean relAddr2, GLint index2)
+           GLboolean relAddr, const struct gl_program *prog)
 {
    static char str[100];
    const char *addr = relAddr ? "ADDR+" : "";
@@ -363,11 +369,6 @@ reg_string(gl_register_file f, GLint index, gl_prog_print_mode mode,
    case PROG_PRINT_DEBUG:
       sprintf(str, "%s[%s%d]",
               _mesa_register_file_name(f), addr, index);
-      if (hasIndex2) {
-         int offset = strlen(str);
-         const char *addr2 = relAddr2 ? "ADDR+" : "";
-         sprintf(str+offset, "[%s%d]", addr2, index2);
-      }
       break;
 
    case PROG_PRINT_ARB:
@@ -380,12 +381,6 @@ reg_string(gl_register_file f, GLint index, gl_prog_print_mode mode,
          break;
       case PROGRAM_TEMPORARY:
          sprintf(str, "temp%d", index);
-         break;
-      case PROGRAM_ENV_PARAM:
-         sprintf(str, "program.env[%s%d]", addr, index);
-         break;
-      case PROGRAM_LOCAL_PARAM:
-         sprintf(str, "program.local[%s%d]", addr, index);
          break;
       case PROGRAM_CONSTANT: /* extension */
          sprintf(str, "constant[%s%d]", addr, index);
@@ -511,24 +506,6 @@ _mesa_writemask_string(GLuint writeMask)
 }
 
 
-const char *
-_mesa_condcode_string(GLuint condcode)
-{
-   switch (condcode) {
-   case COND_GT:  return "GT";
-   case COND_EQ:  return "EQ";
-   case COND_LT:  return "LT";
-   case COND_UN:  return "UN";
-   case COND_GE:  return "GE";
-   case COND_LE:  return "LE";
-   case COND_NE:  return "NE";
-   case COND_TR:  return "TR";
-   case COND_FL:  return "FL";
-   default: return "cond???";
-   }
-}
-
-
 static void
 fprint_dst_reg(FILE * f,
                const struct prog_dst_register *dstReg,
@@ -537,17 +514,9 @@ fprint_dst_reg(FILE * f,
 {
    fprintf(f, "%s%s",
 	   reg_string((gl_register_file) dstReg->File,
-		      dstReg->Index, mode, dstReg->RelAddr, prog,
-                      GL_FALSE, GL_FALSE, 0),
+		      dstReg->Index, mode, dstReg->RelAddr, prog),
 	   _mesa_writemask_string(dstReg->WriteMask));
    
-   if (dstReg->CondMask != COND_TR) {
-      fprintf(f, " (%s.%s)",
-	      _mesa_condcode_string(dstReg->CondMask),
-	      _mesa_swizzle_string(dstReg->CondSwizzle,
-				   GL_FALSE, GL_FALSE));
-   }
-
 #if 0
    fprintf(f, "%s[%d]%s",
 	   _mesa_register_file_name((gl_register_file) dstReg->File),
@@ -563,16 +532,11 @@ fprint_src_reg(FILE *f,
                gl_prog_print_mode mode,
                const struct gl_program *prog)
 {
-   const char *abs = srcReg->Abs ? "|" : "";
-
-   fprintf(f, "%s%s%s%s",
-	   abs,
+   fprintf(f, "%s%s",
 	   reg_string((gl_register_file) srcReg->File,
-		      srcReg->Index, mode, srcReg->RelAddr, prog,
-                      srcReg->HasIndex2, srcReg->RelAddr2, srcReg->Index2),
+		      srcReg->Index, mode, srcReg->RelAddr, prog),
 	   _mesa_swizzle_string(srcReg->Swizzle,
-				srcReg->Negate, GL_FALSE),
-	   abs);
+				srcReg->Negate, GL_FALSE));
 #if 0
    fprintf(f, "%s[%d]%s",
 	   _mesa_register_file_name((gl_register_file) srcReg->File),
@@ -603,11 +567,9 @@ _mesa_fprint_alu_instruction(FILE *f,
    GLuint j;
 
    fprintf(f, "%s", opcode_string);
-   if (inst->CondUpdate)
-      fprintf(f, ".C");
 
    /* frag prog only */
-   if (inst->SaturateMode == SATURATE_ZERO_ONE)
+   if (inst->Saturate)
       fprintf(f, "_SAT");
 
    fprintf(f, " ");
@@ -665,7 +627,7 @@ _mesa_fprint_instruction_opt(FILE *f,
    switch (inst->Opcode) {
    case OPCODE_SWZ:
       fprintf(f, "SWZ");
-      if (inst->SaturateMode == SATURATE_ZERO_ONE)
+      if (inst->Saturate)
          fprintf(f, "_SAT");
       fprintf(f, " ");
       fprint_dst_reg(f, &inst->DstReg, mode, prog);
@@ -682,7 +644,7 @@ _mesa_fprint_instruction_opt(FILE *f,
    case OPCODE_TXB:
    case OPCODE_TXD:
       fprintf(f, "%s", _mesa_opcode_string(inst->Opcode));
-      if (inst->SaturateMode == SATURATE_ZERO_ONE)
+      if (inst->Saturate)
          fprintf(f, "_SAT");
       fprintf(f, " ");
       fprint_dst_reg(f, &inst->DstReg, mode, prog);
@@ -717,16 +679,6 @@ _mesa_fprint_instruction_opt(FILE *f,
       fprint_src_reg(f, &inst->SrcReg[0], mode, prog);
       fprint_comment(f, inst);
       break;
-   case OPCODE_KIL_NV:
-      fprintf(f, "%s", _mesa_opcode_string(inst->Opcode));
-      fprintf(f, " ");
-      fprintf(f, "%s.%s",
-	      _mesa_condcode_string(inst->DstReg.CondMask),
-	      _mesa_swizzle_string(inst->DstReg.CondSwizzle,
-				   GL_FALSE, GL_FALSE));
-      fprint_comment(f, inst);
-      break;
-
    case OPCODE_ARL:
       fprintf(f, "ARL ");
       fprint_dst_reg(f, &inst->DstReg, mode, prog);
@@ -735,19 +687,9 @@ _mesa_fprint_instruction_opt(FILE *f,
       fprint_comment(f, inst);
       break;
    case OPCODE_IF:
-      if (inst->SrcReg[0].File != PROGRAM_UNDEFINED) {
-         /* Use ordinary register */
-         fprintf(f, "IF ");
-         fprint_src_reg(f, &inst->SrcReg[0], mode, prog);
-         fprintf(f, "; ");
-      }
-      else {
-         /* Use cond codes */
-         fprintf(f, "IF (%s%s);",
-		 _mesa_condcode_string(inst->DstReg.CondMask),
-		 _mesa_swizzle_string(inst->DstReg.CondSwizzle,
-				      0, GL_FALSE));
-      }
+      fprintf(f, "IF ");
+      fprint_src_reg(f, &inst->SrcReg[0], mode, prog);
+      fprintf(f, "; ");
       fprintf(f, " # (if false, goto %d)", inst->BranchTarget);
       fprint_comment(f, inst);
       return indent + 3;
@@ -765,10 +707,8 @@ _mesa_fprint_instruction_opt(FILE *f,
       break;
    case OPCODE_BRK:
    case OPCODE_CONT:
-      fprintf(f, "%s (%s%s); # (goto %d)",
+      fprintf(f, "%s; # (goto %d)",
 	      _mesa_opcode_string(inst->Opcode),
-	      _mesa_condcode_string(inst->DstReg.CondMask),
-	      _mesa_swizzle_string(inst->DstReg.CondSwizzle, 0, GL_FALSE),
 	      inst->BranchTarget);
       fprint_comment(f, inst);
       break;
@@ -788,9 +728,7 @@ _mesa_fprint_instruction_opt(FILE *f,
       fprint_comment(f, inst);
       break;
    case OPCODE_RET:
-      fprintf(f, "RET (%s%s)",
-	      _mesa_condcode_string(inst->DstReg.CondMask),
-	      _mesa_swizzle_string(inst->DstReg.CondSwizzle, 0, GL_FALSE));
+      fprintf(f, "RET");
       fprint_comment(f, inst);
       break;
 
@@ -871,7 +809,7 @@ _mesa_fprint_program_opt(FILE *f,
       else
          fprintf(f, "# Fragment Program/Shader %u\n", prog->Id);
       break;
-   case MESA_GEOMETRY_PROGRAM:
+   case GL_GEOMETRY_PROGRAM_NV:
       fprintf(f, "# Geometry Shader\n");
    }
 
@@ -1014,16 +952,30 @@ _mesa_print_parameter_list(const struct gl_program_parameter_list *list)
 void
 _mesa_write_shader_to_file(const struct gl_shader *shader)
 {
-   const char *type;
+   const char *type = "????";
    char filename[100];
    FILE *f;
 
-   if (shader->Type == GL_FRAGMENT_SHADER)
+   switch (shader->Stage) {
+   case MESA_SHADER_FRAGMENT:
       type = "frag";
-   else if (shader->Type == GL_VERTEX_SHADER)
+      break;
+   case MESA_SHADER_TESS_CTRL:
+      type = "tesc";
+      break;
+   case MESA_SHADER_TESS_EVAL:
+      type = "tese";
+      break;
+   case MESA_SHADER_VERTEX:
       type = "vert";
-   else
+      break;
+   case MESA_SHADER_GEOMETRY:
       type = "geom";
+      break;
+   case MESA_SHADER_COMPUTE:
+      type = "comp";
+      break;
+   }
 
    _mesa_snprintf(filename, sizeof(filename), "shader_%u.%s", shader->Name, type);
    f = fopen(filename, "w");
@@ -1042,16 +994,6 @@ _mesa_write_shader_to_file(const struct gl_shader *shader)
    if (shader->InfoLog) {
       fputs(shader->InfoLog, f);
    }
-   if (shader->CompileStatus && shader->Program) {
-      fprintf(f, "/* GPU code */\n");
-      fprintf(f, "/*\n");
-      _mesa_fprint_program_opt(f, shader->Program, PROG_PRINT_DEBUG, GL_TRUE);
-      fprintf(f, "*/\n");
-      fprintf(f, "/* Parameters / constants */\n");
-      fprintf(f, "/*\n");
-      _mesa_fprint_parameter_list(f, shader->Program->Parameters);
-      fprintf(f, "*/\n");
-   }
 
    fclose(f);
 }
@@ -1063,19 +1005,19 @@ _mesa_write_shader_to_file(const struct gl_shader *shader)
  * _mesa_write_shader_to_file function.
  */
 void
-_mesa_append_uniforms_to_file(const struct gl_shader *shader)
+_mesa_append_uniforms_to_file(const struct gl_linked_shader *shader)
 {
    const struct gl_program *const prog = shader->Program;
    const char *type;
    char filename[100];
    FILE *f;
 
-   if (shader->Type == GL_FRAGMENT_SHADER)
+   if (shader->Stage == MESA_SHADER_FRAGMENT)
       type = "frag";
    else
       type = "vert";
 
-   _mesa_snprintf(filename, sizeof(filename), "shader_%u.%s", shader->Name, type);
+   _mesa_snprintf(filename, sizeof(filename), "shader.%s", type);
    f = fopen(filename, "a"); /* append */
    if (!f) {
       fprintf(stderr, "Unable to open %s for appending\n", filename);

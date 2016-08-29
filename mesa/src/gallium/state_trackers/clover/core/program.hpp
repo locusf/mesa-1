@@ -20,43 +20,71 @@
 // OTHER DEALINGS IN THE SOFTWARE.
 //
 
-#ifndef __CORE_PROGRAM_HPP__
-#define __CORE_PROGRAM_HPP__
+#ifndef CLOVER_CORE_PROGRAM_HPP
+#define CLOVER_CORE_PROGRAM_HPP
 
 #include <map>
 
-#include "core/base.hpp"
+#include "core/object.hpp"
 #include "core/context.hpp"
 #include "core/module.hpp"
 
 namespace clover {
-   typedef struct _cl_program program;
+   typedef std::vector<std::pair<std::string, std::string>> header_map;
+
+   class program : public ref_counter, public _cl_program {
+   private:
+      typedef adaptor_range<
+         evals, const std::vector<intrusive_ref<device>> &> device_range;
+
+   public:
+      program(clover::context &ctx,
+              const std::string &source);
+      program(clover::context &ctx,
+              const ref_vector<device> &devs = {},
+              const std::vector<module> &binaries = {});
+
+      program(const program &prog) = delete;
+      program &
+      operator=(const program &prog) = delete;
+
+      void compile(const ref_vector<device> &devs, const std::string &opts,
+                   const header_map &headers = {});
+      void link(const ref_vector<device> &devs, const std::string &opts,
+                const ref_vector<program> &progs);
+
+      const bool has_source;
+      const std::string &source() const;
+
+      device_range devices() const;
+
+      struct build {
+         build(const module &m = {}, const std::string &opts = {},
+               const std::string &log = {}) : binary(m), opts(opts), log(log) {}
+
+         cl_build_status status() const;
+
+         module binary;
+         std::string opts;
+         std::string log;
+      };
+
+      const build &build(const device &dev) const;
+
+      const std::vector<module::symbol> &symbols() const;
+
+      unsigned kernel_ref_count() const;
+
+      const intrusive_ref<clover::context> context;
+
+      friend class kernel;
+
+   private:
+      std::vector<intrusive_ref<device>> _devices;
+      std::map<const device *, struct build> _builds;
+      std::string _source;
+      ref_counter _kernel_ref_counter;
+   };
 }
-
-struct _cl_program : public clover::ref_counter {
-public:
-   _cl_program(clover::context &ctx,
-               const std::string &source);
-   _cl_program(clover::context &ctx,
-               const std::vector<clover::device *> &devs,
-               const std::vector<clover::module> &binaries);
-
-   void build(const std::vector<clover::device *> &devs, const char *opts);
-
-   const std::string &source() const;
-   const std::map<clover::device *, clover::module> &binaries() const;
-
-   cl_build_status build_status(clover::device *dev) const;
-   std::string build_opts(clover::device *dev) const;
-   std::string build_log(clover::device *dev) const;
-
-   clover::context &ctx;
-
-private:
-   std::map<clover::device *, clover::module> __binaries;
-   std::map<clover::device *, std::string> __logs;
-   std::map<clover::device *, std::string> __opts;
-   std::string __source;
-};
 
 #endif

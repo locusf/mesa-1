@@ -1,31 +1,45 @@
+include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
-
-noinst_LTLIBRARIES = libfreedreno.la
 
 AM_CFLAGS = \
 	-Wno-packed-bitfield-compat \
-	-I$(top_srcdir)/src/gallium/drivers \
-	-I$(top_srcdir)/src/gallium/drivers/freedreno/a3xx \
-	-I$(top_srcdir)/src/gallium/drivers/freedreno/a2xx \
-	$(GALLIUM_CFLAGS) \
-	$(FREEDRENO_CFLAGS) \
-	$(VISIBILITY_CFLAGS)
+	-I$(top_srcdir)/src/gallium/drivers/freedreno/ir3 \
+	-I$(top_builddir)/src/compiler/nir \
+	-I$(top_srcdir)/src/compiler/nir \
+	$(GALLIUM_DRIVER_CFLAGS) \
+	$(FREEDRENO_CFLAGS)
 
-SUBDIRS = a2xx a3xx
+ir3/ir3_nir_trig.c: ir3/ir3_nir_trig.py $(top_srcdir)/src/compiler/nir/nir_algebraic.py
+	$(MKDIR_GEN)
+	$(AM_V_GEN) PYTHONPATH=$(top_srcdir)/src/compiler/nir $(PYTHON2) $(PYTHON_FLAGS) $(srcdir)/ir3/ir3_nir_trig.py > $@ || ($(RM) $@; false)
+
+noinst_LTLIBRARIES = libfreedreno.la
 
 libfreedreno_la_SOURCES = \
-	freedreno_util.c \
-	freedreno_fence.c \
-	freedreno_resource.c \
-	freedreno_surface.c \
-	freedreno_draw.c \
-	freedreno_state.c \
-	freedreno_texture.c \
-	freedreno_context.c \
-	freedreno_screen.c \
-	freedreno_gmem.c
+	$(C_SOURCES) \
+	$(a2xx_SOURCES) \
+	$(a3xx_SOURCES) \
+	$(a4xx_SOURCES) \
+	$(ir3_SOURCES) \
+	$(ir3_GENERATED_FILES)
 
-libfreedreno_la_LIBADD = \
-	a3xx/libfd3xx.la \
-	a2xx/libfd2xx.la
+BUILT_SOURCES := $(ir3_GENERATED_FILES)
+CLEANFILES := $(BUILT_SOURCES)
+EXTRA_DIST = ir3/ir3_nir_trig.py
 
+noinst_PROGRAMS = ir3_compiler
+
+# XXX: Required due to the C++ sources in libnir
+nodist_EXTRA_ir3_compiler_SOURCES = dummy.cpp
+ir3_compiler_SOURCES = \
+	ir3/ir3_cmdline.c
+
+ir3_compiler_LDADD = \
+	libfreedreno.la \
+	$(top_builddir)/src/gallium/auxiliary/libgallium.la \
+	$(top_builddir)/src/compiler/nir/libnir.la \
+	$(top_builddir)/src/compiler/glsl/libstandalone.la \
+	$(top_builddir)/src/util/libmesautil.la \
+	$(top_builddir)/src/mesa/libmesagallium.la \
+	$(GALLIUM_COMMON_LIB_DEPS) \
+	$(FREEDRENO_LIBS)

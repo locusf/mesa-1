@@ -32,58 +32,80 @@
 #include "pipe/p_context.h"
 
 #include "freedreno_context.h"
-#include "fd3_util.h"
-
+#include "fd3_format.h"
+#include "fd3_program.h"
+#include "ir3_shader.h"
 
 struct fd_ringbuffer;
-enum adreno_state_block;
 
-void fd3_emit_constant(struct fd_ringbuffer *ring,
-		enum adreno_state_block sb,
+void fd3_emit_const(struct fd_ringbuffer *ring, enum shader_t type,
 		uint32_t regid, uint32_t offset, uint32_t sizedwords,
 		const uint32_t *dwords, struct pipe_resource *prsc);
 
 void fd3_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
-		struct pipe_surface *psurf);
+		struct pipe_surface **psurf, int bufs);
 
-/* NOTE: this just exists because we don't have proper vertex/vertexbuf
- * state objs for clear, and mem2gmem/gmem2mem operations..
- */
-struct fd3_vertex_buf {
-	unsigned offset, stride;
-	struct pipe_resource *prsc;
-	enum pipe_format format;
+/* grouped together emit-state for prog/vertex/state emit: */
+struct fd3_emit {
+	struct pipe_debug_callback *debug;
+	const struct fd_vertex_state *vtx;
+	const struct fd_program_stateobj *prog;
+	const struct pipe_draw_info *info;
+	struct ir3_shader_key key;
+	uint32_t dirty;
+
+	uint32_t sprite_coord_enable;
+	bool sprite_coord_mode;
+	bool rasterflat;
+
+	/* cached to avoid repeated lookups of same variants: */
+	const struct ir3_shader_variant *vp, *fp;
 };
 
-void fd3_emit_vertex_bufs(struct fd_ringbuffer *ring,
-		struct fd_program_stateobj *prog,
-		struct fd3_vertex_buf *vbufs, uint32_t n);
-void fd3_emit_state(struct fd_context *ctx, uint32_t dirty);
-void fd3_emit_restore(struct fd_context *ctx);
-
-
-/* use RMW (read-modify-write) to update RB_RENDER_CONTROL since the
- * GMEM/binning code is deciding on the bin-width (and whether to
- * use binning) after the draw/clear state is emitted.
- */
-static inline void
-fd3_emit_rbrc_draw_state(struct fd_ringbuffer *ring, uint32_t val)
+static inline const struct ir3_shader_variant *
+fd3_emit_get_vp(struct fd3_emit *emit)
 {
-	OUT_PKT3(ring, CP_REG_RMW, 3);
-	OUT_RING(ring, REG_A3XX_RB_RENDER_CONTROL);
-	OUT_RING(ring, A3XX_RB_RENDER_CONTROL_BIN_WIDTH__MASK |
-			A3XX_RB_RENDER_CONTROL_ENABLE_GMEM);
-	OUT_RING(ring, val);
+	if (!emit->vp) {
+		struct fd3_shader_stateobj *so = emit->prog->vp;
+		emit->vp = ir3_shader_variant(so->shader, emit->key, emit->debug);
+	}
+	return emit->vp;
 }
 
-static inline void
-fd3_emit_rbrc_tile_state(struct fd_ringbuffer *ring, uint32_t val)
+static inline const struct ir3_shader_variant *
+fd3_emit_get_fp(struct fd3_emit *emit)
 {
-	OUT_PKT3(ring, CP_REG_RMW, 3);
-	OUT_RING(ring, REG_A3XX_RB_RENDER_CONTROL);
-	OUT_RING(ring, ~(A3XX_RB_RENDER_CONTROL_BIN_WIDTH__MASK |
-			A3XX_RB_RENDER_CONTROL_ENABLE_GMEM));
-	OUT_RING(ring, val);
+	if (!emit->fp) {
+		if (emit->key.binning_pass) {
+			/* use dummy stateobj to simplify binning vs non-binning: */
+			static const struct ir3_shader_variant binning_fp = {};
+			emit->fp = &binning_fp;
+		} else {
+			struct fd3_shader_stateobj *so = emit->prog->fp;
+			emit->fp = ir3_shader_variant(so->shader, emit->key, emit->debug);
+		}
+	}
+	return emit->fp;
+}
+
+void fd3_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd3_emit *emit);
+
+void fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
+		struct fd3_emit *emit);
+
+void fd3_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring);
+
+void fd3_emit_init(struct pipe_context *pctx);
+
+static inline void
+fd3_emit_cache_flush(struct fd_batch *batch, struct fd_ringbuffer *ring)
+{
+	fd_wfi(batch, ring);
+	OUT_PKT0(ring, REG_A3XX_UCHE_CACHE_INVALIDATE0_REG, 2);
+	OUT_RING(ring, A3XX_UCHE_CACHE_INVALIDATE0_REG_ADDR(0));
+	OUT_RING(ring, A3XX_UCHE_CACHE_INVALIDATE1_REG_ADDR(0) |
+			A3XX_UCHE_CACHE_INVALIDATE1_REG_OPCODE(INVALIDATE) |
+			A3XX_UCHE_CACHE_INVALIDATE1_REG_ENTIRE_CACHE);
 }
 
 #endif /* FD3_EMIT_H */

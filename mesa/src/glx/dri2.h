@@ -33,6 +33,7 @@
 #ifndef _DRI2_H_
 #define _DRI2_H_
 
+#include <xf86drm.h>
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/dri2tokens.h>
 
@@ -44,6 +45,8 @@ typedef struct
    unsigned int cpp;
    unsigned int flags;
 } DRI2Buffer;
+
+struct glx_screen;
 
 extern Bool
 DRI2QueryExtension(Display * display, int *eventBase, int *errorBase);

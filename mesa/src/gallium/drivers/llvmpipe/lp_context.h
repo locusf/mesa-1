@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,14 +18,14 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * 
  **************************************************************************/
 
-/* Authors:  Keith Whitwell <keith@tungstengraphics.com>
+/* Authors:  Keith Whitwell <keithw@vmware.com>
  */
 
 #ifndef LP_CONTEXT_H
@@ -46,8 +46,8 @@
 struct llvmpipe_vbuf_render;
 struct draw_context;
 struct draw_stage;
+struct draw_vertex_shader;
 struct lp_fragment_shader;
-struct lp_vertex_shader;
 struct lp_blend_state;
 struct lp_setup_context;
 struct lp_setup_variant;
@@ -63,12 +63,13 @@ struct llvmpipe_context {
    const struct pipe_depth_stencil_alpha_state *depth_stencil;
    const struct pipe_rasterizer_state *rasterizer;
    struct lp_fragment_shader *fs;
-   const struct lp_vertex_shader *vs;
+   struct draw_vertex_shader *vs;
    const struct lp_geometry_shader *gs;
    const struct lp_velems_state *velems;
    const struct lp_so_state *so;
 
    /** Other rendering state */
+   unsigned sample_mask;
    struct pipe_blend_color blend_color;
    struct pipe_stencil_ref stencil_ref;
    struct pipe_clip_state clip;
@@ -81,8 +82,6 @@ struct llvmpipe_context {
    struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
    struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
    struct pipe_index_buffer index_buffer;
-   struct pipe_resource *mapped_vs_tex[PIPE_MAX_SHADER_SAMPLER_VIEWS];
-   struct pipe_resource *mapped_gs_tex[PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
    unsigned num_samplers[PIPE_SHADER_TYPES];
    unsigned num_sampler_views[PIPE_SHADER_TYPES];
@@ -92,7 +91,6 @@ struct llvmpipe_context {
    struct draw_so_target *so_targets[PIPE_MAX_SO_BUFFERS];
    int num_so_targets;
    struct pipe_query_data_so_statistics so_stats;
-   unsigned num_primitives_generated;
 
    struct pipe_query_data_pipeline_statistics pipeline_statistics;
    unsigned active_statistics_queries;
@@ -108,23 +106,27 @@ struct llvmpipe_context {
    struct vertex_info vertex_info;
    
    /** Which vertex shader output slot contains color */
-   int color_slot[2];
+   int8_t color_slot[2];
 
    /** Which vertex shader output slot contains bcolor */
-   int bcolor_slot[2];
+   int8_t bcolor_slot[2];
 
    /** Which vertex shader output slot contains point size */
-   int psize_slot;
+   int8_t psize_slot;
 
    /** Which vertex shader output slot contains viewport index */
-   int viewport_index_slot;
+   int8_t viewport_index_slot;
 
    /** Which geometry shader output slot contains layer */
-   int layer_slot;
+   int8_t layer_slot;
 
-   /**< minimum resolvable depth value, for polygon offset */   
-   double mrd;
-   
+   /** A fake frontface output for unfilled primitives */
+   int8_t face_slot;
+
+   /** Depth format and bias settings. */
+   boolean floating_point_depth;
+   double mrd;   /**< minimum resolvable depth value, for polygon offset */
+
    /** The tiling engine */
    struct lp_setup_context *setup;
    struct lp_setup_variant setup_variant;
@@ -149,28 +151,24 @@ struct llvmpipe_context {
    struct pipe_query *render_cond_query;
    uint render_cond_mode;
    boolean render_cond_cond;
+
+   /** The LLVMContext to use for LLVM related work */
+   LLVMContextRef context;
 };
 
 
-/**
- * Fragment and setup variant count, used to trigger garbage collection.
- * This is global since all variants in all contexts will be free when
- * we do garbage collection.
- */
-extern unsigned llvmpipe_variant_count;
-
-
 struct pipe_context *
-llvmpipe_create_context( struct pipe_screen *screen, void *priv );
+llvmpipe_create_context(struct pipe_screen *screen, void *priv,
+                        unsigned flags);
 
 struct pipe_resource *
 llvmpipe_user_buffer_create(struct pipe_screen *screen,
                             void *ptr,
                             unsigned bytes,
-			    unsigned bind_flags);
+                            unsigned bind_flags);
 
 
-static INLINE struct llvmpipe_context *
+static inline struct llvmpipe_context *
 llvmpipe_context( struct pipe_context *pipe )
 {
    return (struct llvmpipe_context *)pipe;

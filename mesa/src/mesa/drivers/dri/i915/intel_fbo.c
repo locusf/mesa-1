@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2006 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2006 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -64,26 +64,13 @@ intel_get_rb_region(struct gl_framebuffer *fb, GLuint attIndex)
       return NULL;
 }
 
-/**
- * Create a new framebuffer object.
- */
-static struct gl_framebuffer *
-intel_new_framebuffer(struct gl_context * ctx, GLuint name)
-{
-   /* Only drawable state in intel_framebuffer at this time, just use Mesa's
-    * class
-    */
-   return _mesa_new_framebuffer(ctx, name);
-}
-
-
 /** Called by gl_renderbuffer::Delete() */
 static void
 intel_delete_renderbuffer(struct gl_context *ctx, struct gl_renderbuffer *rb)
 {
    struct intel_renderbuffer *irb = intel_renderbuffer(rb);
 
-   ASSERT(irb);
+   assert(irb);
 
    intel_miptree_release(&irb->mt);
 
@@ -135,7 +122,7 @@ intel_map_renderbuffer(struct gl_context *ctx,
    }
 
    DBG("%s: rb %d (%s) mt mapped: (%d, %d) (%dx%d) -> %p/%d\n",
-       __FUNCTION__, rb->Name, _mesa_get_format_name(rb->Format),
+       __func__, rb->Name, _mesa_get_format_name(rb->Format),
        x, y, w, h, map, stride);
 
    *out_map = map;
@@ -153,7 +140,7 @@ intel_unmap_renderbuffer(struct gl_context *ctx,
    struct swrast_renderbuffer *srb = (struct swrast_renderbuffer *)rb;
    struct intel_renderbuffer *irb = intel_renderbuffer(rb);
 
-   DBG("%s: rb %d (%s)\n", __FUNCTION__,
+   DBG("%s: rb %d (%s)\n", __func__,
        rb->Name, _mesa_get_format_name(rb->Format));
 
    if (srb->Buffer) {
@@ -165,17 +152,10 @@ intel_unmap_renderbuffer(struct gl_context *ctx,
    intel_miptree_unmap(intel, irb->mt, irb->mt_level, irb->mt_layer);
 }
 
-/**
- * Called via glRenderbufferStorageEXT() to set the format and allocate
- * storage for a user-created renderbuffer.
- */
-static GLboolean
-intel_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffer *rb,
-                                 GLenum internalFormat,
-                                 GLuint width, GLuint height)
+static mesa_format
+intel_renderbuffer_format(struct gl_context * ctx, GLenum internalFormat)
 {
    struct intel_context *intel = intel_context(ctx);
-   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
 
    switch (internalFormat) {
    default:
@@ -184,19 +164,37 @@ intel_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffer
        * except they're less useful because you can't texture with
        * them.
        */
-      rb->Format = intel->ctx.Driver.ChooseTextureFormat(ctx, GL_TEXTURE_2D,
-							 internalFormat,
-							 GL_NONE, GL_NONE);
-      break;
+      return intel->ctx.Driver.ChooseTextureFormat(ctx, GL_TEXTURE_2D,
+                                                   internalFormat,
+                                                   GL_NONE, GL_NONE);
+
+   case GL_DEPTH_COMPONENT16:
+      return MESA_FORMAT_Z_UNORM16;
+   case GL_DEPTH_COMPONENT:
+   case GL_DEPTH_COMPONENT24:
+   case GL_DEPTH_COMPONENT32:
+      return MESA_FORMAT_Z24_UNORM_X8_UINT;
+   case GL_DEPTH_STENCIL_EXT:
+   case GL_DEPTH24_STENCIL8_EXT:
    case GL_STENCIL_INDEX:
    case GL_STENCIL_INDEX1_EXT:
    case GL_STENCIL_INDEX4_EXT:
    case GL_STENCIL_INDEX8_EXT:
    case GL_STENCIL_INDEX16_EXT:
       /* These aren't actual texture formats, so force them here. */
-      rb->Format = MESA_FORMAT_S8_Z24;
-      break;
+      return MESA_FORMAT_Z24_UNORM_S8_UINT;
    }
+}
+
+static GLboolean
+intel_alloc_private_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffer *rb,
+                                         GLenum internalFormat,
+                                         GLuint width, GLuint height)
+{
+   struct intel_context *intel = intel_context(ctx);
+   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+
+   assert(rb->Format != MESA_FORMAT_NONE);
 
    rb->Width = width;
    rb->Height = height;
@@ -204,8 +202,8 @@ intel_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffer
 
    intel_miptree_release(&irb->mt);
 
-   DBG("%s: %s: %s (%dx%d)\n", __FUNCTION__,
-       _mesa_lookup_enum_by_nr(internalFormat),
+   DBG("%s: %s: %s (%dx%d)\n", __func__,
+       _mesa_enum_to_string(internalFormat),
        _mesa_get_format_name(rb->Format), width, height);
 
    if (width == 0 || height == 0)
@@ -219,6 +217,18 @@ intel_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffer
    return true;
 }
 
+/**
+ * Called via glRenderbufferStorageEXT() to set the format and allocate
+ * storage for a user-created renderbuffer.
+ */
+static GLboolean
+intel_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffer *rb,
+                                 GLenum internalFormat,
+                                 GLuint width, GLuint height)
+{
+   rb->Format = intel_renderbuffer_format(ctx, internalFormat);
+   return intel_alloc_private_renderbuffer_storage(ctx, rb, internalFormat, width, height);
+}
 
 static void
 intel_image_target_renderbuffer_storage(struct gl_context *ctx,
@@ -238,7 +248,7 @@ intel_image_target_renderbuffer_storage(struct gl_context *ctx,
 
    /* __DRIimage is opaque to the core so it has to be checked here */
    switch (image->format) {
-   case MESA_FORMAT_RGBA8888_REV:
+   case MESA_FORMAT_R8G8B8A8_UNORM:
       _mesa_error(&intel->ctx, GL_INVALID_OPERATION,
             "glEGLImageTargetRenderbufferStorage(unsupported image format");
       return;
@@ -264,8 +274,7 @@ intel_image_target_renderbuffer_storage(struct gl_context *ctx,
    rb->Width = image->region->width;
    rb->Height = image->region->height;
    rb->Format = image->format;
-   rb->_BaseFormat = _mesa_base_fbo_format(&intel->ctx,
-					   image->internal_format);
+   rb->_BaseFormat = _mesa_get_format_base_format(image->format);
    rb->NeedsFinishRenderTexture = true;
 }
 
@@ -281,7 +290,7 @@ static GLboolean
 intel_alloc_window_storage(struct gl_context * ctx, struct gl_renderbuffer *rb,
                            GLenum internalFormat, GLuint width, GLuint height)
 {
-   ASSERT(rb->Name == 0);
+   assert(rb->Name == 0);
    rb->Width = width;
    rb->Height = height;
    rb->InternalFormat = internalFormat;
@@ -303,7 +312,7 @@ intel_nop_alloc_storage(struct gl_context * ctx, struct gl_renderbuffer *rb,
  * not a user-created renderbuffer.
  */
 struct intel_renderbuffer *
-intel_create_renderbuffer(gl_format format)
+intel_create_renderbuffer(mesa_format format)
 {
    struct intel_renderbuffer *irb;
    struct gl_renderbuffer *rb;
@@ -338,12 +347,12 @@ intel_create_renderbuffer(gl_format format)
  * may be called at intel_update_renderbuffers() time.
  */
 struct intel_renderbuffer *
-intel_create_private_renderbuffer(gl_format format)
+intel_create_private_renderbuffer(mesa_format format)
 {
    struct intel_renderbuffer *irb;
 
    irb = intel_create_renderbuffer(format);
-   irb->Base.Base.AllocStorage = intel_alloc_renderbuffer_storage;
+   irb->Base.Base.AllocStorage = intel_alloc_private_renderbuffer_storage;
 
    return irb;
 }
@@ -405,7 +414,7 @@ intel_framebuffer_renderbuffer(struct gl_context * ctx,
 {
    DBG("Intel FramebufferRenderbuffer %u %u\n", fb->Name, rb ? rb->Name : 0);
 
-   _mesa_framebuffer_renderbuffer(ctx, fb, attachment, rb);
+   _mesa_FramebufferRenderbuffer_sw(ctx, fb, attachment, rb);
    intel_draw_buffer(ctx);
 }
 
@@ -419,8 +428,6 @@ intel_renderbuffer_update_wrapper(struct intel_context *intel,
    struct intel_texture_image *intel_image = intel_texture_image(image);
    struct intel_mipmap_tree *mt = intel_image->mt;
    int level = image->Level;
-
-   rb->Depth = image->Depth;
 
    rb->AllocStorage = intel_nop_alloc_storage;
 
@@ -525,6 +532,7 @@ intel_finish_render_texture(struct gl_context * ctx, struct gl_renderbuffer *rb)
       static GLuint msg_id = 0;                                               \
       if (unlikely(ctx->Const.ContextFlags & GL_CONTEXT_FLAG_DEBUG_BIT)) {    \
          _mesa_gl_debug(ctx, &msg_id,                                         \
+                        MESA_DEBUG_SOURCE_API,                                \
                         MESA_DEBUG_TYPE_OTHER,                                \
                         MESA_DEBUG_SEVERITY_MEDIUM,                           \
                         __VA_ARGS__);                                         \
@@ -547,7 +555,7 @@ intel_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
    struct intel_mipmap_tree *depth_mt = NULL, *stencil_mt = NULL;
    int i;
 
-   DBG("%s() on fb %p (%s)\n", __FUNCTION__,
+   DBG("%s() on fb %p (%s)\n", __func__,
        fb, (fb == ctx->DrawBuffer ? "drawbuffer" :
 	    (fb == ctx->ReadBuffer ? "readbuffer" : "other buffer")));
 
@@ -577,7 +585,7 @@ intel_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
       }
    }
 
-   for (i = 0; i < Elements(fb->Attachment); i++) {
+   for (i = 0; i < ARRAY_SIZE(fb->Attachment); i++) {
       struct gl_renderbuffer *rb;
       struct intel_renderbuffer *irb;
 
@@ -627,6 +635,8 @@ intel_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
  */
 static GLbitfield
 intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
+                                    const struct gl_framebuffer *readFb,
+                                    const struct gl_framebuffer *drawFb,
                                     GLint srcX0, GLint srcY0,
                                     GLint srcX1, GLint srcY1,
                                     GLint dstX0, GLint dstY0,
@@ -635,10 +645,13 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
 {
    struct intel_context *intel = intel_context(ctx);
 
+   /* Sync up the state of window system buffers.  We need to do this before
+    * we go looking for the buffers.
+    */
+   intel_prepare_render(intel);
+
    if (mask & GL_COLOR_BUFFER_BIT) {
       GLint i;
-      const struct gl_framebuffer *drawFb = ctx->DrawBuffer;
-      const struct gl_framebuffer *readFb = ctx->ReadBuffer;
       struct gl_renderbuffer *src_rb = readFb->_ColorReadBuffer;
       struct intel_renderbuffer *src_irb = intel_renderbuffer(src_rb);
 
@@ -660,7 +673,7 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
             srcY0 >= 0 && srcY1 <= readFb->Height &&
             dstX0 >= 0 && dstX1 <= drawFb->Width &&
             dstY0 >= 0 && dstY1 <= drawFb->Height &&
-            !ctx->Scissor.Enabled)) {
+            !ctx->Scissor.EnableFlags)) {
          perf_debug("glBlitFramebuffer(): non-1:1 blit.  "
                     "Falling back to software rendering.\n");
          return mask;
@@ -674,8 +687,8 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
        * results are undefined if any destination pixels have a dependency on
        * source pixels.
        */
-      for (i = 0; i < ctx->DrawBuffer->_NumColorDrawBuffers; i++) {
-         struct gl_renderbuffer *dst_rb = ctx->DrawBuffer->_ColorDrawBuffers[i];
+      for (i = 0; i < drawFb->_NumColorDrawBuffers; i++) {
+         struct gl_renderbuffer *dst_rb = drawFb->_ColorDrawBuffers[i];
          struct intel_renderbuffer *dst_irb = intel_renderbuffer(dst_rb);
 
          if (!dst_irb) {
@@ -684,8 +697,8 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
             return mask;
          }
 
-         gl_format src_format = _mesa_get_srgb_format_linear(src_rb->Format);
-         gl_format dst_format = _mesa_get_srgb_format_linear(dst_rb->Format);
+         mesa_format src_format = _mesa_get_srgb_format_linear(src_rb->Format);
+         mesa_format dst_format = _mesa_get_srgb_format_linear(dst_rb->Format);
          if (src_format != dst_format) {
             perf_debug("glBlitFramebuffer(): unsupported blit from %s to %s.  "
                        "Falling back to software rendering.\n",
@@ -716,12 +729,14 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
 
 static void
 intel_blit_framebuffer(struct gl_context *ctx,
+                       struct gl_framebuffer *readFb,
+                       struct gl_framebuffer *drawFb,
                        GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                        GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
                        GLbitfield mask, GLenum filter)
 {
    /* Try using the BLT engine. */
-   mask = intel_blit_framebuffer_with_blitter(ctx,
+   mask = intel_blit_framebuffer_with_blitter(ctx, readFb, drawFb,
                                               srcX0, srcY0, srcX1, srcY1,
                                               dstX0, dstY0, dstX1, dstY1,
                                               mask, filter);
@@ -729,10 +744,10 @@ intel_blit_framebuffer(struct gl_context *ctx,
       return;
 
 
-   _mesa_meta_BlitFramebuffer(ctx,
-                              srcX0, srcY0, srcX1, srcY1,
-                              dstX0, dstY0, dstX1, dstY1,
-                              mask, filter);
+   _mesa_meta_and_swrast_BlitFramebuffer(ctx, readFb, drawFb,
+                                         srcX0, srcY0, srcX1, srcY1,
+                                         dstX0, dstY0, dstX1, dstY1,
+                                         mask, filter);
 }
 
 /**
@@ -742,7 +757,6 @@ intel_blit_framebuffer(struct gl_context *ctx,
 void
 intel_fbo_init(struct intel_context *intel)
 {
-   intel->ctx.Driver.NewFramebuffer = intel_new_framebuffer;
    intel->ctx.Driver.NewRenderbuffer = intel_new_renderbuffer;
    intel->ctx.Driver.MapRenderbuffer = intel_map_renderbuffer;
    intel->ctx.Driver.UnmapRenderbuffer = intel_unmap_renderbuffer;

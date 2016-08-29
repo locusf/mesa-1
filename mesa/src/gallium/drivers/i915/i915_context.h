@@ -1,6 +1,6 @@
  /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -157,7 +157,7 @@ struct i915_state
    unsigned sampler_enable_nr;
 
    /* texture image buffers */
-   unsigned texbuffer[I915_TEX_UNITS][2];
+   unsigned texbuffer[I915_TEX_UNITS][3];
 
    /** Describes the current hardware vertex layout */
    struct vertex_info vertex_info;
@@ -195,7 +195,6 @@ struct i915_rasterizer_state {
 
    unsigned light_twoside : 1;
    unsigned st;
-   enum interp_mode color_interp;
 
    unsigned LIS4;
    unsigned LIS7;
@@ -227,8 +226,8 @@ struct i915_context {
    /* The most recent drawing state as set by the driver:
     */
    const struct i915_blend_state           *blend;
-   const struct i915_sampler_state         *sampler[PIPE_MAX_SAMPLERS];
-   struct pipe_sampler_state *vertex_samplers[PIPE_MAX_SAMPLERS];
+   const struct i915_sampler_state         *fragment_sampler[PIPE_MAX_SAMPLERS];
+   struct pipe_sampler_state               *vertex_samplers[PIPE_MAX_SAMPLERS];
    const struct i915_depth_stencil_state   *depth_stencil;
    const struct i915_rasterizer_state      *rasterizer;
 
@@ -339,7 +338,7 @@ struct i915_context {
 #define I915_DST_VARS                   4
 #define I915_DST_RECT                   8
 
-static INLINE
+static inline
 void i915_set_flush_dirty(struct i915_context *i915, unsigned flush)
 {
    i915->hardware_dirty |= I915_HW_FLUSH;
@@ -401,14 +400,14 @@ void i915_init_string_functions( struct i915_context *i915 );
  * i915_context.c
  */
 struct pipe_context *i915_create_context(struct pipe_screen *screen,
-					 void *priv);
+					 void *priv, unsigned flags);
 
 
 /***********************************************************************
  * Inline conversion functions.  These are better-typed than the
  * macros used previously:
  */
-static INLINE struct i915_context *
+static inline struct i915_context *
 i915_context( struct pipe_context *pipe )
 {
    return (struct i915_context *)pipe;

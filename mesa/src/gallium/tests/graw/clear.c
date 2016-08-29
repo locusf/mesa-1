@@ -33,7 +33,7 @@ static void draw( void )
 
    graw_save_surface_to_file(ctx, surf, NULL);
 
-   screen->flush_frontbuffer(screen, tex, 0, 0, window);
+   screen->flush_frontbuffer(screen, tex, 0, 0, window, NULL);
 }
 
 static void init( void )
@@ -61,7 +61,7 @@ static void init( void )
       exit(1);
    }
    
-   ctx = screen->context_create(screen, NULL);
+   ctx = screen->context_create(screen, NULL, 0);
    if (ctx == NULL)
       exit(3);
 

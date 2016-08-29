@@ -46,7 +46,7 @@ struct xmesa_st_framebuffer {
 };
 
 
-static INLINE struct xmesa_st_framebuffer *
+static inline struct xmesa_st_framebuffer *
 xmesa_st_framebuffer(struct st_framebuffer_iface *stfbi)
 {
    return (struct xmesa_st_framebuffer *) stfbi->st_manager_private;
@@ -74,7 +74,7 @@ xmesa_st_framebuffer_display(struct st_framebuffer_iface *stfbi,
       pres = xstfb->display_resource;
    }
 
-   xstfb->screen->flush_frontbuffer(xstfb->screen, pres, 0, 0, &xstfb->buffer->ws);
+   xstfb->screen->flush_frontbuffer(xstfb->screen, pres, 0, 0, &xstfb->buffer->ws, NULL);
    return TRUE;
 }
 
@@ -398,7 +398,7 @@ xmesa_get_context(struct st_framebuffer_iface *stfbi)
 
    pipe = xstfb->display->pipe;
    if (!pipe) {
-      pipe = xstfb->screen->context_create(xstfb->screen, NULL);
+      pipe = xstfb->screen->context_create(xstfb->screen, NULL, 0);
       if (!pipe)
          return NULL;
       xstfb->display->pipe = pipe;

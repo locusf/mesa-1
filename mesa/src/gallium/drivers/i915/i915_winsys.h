@@ -176,6 +176,7 @@ struct i915_winsys {
    struct i915_winsys_buffer *
       (*buffer_from_handle)(struct i915_winsys *iws,
                             struct winsys_handle *whandle,
+                            unsigned height,
                             enum i915_winsys_buffer_tile *tiling,
                             unsigned *stride);
 
@@ -246,6 +247,11 @@ struct i915_winsys {
    int (*fence_finish)(struct i915_winsys *iws,
                        struct pipe_fence_handle *fence);
    /*@}*/
+
+   /**
+    * Retrieve the aperture size (in MiB) of the device.
+    */
+   int (*aperture_size)(struct i915_winsys *iws);
 
 
    /**

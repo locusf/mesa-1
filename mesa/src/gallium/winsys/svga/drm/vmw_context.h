@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2009 VMware, Inc.  All rights reserved.
+ * Copyright 2009-2015 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -61,5 +61,13 @@ struct pipe_screen;
 
 struct svga_winsys_context *
 vmw_svga_winsys_context_create(struct svga_winsys_screen *sws);
+
+struct vmw_svga_winsys_surface;
+
+
+void
+vmw_swc_surface_clear_reference(struct svga_winsys_context *swc,
+                                struct vmw_svga_winsys_surface *vsurf);
+
 
 #endif /* VMW_CONTEXT_H_ */

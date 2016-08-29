@@ -60,7 +60,7 @@ _swrast_delete_texture_image(struct gl_context *ctx,
 }
 
 static unsigned int
-texture_slices(struct gl_texture_image *texImage)
+texture_slices(const struct gl_texture_image *texImage)
 {
    if (texImage->TexObject->Target == GL_TEXTURE_1D_ARRAY)
       return texImage->Height;
@@ -164,10 +164,9 @@ _swrast_free_texture_image_buffer(struct gl_context *ctx,
                                   struct gl_texture_image *texImage)
 {
    struct swrast_texture_image *swImage = swrast_texture_image(texImage);
-   if (swImage->Buffer) {
-      _mesa_align_free(swImage->Buffer);
-      swImage->Buffer = NULL;
-   }
+
+   _mesa_align_free(swImage->Buffer);
+   swImage->Buffer = NULL;
 
    free(swImage->ImageSlices);
    swImage->ImageSlices = NULL;
@@ -178,8 +177,8 @@ _swrast_free_texture_image_buffer(struct gl_context *ctx,
  * Error checking for debugging only.
  */
 static void
-_mesa_check_map_teximage(struct gl_texture_image *texImage,
-                         GLuint slice, GLuint x, GLuint y, GLuint w, GLuint h)
+check_map_teximage(const struct gl_texture_image *texImage,
+                   GLuint slice, GLuint x, GLuint y, GLuint w, GLuint h)
 {
 
    if (texImage->TexObject->Target == GL_TEXTURE_1D)
@@ -189,6 +188,7 @@ _mesa_check_map_teximage(struct gl_texture_image *texImage,
    assert(y < texImage->Height || texImage->Height == 0);
    assert(x + w <= texImage->Width);
    assert(y + h <= texImage->Height);
+   assert(slice < texture_slices(texImage));
 }
 
 /**
@@ -217,7 +217,16 @@ _swrast_map_teximage(struct gl_context *ctx,
    GLint stride, texelSize;
    GLuint bw, bh;
 
-   _mesa_check_map_teximage(texImage, slice, x, y, w, h);
+   check_map_teximage(texImage, slice, x, y, w, h);
+
+   if (!swImage->Buffer) {
+      /* Either glTexImage was called with a NULL <pixels> argument or
+       * we ran out of memory when allocating texture memory,
+       */
+      *mapOut = NULL;
+      *rowStrideOut = 0;
+      return;
+   }
 
    texelSize = _mesa_get_format_bytes(texImage->TexFormat);
    stride = _mesa_format_row_stride(texImage->TexFormat, texImage->Width);
@@ -226,19 +235,12 @@ _swrast_map_teximage(struct gl_context *ctx,
    assert(x % bw == 0);
    assert(y % bh == 0);
 
-   if (!swImage->Buffer) {
-      /* probably ran out of memory when allocating tex mem */
-      *mapOut = NULL;
-      return;
-   }
-
    /* This function can only be used with a swrast-allocated buffer, in which
     * case ImageSlices is populated with pointers into Buffer.
     */
    assert(swImage->Buffer);
    assert(swImage->Buffer == swImage->ImageSlices[0]);
 
-   assert(slice < texture_slices(texImage));
    map = swImage->ImageSlices[slice];
 
    /* apply x/y offset to map address */
@@ -267,7 +269,7 @@ _swrast_map_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
       for (level = texObj->BaseLevel; level < MAX_TEXTURE_LEVELS; level++) {
          struct gl_texture_image *texImage = texObj->Image[face][level];
          struct swrast_texture_image *swImage = swrast_texture_image(texImage);
-         unsigned int i;
+         unsigned int i, slices;
 
          if (!texImage)
             continue;
@@ -280,7 +282,16 @@ _swrast_map_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
             continue;
          }
 
-         for (i = 0; i < texture_slices(texImage); i++) {
+         if (!swImage->ImageSlices) {
+            swImage->ImageSlices =
+               calloc(texture_slices(texImage), sizeof(void *));
+            if (!swImage->ImageSlices)
+               continue;
+         }
+
+         slices = texture_slices(texImage);
+
+         for (i = 0; i < slices; i++) {
             GLubyte *map;
             GLint rowStride;
 
@@ -318,7 +329,7 @@ _swrast_unmap_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
       for (level = texObj->BaseLevel; level < MAX_TEXTURE_LEVELS; level++) {
          struct gl_texture_image *texImage = texObj->Image[face][level];
          struct swrast_texture_image *swImage = swrast_texture_image(texImage);
-         unsigned int i;
+         unsigned int i, slices;
 
          if (!texImage)
             continue;
@@ -326,7 +337,12 @@ _swrast_unmap_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
          if (swImage->Buffer)
             return;
 
-         for (i = 0; i < texture_slices(texImage); i++) {
+         if (!swImage->ImageSlices)
+            continue;
+
+         slices = texture_slices(texImage);
+
+         for (i = 0; i < slices; i++) {
             if (swImage->ImageSlices[i]) {
                ctx->Driver.UnmapTextureImage(ctx, texImage, i);
                swImage->ImageSlices[i] = NULL;
@@ -343,16 +359,13 @@ _swrast_unmap_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
 void
 _swrast_map_textures(struct gl_context *ctx)
 {
-   GLbitfield enabledUnits = ctx->Texture._EnabledUnits;
+   int unit;
 
-   /* loop over enabled texture units */
-   while (enabledUnits) {
-      GLuint unit = ffs(enabledUnits) - 1;
+   for (unit = 0; unit <= ctx->Texture._MaxEnabledTexImageUnit; unit++) {
       struct gl_texture_object *texObj = ctx->Texture.Unit[unit]._Current;
-      
-      _swrast_map_texture(ctx, texObj);
 
-      enabledUnits &= ~(1 << unit);
+      if (texObj)
+         _swrast_map_texture(ctx, texObj);
    }
 }
 
@@ -363,15 +376,11 @@ _swrast_map_textures(struct gl_context *ctx)
 void
 _swrast_unmap_textures(struct gl_context *ctx)
 {
-   GLbitfield enabledUnits = ctx->Texture._EnabledUnits;
-
-   /* loop over enabled texture units */
-   while (enabledUnits) {
-      GLuint unit = ffs(enabledUnits) - 1;
+   int unit;
+   for (unit = 0; unit <= ctx->Texture._MaxEnabledTexImageUnit; unit++) {
       struct gl_texture_object *texObj = ctx->Texture.Unit[unit]._Current;
-      
-      _swrast_unmap_texture(ctx, texObj);
 
-      enabledUnits &= ~(1 << unit);
+      if (texObj)
+         _swrast_unmap_texture(ctx, texObj);
    }
 }

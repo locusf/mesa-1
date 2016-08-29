@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,14 +18,14 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * 
  **************************************************************************/
 
-/* Authors:  Keith Whitwell <keith@tungstengraphics.com>
+/* Authors:  Keith Whitwell <keithw@vmware.com>
  */
 
 /**
@@ -83,7 +83,7 @@ struct widepoint_stage {
 
 
 
-static INLINE struct widepoint_stage *
+static inline struct widepoint_stage *
 widepoint_stage( struct draw_stage *stage )
 {
    return (struct widepoint_stage *)stage;
@@ -315,7 +315,7 @@ static void widepoint_destroy( struct draw_stage *stage )
 struct draw_stage *draw_wide_point_stage( struct draw_context *draw )
 {
    struct widepoint_stage *wide = CALLOC_STRUCT(widepoint_stage);
-   if (wide == NULL)
+   if (!wide)
       goto fail;
 
    wide->stage.draw = draw;

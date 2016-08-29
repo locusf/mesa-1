@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -120,8 +120,8 @@ intel_miptree_blit(struct intel_context *intel,
     * consistent with what we want in the callers (glCopyTexSubImage(),
     * glBlitFramebuffer(), texture validation, etc.).
     */
-   gl_format src_format = _mesa_get_srgb_format_linear(src_mt->format);
-   gl_format dst_format = _mesa_get_srgb_format_linear(dst_mt->format);
+   mesa_format src_format = _mesa_get_srgb_format_linear(src_mt->format);
+   mesa_format dst_format = _mesa_get_srgb_format_linear(dst_mt->format);
 
    /* The blitter doesn't support doing any format conversions.  We do also
     * support blitting ARGB8888 to XRGB8888 (trivial, the values dropped into
@@ -129,12 +129,12 @@ intel_miptree_blit(struct intel_context *intel,
     * channel to 1.0 at the end.
     */
    if (src_format != dst_format &&
-      ((src_format != MESA_FORMAT_ARGB8888 &&
-        src_format != MESA_FORMAT_XRGB8888) ||
-       (dst_format != MESA_FORMAT_ARGB8888 &&
-        dst_format != MESA_FORMAT_XRGB8888))) {
+      ((src_format != MESA_FORMAT_B8G8R8A8_UNORM &&
+        src_format != MESA_FORMAT_B8G8R8X8_UNORM) ||
+       (dst_format != MESA_FORMAT_B8G8R8A8_UNORM &&
+        dst_format != MESA_FORMAT_B8G8R8X8_UNORM))) {
       perf_debug("%s: Can't use hardware blitter from %s to %s, "
-                 "falling back.\n", __FUNCTION__,
+                 "falling back.\n", __func__,
                  _mesa_get_format_name(src_format),
                  _mesa_get_format_name(dst_format));
       return false;
@@ -201,8 +201,8 @@ intel_miptree_blit(struct intel_context *intel,
       return false;
    }
 
-   if (src_mt->format == MESA_FORMAT_XRGB8888 &&
-       dst_mt->format == MESA_FORMAT_ARGB8888) {
+   if (src_mt->format == MESA_FORMAT_B8G8R8X8_UNORM &&
+       dst_mt->format == MESA_FORMAT_B8G8R8A8_UNORM) {
       intel_miptree_set_alpha_to_one(intel, dst_mt,
                                      dst_x, dst_y,
                                      width, height);
@@ -266,14 +266,15 @@ intelEmitCopyBlit(struct intel_context *intel,
 
    intel_batchbuffer_require_space(intel, 8 * 4);
    DBG("%s src:buf(%p)/%d+%d %d,%d dst:buf(%p)/%d+%d %d,%d sz:%dx%d\n",
-       __FUNCTION__,
+       __func__,
        src_buffer, src_pitch, src_offset, src_x, src_y,
        dst_buffer, dst_pitch, dst_offset, dst_x, dst_y, w, h);
 
    /* Blit pitch must be dword-aligned.  Otherwise, the hardware appears to drop
-    * the low bits.
+    * the low bits.  Offsets must be naturally aligned.
     */
-   if (src_pitch % 4 != 0 || dst_pitch % 4 != 0)
+   if (src_pitch % 4 != 0 || src_offset % cpp != 0 ||
+       dst_pitch % 4 != 0 || dst_offset % cpp != 0)
       return false;
 
    /* For big formats (such as floating point), do the copy using 16 or 32bpp
@@ -420,7 +421,7 @@ intelClearWithBlit(struct gl_context *ctx, GLbitfield mask)
       cpp = region->cpp;
 
       DBG("%s dst:buf(%p)/%d %d,%d sz:%dx%d\n",
-	  __FUNCTION__,
+	  __func__,
 	  region->bo, pitch,
 	  x1, y1, x2 - x1, y2 - y1);
 
@@ -450,23 +451,23 @@ intelClearWithBlit(struct gl_context *ctx, GLbitfield mask)
 	 _mesa_unclamped_float_rgba_to_ubyte(clear, color);
 
 	 switch (intel_rb_format(irb)) {
-	 case MESA_FORMAT_ARGB8888:
-	 case MESA_FORMAT_XRGB8888:
+	 case MESA_FORMAT_B8G8R8A8_UNORM:
+	 case MESA_FORMAT_B8G8R8X8_UNORM:
 	    clear_val = PACK_COLOR_8888(clear[3], clear[0],
 					clear[1], clear[2]);
 	    break;
-	 case MESA_FORMAT_RGB565:
+	 case MESA_FORMAT_B5G6R5_UNORM:
 	    clear_val = PACK_COLOR_565(clear[0], clear[1], clear[2]);
 	    break;
-	 case MESA_FORMAT_ARGB4444:
+	 case MESA_FORMAT_B4G4R4A4_UNORM:
 	    clear_val = PACK_COLOR_4444(clear[3], clear[0],
 					clear[1], clear[2]);
 	    break;
-	 case MESA_FORMAT_ARGB1555:
+	 case MESA_FORMAT_B5G5R5A1_UNORM:
 	    clear_val = PACK_COLOR_1555(clear[3], clear[0],
 					clear[1], clear[2]);
 	    break;
-	 case MESA_FORMAT_A8:
+	 case MESA_FORMAT_A_UNORM8:
 	    clear_val = PACK_COLOR_8888(clear[3], clear[3],
 					clear[3], clear[3]);
 	    break;
@@ -534,15 +535,14 @@ intelEmitImmediateColorExpandBlit(struct intel_context *intel,
 	 return false;
    }
 
-   assert( logic_op - GL_CLEAR >= 0 );
-   assert( logic_op - GL_CLEAR < 0x10 );
+   assert((logic_op >= GL_CLEAR) && (logic_op <= (GL_CLEAR + 0x0f)));
    assert(dst_pitch > 0);
 
    if (w < 0 || h < 0)
       return true;
 
    DBG("%s dst:buf(%p)/%d+%d %d,%d sz:%dx%d, %d bytes %d dwords\n",
-       __FUNCTION__,
+       __func__,
        dst_buffer, dst_pitch, dst_offset, x, y, w, h, src_size, dwords);
 
    intel_batchbuffer_require_space(intel,
@@ -658,7 +658,7 @@ intel_miptree_set_alpha_to_one(struct intel_context *intel,
    cpp = region->cpp;
 
    DBG("%s dst:buf(%p)/%d %d,%d sz:%dx%d\n",
-       __FUNCTION__, region->bo, pitch, x, y, width, height);
+       __func__, region->bo, pitch, x, y, width, height);
 
    BR13 = br13_for_cpp(cpp) | 0xf0 << 16;
    CMD = XY_COLOR_BLT_CMD;

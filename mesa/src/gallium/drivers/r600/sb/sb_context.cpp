@@ -61,24 +61,33 @@ int sb_context::init(r600_isa *isa, sb_hw_chip chip, sb_hw_class cclass) {
 
 	uses_mova_gpr = is_r600() && chip != HW_CHIP_RV670;
 
+	r6xx_gpr_index_workaround = is_r600() && chip != HW_CHIP_RV670 && chip != HW_CHIP_RS780 && chip != HW_CHIP_RS880;
+
 	switch (chip) {
 	case HW_CHIP_RV610:
 	case HW_CHIP_RS780:
 	case HW_CHIP_RV620:
 	case HW_CHIP_RS880:
-
+		wavefront_size = 16;
+		stack_entry_size = 8;
+		break;
 	case HW_CHIP_RV630:
 	case HW_CHIP_RV635:
 	case HW_CHIP_RV730:
 	case HW_CHIP_RV710:
 	case HW_CHIP_PALM:
 	case HW_CHIP_CEDAR:
+		wavefront_size = 32;
 		stack_entry_size = 8;
 		break;
 	default:
+		wavefront_size = 64;
 		stack_entry_size = 4;
 		break;
 	}
+
+	stack_workaround_8xx = needs_8xx_stack_workaround();
+	stack_workaround_9xx = needs_9xx_stack_workaround();
 
 	return 0;
 }

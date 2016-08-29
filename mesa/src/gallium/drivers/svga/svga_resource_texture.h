@@ -51,7 +51,7 @@ struct svga_texture
 {
    struct u_resource b;
 
-   boolean defined[6][SVGA_MAX_TEXTURE_LEVELS];
+   ushort *defined;
    
    struct svga_sampler_view *cached_view;
 
@@ -77,7 +77,21 @@ struct svga_texture
     */
    struct svga_winsys_surface *handle;
 
+   /**
+    * Whether the host side surface is imported and not created by this
+    * driver.
+    */
+   boolean imported;
+
    unsigned size;  /**< Approximate size in bytes */
+
+   /** array indexed by cube face or 3D/array slice, one bit per mipmap level */
+   ushort *rendered_to;
+
+   /** array indexed by cube face or 3D/array slice, one bit per mipmap level.
+    *  Set if the level is marked as dirty.
+    */ 
+   ushort *dirty;
 };
 
 
@@ -88,7 +102,7 @@ struct svga_transfer
 {
    struct pipe_transfer base;
 
-   unsigned face;
+   unsigned slice;  /**< array slice or cube face */
 
    struct svga_winsys_buffer *hwbuf;
 
@@ -98,10 +112,13 @@ struct svga_transfer
    /* Temporary malloc buffer when we can't allocate a hardware buffer
     * big enough */
    void *swbuf;
+
+   boolean use_direct_map;
 };
 
 
-static INLINE struct svga_texture *svga_texture( struct pipe_resource *resource )
+static inline struct svga_texture *
+svga_texture(struct pipe_resource *resource)
 {
    struct svga_texture *tex = (struct svga_texture *)resource;
    assert(tex == NULL || tex->b.vtbl == &svga_texture_vtbl);
@@ -109,7 +126,7 @@ static INLINE struct svga_texture *svga_texture( struct pipe_resource *resource 
 }
 
 
-static INLINE struct svga_transfer *
+static inline struct svga_transfer *
 svga_transfer(struct pipe_transfer *transfer)
 {
    assert(transfer);
@@ -122,26 +139,104 @@ svga_transfer(struct pipe_transfer *transfer)
  * This is used to track updates to textures when we draw into
  * them via a surface.
  */
-static INLINE void
+static inline void
 svga_age_texture_view(struct svga_texture *tex, unsigned level)
 {
-   assert(level < Elements(tex->view_age));
+   assert(level < ARRAY_SIZE(tex->view_age));
    tex->view_age[level] = ++(tex->age);
+}
+
+
+/** For debugging, check that face and level are legal */
+static inline void
+check_face_level(const struct svga_texture *tex,
+                 unsigned face, unsigned level)
+{
+   if (tex->b.b.target == PIPE_TEXTURE_CUBE) {
+      assert(face < 6);
+   }
+   else if (tex->b.b.target == PIPE_TEXTURE_3D) {
+      assert(face < tex->b.b.depth0);
+   }
+   else {
+      assert(face < tex->b.b.array_size);
+   }
+
+   assert(level < 8 * sizeof(tex->rendered_to[0]));
 }
 
 
 /**
  * Mark the given texture face/level as being defined.
  */
-static INLINE void
+static inline void
 svga_define_texture_level(struct svga_texture *tex,
                           unsigned face,unsigned level)
 {
-   assert(face < Elements(tex->defined));
-   assert(level < Elements(tex->defined[0]));
-   tex->defined[face][level] = TRUE;
+   check_face_level(tex, face, level);
+   tex->defined[face] |= 1 << level;
 }
 
+
+static inline bool
+svga_is_texture_level_defined(const struct svga_texture *tex,
+                              unsigned face, unsigned level)
+{
+   check_face_level(tex, face, level);
+   return (tex->defined[face] & (1 << level)) != 0;
+}
+
+
+static inline void
+svga_set_texture_rendered_to(struct svga_texture *tex,
+                             unsigned face, unsigned level)
+{
+   check_face_level(tex, face, level);
+   tex->rendered_to[face] |= 1 << level;
+}
+
+
+static inline void
+svga_clear_texture_rendered_to(struct svga_texture *tex,
+                               unsigned face, unsigned level)
+{
+   check_face_level(tex, face, level);
+   tex->rendered_to[face] &= ~(1 << level);
+}
+
+
+static inline boolean
+svga_was_texture_rendered_to(const struct svga_texture *tex,
+                             unsigned face, unsigned level)
+{
+   check_face_level(tex, face, level);
+   return !!(tex->rendered_to[face] & (1 << level));
+}
+
+static inline void
+svga_set_texture_dirty(struct svga_texture *tex,
+                       unsigned face, unsigned level)
+{
+   check_face_level(tex, face, level);
+   tex->dirty[face] |= 1 << level;
+}
+
+static inline void
+svga_clear_texture_dirty(struct svga_texture *tex)
+{
+   unsigned i;
+   for (i = 0; i < tex->b.b.depth0 * tex->b.b.array_size; i++) {
+      tex->dirty[i] = 0;
+   }
+}
+
+static inline boolean
+svga_is_texture_dirty(const struct svga_texture *tex,
+                      unsigned face, unsigned level)
+{
+   check_face_level(tex, face, level);
+   return !!(tex->dirty[face] & (1 << level));
+}
 
 struct pipe_resource *
 svga_texture_create(struct pipe_screen *screen,
@@ -152,7 +247,14 @@ svga_texture_from_handle(struct pipe_screen * screen,
 			const struct pipe_resource *template,
 			struct winsys_handle *whandle);
 
-
+boolean
+svga_texture_generate_mipmap(struct pipe_context *pipe,
+                             struct pipe_resource *pt,
+                             enum pipe_format format,
+                             unsigned base_level,
+                             unsigned last_level,
+                             unsigned first_layer,
+                             unsigned last_layer);
 
 
 #endif /* SVGA_TEXTURE_H */

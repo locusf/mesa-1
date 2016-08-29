@@ -1,8 +1,8 @@
 /*
  Copyright (C) Intel Corp.  2006.  All Rights Reserved.
- Intel funded Tungsten Graphics (http://www.tungstengraphics.com) to
+ Intel funded Tungsten Graphics to
  develop this 3D driver.
- 
+
  Permission is hereby granted, free of charge, to any person obtaining
  a copy of this software and associated documentation files (the
  "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  distribute, sublicense, and/or sell copies of the Software, and to
  permit persons to whom the Software is furnished to do so, subject to
  the following conditions:
- 
+
  The above copyright notice and this permission notice (including the
  next paragraph) shall be included in all copies or substantial
  portions of the Software.
- 
+
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
@@ -22,41 +22,40 @@
  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- 
+
  **********************************************************************/
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
- 
+
 
 
 #include "intel_batchbuffer.h"
 #include "intel_fbo.h"
 #include "intel_mipmap_tree.h"
-#include "intel_regions.h"
 
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
 
+#include "main/framebuffer.h"
 #include "main/fbobject.h"
 #include "main/glformats.h"
 
 /* Constant single cliprect for framebuffer object or DRI2 drawing */
-static void upload_drawing_rect(struct brw_context *brw)
+static void
+upload_drawing_rect(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
-
-   /* 3DSTATE_DRAWING_RECTANGLE is non-pipelined. */
-   if (brw->gen == 6)
-      intel_emit_post_sync_nonzero_flush(brw);
+   const struct gl_framebuffer *fb = ctx->DrawBuffer;
+   const unsigned int fb_width = _mesa_geometric_width(fb);
+   const unsigned int fb_height = _mesa_geometric_height(fb);
 
    BEGIN_BATCH(4);
    OUT_BATCH(_3DSTATE_DRAWING_RECTANGLE << 16 | (4 - 2));
    OUT_BATCH(0); /* xmin, ymin */
-   OUT_BATCH(((ctx->DrawBuffer->Width - 1) & 0xffff) |
-	    ((ctx->DrawBuffer->Height - 1) << 16));
+   OUT_BATCH(((fb_width - 1) & 0xffff) | ((fb_height - 1) << 16));
    OUT_BATCH(0);
    ADVANCE_BATCH();
 }
@@ -64,76 +63,10 @@ static void upload_drawing_rect(struct brw_context *brw)
 const struct brw_tracked_state brw_drawing_rect = {
    .dirty = {
       .mesa = _NEW_BUFFERS,
-      .brw = BRW_NEW_CONTEXT,
-      .cache = 0
+      .brw = BRW_NEW_BLORP |
+             BRW_NEW_CONTEXT,
    },
    .emit = upload_drawing_rect
-};
-
-/**
- * Upload the binding table pointers, which point each stage's array of surface
- * state pointers.
- *
- * The binding table pointers are relative to the surface state base address,
- * which points at the batchbuffer containing the streamed batch state.
- */
-static void upload_binding_table_pointers(struct brw_context *brw)
-{
-   BEGIN_BATCH(6);
-   OUT_BATCH(_3DSTATE_BINDING_TABLE_POINTERS << 16 | (6 - 2));
-   OUT_BATCH(brw->vs.bind_bo_offset);
-   OUT_BATCH(0); /* gs */
-   OUT_BATCH(0); /* clip */
-   OUT_BATCH(0); /* sf */
-   OUT_BATCH(brw->wm.bind_bo_offset);
-   ADVANCE_BATCH();
-}
-
-const struct brw_tracked_state brw_binding_table_pointers = {
-   .dirty = {
-      .mesa = 0,
-      .brw = (BRW_NEW_BATCH |
-	      BRW_NEW_STATE_BASE_ADDRESS |
-	      BRW_NEW_VS_BINDING_TABLE |
-	      BRW_NEW_GS_BINDING_TABLE |
-	      BRW_NEW_PS_BINDING_TABLE),
-      .cache = 0,
-   },
-   .emit = upload_binding_table_pointers,
-};
-
-/**
- * Upload the binding table pointers, which point each stage's array of surface
- * state pointers.
- *
- * The binding table pointers are relative to the surface state base address,
- * which points at the batchbuffer containing the streamed batch state.
- */
-static void upload_gen6_binding_table_pointers(struct brw_context *brw)
-{
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_BINDING_TABLE_POINTERS << 16 |
-	     GEN6_BINDING_TABLE_MODIFY_VS |
-	     GEN6_BINDING_TABLE_MODIFY_GS |
-	     GEN6_BINDING_TABLE_MODIFY_PS |
-	     (4 - 2));
-   OUT_BATCH(brw->vs.bind_bo_offset); /* vs */
-   OUT_BATCH(brw->gs.bind_bo_offset); /* gs */
-   OUT_BATCH(brw->wm.bind_bo_offset); /* wm/ps */
-   ADVANCE_BATCH();
-}
-
-const struct brw_tracked_state gen6_binding_table_pointers = {
-   .dirty = {
-      .mesa = 0,
-      .brw = (BRW_NEW_BATCH |
-	      BRW_NEW_STATE_BASE_ADDRESS |
-	      BRW_NEW_VS_BINDING_TABLE |
-	      BRW_NEW_GS_BINDING_TABLE |
-	      BRW_NEW_PS_BINDING_TABLE),
-      .cache = 0,
-   },
-   .emit = upload_gen6_binding_table_pointers,
 };
 
 /**
@@ -142,7 +75,8 @@ const struct brw_tracked_state gen6_binding_table_pointers = {
  * The state pointers in this packet are all relative to the general state
  * base address set by CMD_STATE_BASE_ADDRESS, which is 0.
  */
-static void upload_pipelined_state_pointers(struct brw_context *brw )
+static void
+upload_pipelined_state_pointers(struct brw_context *brw)
 {
    if (brw->gen == 5) {
       /* Need to flush before changing clip max threads for errata. */
@@ -154,10 +88,10 @@ static void upload_pipelined_state_pointers(struct brw_context *brw )
    BEGIN_BATCH(7);
    OUT_BATCH(_3DSTATE_PIPELINED_POINTERS << 16 | (7 - 2));
    OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-	     brw->vs.state_offset);
-   if (brw->gs.prog_active)
+	     brw->vs.base.state_offset);
+   if (brw->ff_gs.prog_active)
       OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-		brw->gs.state_offset | 1);
+		brw->ff_gs.state_offset | 1);
    else
       OUT_BATCH(0);
    OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
@@ -165,15 +99,16 @@ static void upload_pipelined_state_pointers(struct brw_context *brw )
    OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
 	     brw->sf.state_offset);
    OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-	     brw->wm.state_offset);
+	     brw->wm.base.state_offset);
    OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
 	     brw->cc.state_offset);
    ADVANCE_BATCH();
 
-   brw->state.dirty.brw |= BRW_NEW_PSP;
+   brw->ctx.NewDriverState |= BRW_NEW_PSP;
 }
 
-static void upload_psp_urb_cbs(struct brw_context *brw )
+static void
+upload_psp_urb_cbs(struct brw_context *brw)
 {
    upload_pipelined_state_pointers(brw);
    brw_upload_urb_fence(brw);
@@ -183,16 +118,12 @@ static void upload_psp_urb_cbs(struct brw_context *brw )
 const struct brw_tracked_state brw_psp_urb_cbs = {
    .dirty = {
       .mesa = 0,
-      .brw = (BRW_NEW_URB_FENCE |
-	      BRW_NEW_BATCH |
-	      BRW_NEW_STATE_BASE_ADDRESS),
-      .cache = (CACHE_NEW_VS_UNIT | 
-		CACHE_NEW_GS_UNIT | 
-		CACHE_NEW_GS_PROG | 
-		CACHE_NEW_CLIP_UNIT | 
-		CACHE_NEW_SF_UNIT | 
-		CACHE_NEW_WM_UNIT | 
-		CACHE_NEW_CC_UNIT)
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_FF_GS_PROG_DATA |
+             BRW_NEW_GEN4_UNIT_STATE |
+             BRW_NEW_STATE_BASE_ADDRESS |
+             BRW_NEW_URB_FENCE,
    },
    .emit = upload_psp_urb_cbs,
 };
@@ -208,46 +139,15 @@ brw_depthbuffer_format(struct brw_context *brw)
    if (!drb &&
        (srb = intel_get_renderbuffer(fb, BUFFER_STENCIL)) &&
        !srb->mt->stencil_mt &&
-       (intel_rb_format(srb) == MESA_FORMAT_S8_Z24 ||
-	intel_rb_format(srb) == MESA_FORMAT_Z32_FLOAT_X24S8)) {
+       (intel_rb_format(srb) == MESA_FORMAT_Z24_UNORM_S8_UINT ||
+	intel_rb_format(srb) == MESA_FORMAT_Z32_FLOAT_S8X24_UINT)) {
       drb = srb;
    }
 
    if (!drb)
       return BRW_DEPTHFORMAT_D32_FLOAT;
 
-   switch (drb->mt->format) {
-   case MESA_FORMAT_Z16:
-      return BRW_DEPTHFORMAT_D16_UNORM;
-   case MESA_FORMAT_Z32_FLOAT:
-      return BRW_DEPTHFORMAT_D32_FLOAT;
-   case MESA_FORMAT_X8_Z24:
-      if (brw->gen >= 6) {
-	 return BRW_DEPTHFORMAT_D24_UNORM_X8_UINT;
-      } else {
-	 /* Use D24_UNORM_S8, not D24_UNORM_X8.
-	  *
-	  * D24_UNORM_X8 was not introduced until Gen5. (See the Ironlake PRM,
-	  * Volume 2, Part 1, Section 8.4.6 "Depth/Stencil Buffer State", Bits
-	  * 3DSTATE_DEPTH_BUFFER.Surface_Format).
-	  *
-	  * However, on Gen5, D24_UNORM_X8 may be used only if separate
-	  * stencil is enabled, and we never enable it. From the Ironlake PRM,
-	  * same section as above, Bit 3DSTATE_DEPTH_BUFFER.Separate_Stencil_Buffer_Enable:
-	  *     If this field is disabled, the Surface Format of the depth
-	  *     buffer cannot be D24_UNORM_X8_UINT.
-	  */
-	 return BRW_DEPTHFORMAT_D24_UNORM_S8_UINT;
-      }
-   case MESA_FORMAT_S8_Z24:
-      return BRW_DEPTHFORMAT_D24_UNORM_S8_UINT;
-   case MESA_FORMAT_Z32_FLOAT_X24S8:
-      return BRW_DEPTHFORMAT_D32_FLOAT_S8X24_UINT;
-   default:
-      _mesa_problem(ctx, "Unexpected depth format %s\n",
-		    _mesa_get_format_name(intel_rb_format(drb)));
-      return BRW_DEPTHFORMAT_D16_UNORM;
-   }
+   return brw_depth_format(brw, drb->mt->format);
 }
 
 /**
@@ -276,13 +176,17 @@ brw_get_depthstencil_tile_masks(struct intel_mipmap_tree *depth_mt,
    uint32_t tile_mask_x = 0, tile_mask_y = 0;
 
    if (depth_mt) {
-      intel_region_get_tile_masks(depth_mt->region,
-                                  &tile_mask_x, &tile_mask_y, false);
+      intel_get_tile_masks(depth_mt->tiling, depth_mt->tr_mode,
+                           depth_mt->cpp,
+                           &tile_mask_x, &tile_mask_y);
 
-      if (intel_miptree_slice_has_hiz(depth_mt, depth_level, depth_layer)) {
+      if (intel_miptree_level_has_hiz(depth_mt, depth_level)) {
          uint32_t hiz_tile_mask_x, hiz_tile_mask_y;
-         intel_region_get_tile_masks(depth_mt->hiz_mt->region,
-                                     &hiz_tile_mask_x, &hiz_tile_mask_y, false);
+         intel_get_tile_masks(depth_mt->hiz_buf->mt->tiling,
+                              depth_mt->hiz_buf->mt->tr_mode,
+                              depth_mt->hiz_buf->mt->cpp,
+                              &hiz_tile_mask_x,
+                              &hiz_tile_mask_y);
 
          /* Each HiZ row represents 2 rows of pixels */
          hiz_tile_mask_y = hiz_tile_mask_y << 1 | 1;
@@ -296,15 +200,17 @@ brw_get_depthstencil_tile_masks(struct intel_mipmap_tree *depth_mt,
       if (stencil_mt->stencil_mt)
 	 stencil_mt = stencil_mt->stencil_mt;
 
-      if (stencil_mt->format == MESA_FORMAT_S8) {
+      if (stencil_mt->format == MESA_FORMAT_S_UINT8) {
          /* Separate stencil buffer uses 64x64 tiles. */
          tile_mask_x |= 63;
          tile_mask_y |= 63;
       } else {
          uint32_t stencil_tile_mask_x, stencil_tile_mask_y;
-         intel_region_get_tile_masks(stencil_mt->region,
-                                     &stencil_tile_mask_x,
-                                     &stencil_tile_mask_y, false);
+         intel_get_tile_masks(stencil_mt->tiling,
+                              stencil_mt->tr_mode,
+                              stencil_mt->cpp,
+                              &stencil_tile_mask_x,
+                              &stencil_tile_mask_y);
 
          tile_mask_x |= stencil_tile_mask_x;
          tile_mask_y |= stencil_tile_mask_y;
@@ -345,6 +251,26 @@ brw_workaround_depthstencil_alignment(struct brw_context *brw,
    if (depth_irb)
       depth_mt = depth_irb->mt;
 
+   /* Initialize brw->depthstencil to 'nop' workaround state.
+    */
+   brw->depthstencil.tile_x = 0;
+   brw->depthstencil.tile_y = 0;
+   brw->depthstencil.depth_offset = 0;
+   brw->depthstencil.stencil_offset = 0;
+   brw->depthstencil.hiz_offset = 0;
+   brw->depthstencil.depth_mt = NULL;
+   brw->depthstencil.stencil_mt = NULL;
+   if (depth_irb)
+      brw->depthstencil.depth_mt = depth_mt;
+   if (stencil_irb)
+      brw->depthstencil.stencil_mt = get_stencil_miptree(stencil_irb);
+
+   /* Gen6+ doesn't require the workarounds, since we always program the
+    * surface state at the start of the whole surface.
+    */
+   if (brw->gen >= 6)
+      return;
+
    /* Check if depth buffer is in depth/stencil format.  If so, then it's only
     * safe to invalidate it if we're also clearing stencil, and both depth_irb
     * and stencil_irb point to the same miptree.
@@ -384,7 +310,7 @@ brw_workaround_depthstencil_alignment(struct brw_context *brw,
          rebase_depth = true;
 
       /* We didn't even have intra-tile offsets before g45. */
-      if (brw->gen == 4 && !brw->is_g4x) {
+      if (!brw->has_surface_tile_offset) {
          if (tile_x || tile_y)
             rebase_depth = true;
       }
@@ -443,7 +369,7 @@ brw_workaround_depthstencil_alignment(struct brw_context *brw,
       if (stencil_tile_x & 7 || stencil_tile_y & 7)
          rebase_stencil = true;
 
-      if (brw->gen == 4 && !brw->is_g4x) {
+      if (!brw->has_surface_tile_offset) {
          if (stencil_tile_x || stencil_tile_y)
             rebase_stencil = true;
       }
@@ -519,39 +445,33 @@ brw_workaround_depthstencil_alignment(struct brw_context *brw,
     */
    brw->depthstencil.tile_x = tile_x;
    brw->depthstencil.tile_y = tile_y;
-   brw->depthstencil.depth_offset = 0;
-   brw->depthstencil.stencil_offset = 0;
-   brw->depthstencil.hiz_offset = 0;
-   brw->depthstencil.depth_mt = NULL;
-   brw->depthstencil.stencil_mt = NULL;
    if (depth_irb) {
       depth_mt = depth_irb->mt;
       brw->depthstencil.depth_mt = depth_mt;
       brw->depthstencil.depth_offset =
-         intel_region_get_aligned_offset(depth_mt->region,
-                                         depth_irb->draw_x & ~tile_mask_x,
-                                         depth_irb->draw_y & ~tile_mask_y,
-                                         false);
+         intel_miptree_get_aligned_offset(depth_mt,
+                                          depth_irb->draw_x & ~tile_mask_x,
+                                          depth_irb->draw_y & ~tile_mask_y,
+                                          false);
       if (intel_renderbuffer_has_hiz(depth_irb)) {
          brw->depthstencil.hiz_offset =
-            intel_region_get_aligned_offset(depth_mt->region,
-                                            depth_irb->draw_x & ~tile_mask_x,
-                                            (depth_irb->draw_y & ~tile_mask_y) /
-                                            2,
-                                            false);
+            intel_miptree_get_aligned_offset(depth_mt,
+                                             depth_irb->draw_x & ~tile_mask_x,
+                                             (depth_irb->draw_y & ~tile_mask_y) / 2,
+                                             false);
       }
    }
    if (stencil_irb) {
       stencil_mt = get_stencil_miptree(stencil_irb);
 
       brw->depthstencil.stencil_mt = stencil_mt;
-      if (stencil_mt->format == MESA_FORMAT_S8) {
+      if (stencil_mt->format == MESA_FORMAT_S_UINT8) {
          /* Note: we can't compute the stencil offset using
           * intel_region_get_aligned_offset(), because stencil_region claims
           * that the region is untiled even though it's W tiled.
           */
          brw->depthstencil.stencil_offset =
-            (stencil_draw_y & ~tile_mask_y) * stencil_mt->region->pitch +
+            (stencil_draw_y & ~tile_mask_y) * stencil_mt->pitch +
             (stencil_draw_x & ~tile_mask_x) * 64;
       }
    }
@@ -577,7 +497,7 @@ brw_emit_depthbuffer(struct brw_context *brw)
    uint32_t width = 1, height = 1;
 
    if (stencil_mt) {
-      separate_stencil = stencil_mt->format == MESA_FORMAT_S8;
+      separate_stencil = stencil_mt->format == MESA_FORMAT_S_UINT8;
 
       /* Gen7 supports only separate stencil */
       assert(separate_stencil || brw->gen < 7);
@@ -607,8 +527,8 @@ brw_emit_depthbuffer(struct brw_context *brw)
       /* Prior to Gen7, if using separate stencil, hiz must be enabled. */
       assert(brw->gen >= 7 || !separate_stencil || hiz);
 
-      assert(brw->gen < 6 || depth_mt->region->tiling == I915_TILING_Y);
-      assert(!hiz || depth_mt->region->tiling == I915_TILING_Y);
+      assert(brw->gen < 6 || depth_mt->tiling == I915_TILING_Y);
+      assert(!hiz || depth_mt->tiling == I915_TILING_Y);
 
       depthbuffer_format = brw_depthbuffer_format(brw);
       depth_surface_type = BRW_SURFACE_2D;
@@ -633,6 +553,11 @@ brw_emit_depthbuffer(struct brw_context *brw)
       width = stencil_irb->Base.Base.Width;
       height = stencil_irb->Base.Base.Height;
    }
+
+   if (depth_mt)
+      brw_render_cache_set_check_flush(brw, depth_mt->bo);
+   if (stencil_mt)
+      brw_render_cache_set_check_flush(brw, stencil_mt->bo);
 
    brw->vtbl.emit_depth_stencil_hiz(brw, depth_mt, depth_offset,
                                     depthbuffer_format, depth_surface_type,
@@ -666,8 +591,7 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
     * non-pipelined state that will need the PIPE_CONTROL workaround.
     */
    if (brw->gen == 6) {
-      intel_emit_post_sync_nonzero_flush(brw);
-      intel_emit_depth_stall_flushes(brw);
+      brw_emit_depth_stall_flushes(brw);
    }
 
    unsigned int len;
@@ -680,17 +604,17 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
 
    BEGIN_BATCH(len);
    OUT_BATCH(_3DSTATE_DEPTH_BUFFER << 16 | (len - 2));
-   OUT_BATCH((depth_mt ? depth_mt->region->pitch - 1 : 0) |
+   OUT_BATCH((depth_mt ? depth_mt->pitch - 1 : 0) |
              (depthbuffer_format << 18) |
              ((enable_hiz_ss ? 1 : 0) << 21) | /* separate stencil enable */
              ((enable_hiz_ss ? 1 : 0) << 22) | /* hiz enable */
              (BRW_TILEWALK_YMAJOR << 26) |
-             ((depth_mt ? depth_mt->region->tiling != I915_TILING_NONE : 1)
+             ((depth_mt ? depth_mt->tiling != I915_TILING_NONE : 1)
               << 27) |
              (depth_surface_type << 29));
 
    if (depth_mt) {
-      OUT_RELOC(depth_mt->region->bo,
+      OUT_RELOC(depth_mt->bo,
 		I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
 		depth_offset);
    } else {
@@ -722,11 +646,12 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
 
       /* Emit hiz buffer. */
       if (hiz) {
-         struct intel_mipmap_tree *hiz_mt = depth_mt->hiz_mt;
+         assert(depth_mt);
+         struct intel_mipmap_tree *hiz_mt = depth_mt->hiz_buf->mt;
 	 BEGIN_BATCH(3);
 	 OUT_BATCH((_3DSTATE_HIER_DEPTH_BUFFER << 16) | (3 - 2));
-	 OUT_BATCH(hiz_mt->region->pitch - 1);
-	 OUT_RELOC(hiz_mt->region->bo,
+	 OUT_BATCH(hiz_mt->pitch - 1);
+	 OUT_RELOC(hiz_mt->bo,
 		   I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
 		   brw->depthstencil.hiz_offset);
 	 ADVANCE_BATCH();
@@ -740,8 +665,6 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
 
       /* Emit stencil buffer. */
       if (separate_stencil) {
-	 struct intel_region *region = stencil_mt->region;
-
 	 BEGIN_BATCH(3);
 	 OUT_BATCH((_3DSTATE_STENCIL_BUFFER << 16) | (3 - 2));
          /* The stencil buffer has quirky pitch requirements.  From Vol 2a,
@@ -749,8 +672,8 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
           *    The pitch must be set to 2x the value computed based on width, as
           *    the stencil buffer is stored with two rows interleaved.
           */
-	 OUT_BATCH(2 * region->pitch - 1);
-	 OUT_RELOC(region->bo,
+	 OUT_BATCH(2 * stencil_mt->pitch - 1);
+	 OUT_RELOC(stencil_mt->bo,
 		   I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
 		   brw->depthstencil.stencil_offset);
 	 ADVANCE_BATCH();
@@ -772,9 +695,6 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
     *     when HiZ is enabled and the DEPTH_BUFFER_STATE changes.
     */
    if (brw->gen >= 6 || hiz) {
-      if (brw->gen == 6)
-	 intel_emit_post_sync_nonzero_flush(brw);
-
       BEGIN_BATCH(2);
       OUT_BATCH(_3DSTATE_CLEAR_PARAMS << 16 |
 		GEN5_DEPTH_CLEAR_VALID |
@@ -787,19 +707,17 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
 const struct brw_tracked_state brw_depthbuffer = {
    .dirty = {
       .mesa = _NEW_BUFFERS,
-      .brw = BRW_NEW_BATCH,
-      .cache = 0,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP,
    },
    .emit = brw_emit_depthbuffer,
 };
 
-
-
-/***********************************************************************
+/**
  * Polygon stipple packet
  */
-
-static void upload_polygon_stipple(struct brw_context *brw)
+static void
+upload_polygon_stipple(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    GLuint i;
@@ -807,9 +725,6 @@ static void upload_polygon_stipple(struct brw_context *brw)
    /* _NEW_POLYGON */
    if (!ctx->Polygon.StippleFlag)
       return;
-
-   if (brw->gen == 6)
-      intel_emit_post_sync_nonzero_flush(brw);
 
    BEGIN_BATCH(33);
    OUT_BATCH(_3DSTATE_POLY_STIPPLE_PATTERN << 16 | (33 - 2));
@@ -824,39 +739,33 @@ static void upload_polygon_stipple(struct brw_context *brw)
    if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
       for (i = 0; i < 32; i++)
 	  OUT_BATCH(ctx->PolygonStipple[31 - i]); /* invert */
-   }
-   else {
+   } else {
       for (i = 0; i < 32; i++)
 	 OUT_BATCH(ctx->PolygonStipple[i]);
    }
-   CACHED_BATCH();
+   ADVANCE_BATCH();
 }
 
 const struct brw_tracked_state brw_polygon_stipple = {
    .dirty = {
-      .mesa = (_NEW_POLYGONSTIPPLE |
-	       _NEW_POLYGON),
+      .mesa = _NEW_POLYGON |
+              _NEW_POLYGONSTIPPLE,
       .brw = BRW_NEW_CONTEXT,
-      .cache = 0
    },
    .emit = upload_polygon_stipple
 };
 
-
-/***********************************************************************
+/**
  * Polygon stipple offset packet
  */
-
-static void upload_polygon_stipple_offset(struct brw_context *brw)
+static void
+upload_polygon_stipple_offset(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
 
    /* _NEW_POLYGON */
    if (!ctx->Polygon.StippleFlag)
       return;
-
-   if (brw->gen == 6)
-      intel_emit_post_sync_nonzero_flush(brw);
 
    BEGIN_BATCH(2);
    OUT_BATCH(_3DSTATE_POLY_STIPPLE_OFFSET << 16 | (2-2));
@@ -870,56 +779,57 @@ static void upload_polygon_stipple_offset(struct brw_context *brw)
     * works just fine, and there's no window system to worry about.
     */
    if (_mesa_is_winsys_fbo(ctx->DrawBuffer))
-      OUT_BATCH((32 - (ctx->DrawBuffer->Height & 31)) & 31);
+      OUT_BATCH((32 - (_mesa_geometric_height(ctx->DrawBuffer) & 31)) & 31);
    else
       OUT_BATCH(0);
-   CACHED_BATCH();
+   ADVANCE_BATCH();
 }
 
 const struct brw_tracked_state brw_polygon_stipple_offset = {
    .dirty = {
-      .mesa = (_NEW_BUFFERS |
-	       _NEW_POLYGON),
+      .mesa = _NEW_BUFFERS |
+              _NEW_POLYGON,
       .brw = BRW_NEW_CONTEXT,
-      .cache = 0
    },
    .emit = upload_polygon_stipple_offset
 };
 
-/**********************************************************************
+/**
  * AA Line parameters
  */
-static void upload_aa_line_parameters(struct brw_context *brw)
+static void
+upload_aa_line_parameters(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
 
-   if (!ctx->Line.SmoothFlag || !brw->has_aa_line_parameters)
+   if (!ctx->Line.SmoothFlag)
       return;
 
-   if (brw->gen == 6)
-      intel_emit_post_sync_nonzero_flush(brw);
+   /* Original Gen4 doesn't have 3DSTATE_AA_LINE_PARAMETERS. */
+   if (brw->gen == 4 && !brw->is_g4x)
+      return;
 
+   BEGIN_BATCH(3);
    OUT_BATCH(_3DSTATE_AA_LINE_PARAMETERS << 16 | (3 - 2));
    /* use legacy aa line coverage computation */
    OUT_BATCH(0);
    OUT_BATCH(0);
-   CACHED_BATCH();
+   ADVANCE_BATCH();
 }
 
 const struct brw_tracked_state brw_aa_line_parameters = {
    .dirty = {
       .mesa = _NEW_LINE,
       .brw = BRW_NEW_CONTEXT,
-      .cache = 0
    },
    .emit = upload_aa_line_parameters
 };
 
-/***********************************************************************
+/**
  * Line stipple packet
  */
-
-static void upload_line_stipple(struct brw_context *brw)
+static void
+upload_line_stipple(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    GLfloat tmp;
@@ -928,79 +838,209 @@ static void upload_line_stipple(struct brw_context *brw)
    if (!ctx->Line.StippleFlag)
       return;
 
-   if (brw->gen == 6)
-      intel_emit_post_sync_nonzero_flush(brw);
-
    BEGIN_BATCH(3);
    OUT_BATCH(_3DSTATE_LINE_STIPPLE_PATTERN << 16 | (3 - 2));
    OUT_BATCH(ctx->Line.StipplePattern);
 
    if (brw->gen >= 7) {
       /* in U1.16 */
-      tmp = 1.0 / (GLfloat) ctx->Line.StippleFactor;
+      tmp = 1.0f / ctx->Line.StippleFactor;
       tmpi = tmp * (1<<16);
       OUT_BATCH(tmpi << 15 | ctx->Line.StippleFactor);
-   }
-   else {
+   } else {
       /* in U1.13 */
-      tmp = 1.0 / (GLfloat) ctx->Line.StippleFactor;
+      tmp = 1.0f / ctx->Line.StippleFactor;
       tmpi = tmp * (1<<13);
       OUT_BATCH(tmpi << 16 | ctx->Line.StippleFactor);
    }
 
-   CACHED_BATCH();
+   ADVANCE_BATCH();
 }
 
 const struct brw_tracked_state brw_line_stipple = {
    .dirty = {
       .mesa = _NEW_LINE,
       .brw = BRW_NEW_CONTEXT,
-      .cache = 0
    },
    .emit = upload_line_stipple
 };
 
-
-/***********************************************************************
- * Misc invariant state packets
- */
-
 void
-brw_upload_invariant_state(struct brw_context *brw)
+brw_emit_select_pipeline(struct brw_context *brw, enum brw_pipeline pipeline)
 {
-   /* 3DSTATE_SIP, 3DSTATE_MULTISAMPLE, etc. are nonpipelined. */
-   if (brw->gen == 6)
-      intel_emit_post_sync_nonzero_flush(brw);
+   const bool is_965 = brw->gen == 4 && !brw->is_g4x;
+   const uint32_t _3DSTATE_PIPELINE_SELECT =
+      is_965 ? CMD_PIPELINE_SELECT_965 : CMD_PIPELINE_SELECT_GM45;
 
-   /* Select the 3D pipeline (as opposed to media) */
-   BEGIN_BATCH(1);
-   OUT_BATCH(brw->CMD_PIPELINE_SELECT << 16 | 0);
-   ADVANCE_BATCH();
+   if (brw->use_resource_streamer && pipeline != BRW_RENDER_PIPELINE) {
+      /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
+       * PIPELINE_SELECT [DevBWR+]":
+       *
+       *   Project: HSW, BDW, CHV, SKL, BXT
+       *
+       *   Hardware Binding Tables are only supported for 3D
+       *   workloads. Resource streamer must be enabled only for 3D
+       *   workloads. Resource streamer must be disabled for Media and GPGPU
+       *   workloads.
+       */
+      BEGIN_BATCH(1);
+      OUT_BATCH(MI_RS_CONTROL | 0);
+      ADVANCE_BATCH();
 
-   if (brw->gen < 6) {
-      /* Disable depth offset clamping. */
-      BEGIN_BATCH(2);
-      OUT_BATCH(_3DSTATE_GLOBAL_DEPTH_OFFSET_CLAMP << 16 | (2 - 2));
-      OUT_BATCH_F(0.0);
+      gen7_disable_hw_binding_tables(brw);
+
+      /* XXX - Disable gather constant pool too when we start using it. */
+   }
+
+   if (brw->gen >= 8 && brw->gen < 10) {
+      /* From the Broadwell PRM, Volume 2a: Instructions, PIPELINE_SELECT:
+       *
+       *   Software must clear the COLOR_CALC_STATE Valid field in
+       *   3DSTATE_CC_STATE_POINTERS command prior to send a PIPELINE_SELECT
+       *   with Pipeline Select set to GPGPU.
+       *
+       * The internal hardware docs recommend the same workaround for Gen9
+       * hardware too.
+       */
+      if (pipeline == BRW_COMPUTE_PIPELINE) {
+         BEGIN_BATCH(2);
+         OUT_BATCH(_3DSTATE_CC_STATE_POINTERS << 16 | (2 - 2));
+         OUT_BATCH(0);
+         ADVANCE_BATCH();
+
+         brw->ctx.NewDriverState |= BRW_NEW_CC_STATE;
+      }
+
+   } else if (brw->gen >= 6) {
+      /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
+       * PIPELINE_SELECT [DevBWR+]":
+       *
+       *   Project: DEVSNB+
+       *
+       *   Software must ensure all the write caches are flushed through a
+       *   stalling PIPE_CONTROL command followed by another PIPE_CONTROL
+       *   command to invalidate read only caches prior to programming
+       *   MI_PIPELINE_SELECT command to change the Pipeline Select Mode.
+       */
+      const unsigned dc_flush =
+         brw->gen >= 7 ? PIPE_CONTROL_DATA_CACHE_FLUSH : 0;
+
+      brw_emit_pipe_control_flush(brw,
+                                  PIPE_CONTROL_RENDER_TARGET_FLUSH |
+                                  PIPE_CONTROL_DEPTH_CACHE_FLUSH |
+                                  dc_flush |
+                                  PIPE_CONTROL_NO_WRITE |
+                                  PIPE_CONTROL_CS_STALL);
+
+      brw_emit_pipe_control_flush(brw,
+                                  PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE |
+                                  PIPE_CONTROL_CONST_CACHE_INVALIDATE |
+                                  PIPE_CONTROL_STATE_CACHE_INVALIDATE |
+                                  PIPE_CONTROL_INSTRUCTION_INVALIDATE |
+                                  PIPE_CONTROL_NO_WRITE);
+
+   } else {
+      /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
+       * PIPELINE_SELECT [DevBWR+]":
+       *
+       *   Project: PRE-DEVSNB
+       *
+       *   Software must ensure the current pipeline is flushed via an
+       *   MI_FLUSH or PIPE_CONTROL prior to the execution of PIPELINE_SELECT.
+       */
+      BEGIN_BATCH(1);
+      OUT_BATCH(MI_FLUSH);
       ADVANCE_BATCH();
    }
 
-   BEGIN_BATCH(2);
-   OUT_BATCH(CMD_STATE_SIP << 16 | (2 - 2));
-   OUT_BATCH(0);
+   /* Select the pipeline */
+   BEGIN_BATCH(1);
+   OUT_BATCH(_3DSTATE_PIPELINE_SELECT << 16 |
+             (brw->gen >= 9 ? (3 << 8) : 0) |
+             (pipeline == BRW_COMPUTE_PIPELINE ? 2 : 0));
    ADVANCE_BATCH();
 
+   if (brw->gen == 7 && !brw->is_haswell &&
+       pipeline == BRW_RENDER_PIPELINE) {
+      /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
+       * PIPELINE_SELECT [DevBWR+]":
+       *
+       *   Project: DEVIVB, DEVHSW:GT3:A0
+       *
+       *   Software must send a pipe_control with a CS stall and a post sync
+       *   operation and then a dummy DRAW after every MI_SET_CONTEXT and
+       *   after any PIPELINE_SELECT that is enabling 3D mode.
+       */
+      gen7_emit_cs_stall_flush(brw);
+
+      BEGIN_BATCH(7);
+      OUT_BATCH(CMD_3D_PRIM << 16 | (7 - 2));
+      OUT_BATCH(_3DPRIM_POINTLIST);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      ADVANCE_BATCH();
+   }
+
+   if (brw->use_resource_streamer && pipeline == BRW_RENDER_PIPELINE) {
+      /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
+       * PIPELINE_SELECT [DevBWR+]":
+       *
+       *   Project: HSW, BDW, CHV, SKL, BXT
+       *
+       *   Hardware Binding Tables are only supported for 3D
+       *   workloads. Resource streamer must be enabled only for 3D
+       *   workloads. Resource streamer must be disabled for Media and GPGPU
+       *   workloads.
+       */
+      BEGIN_BATCH(1);
+      OUT_BATCH(MI_RS_CONTROL | 1);
+      ADVANCE_BATCH();
+
+      gen7_enable_hw_binding_tables(brw);
+
+      /* XXX - Re-enable gather constant pool here. */
+   }
+}
+
+/**
+ * Misc invariant state packets
+ */
+void
+brw_upload_invariant_state(struct brw_context *brw)
+{
+   const bool is_965 = brw->gen == 4 && !brw->is_g4x;
+
+   brw_emit_select_pipeline(brw, BRW_RENDER_PIPELINE);
+   brw->last_pipeline = BRW_RENDER_PIPELINE;
+
+   if (brw->gen >= 8) {
+      BEGIN_BATCH(3);
+      OUT_BATCH(CMD_STATE_SIP << 16 | (3 - 2));
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      ADVANCE_BATCH();
+   } else {
+      BEGIN_BATCH(2);
+      OUT_BATCH(CMD_STATE_SIP << 16 | (2 - 2));
+      OUT_BATCH(0);
+      ADVANCE_BATCH();
+   }
+
+   const uint32_t _3DSTATE_VF_STATISTICS =
+      is_965 ? GEN4_3DSTATE_VF_STATISTICS : GM45_3DSTATE_VF_STATISTICS;
    BEGIN_BATCH(1);
-   OUT_BATCH(brw->CMD_VF_STATISTICS << 16 |
-	     (unlikely(INTEL_DEBUG & DEBUG_STATS) ? 1 : 0));
+   OUT_BATCH(_3DSTATE_VF_STATISTICS << 16 | 1);
    ADVANCE_BATCH();
 }
 
 const struct brw_tracked_state brw_invariant_state = {
    .dirty = {
       .mesa = 0,
-      .brw = BRW_NEW_CONTEXT,
-      .cache = 0
+      .brw = BRW_NEW_BLORP |
+             BRW_NEW_CONTEXT,
    },
    .emit = brw_upload_invariant_state
 };
@@ -1015,8 +1055,12 @@ const struct brw_tracked_state brw_invariant_state = {
  * surface state objects, but not the surfaces that the surface state
  * objects point to.
  */
-static void upload_state_base_address( struct brw_context *brw )
+void
+brw_upload_state_base_address(struct brw_context *brw)
 {
+   if (brw->batch.state_base_address_emitted)
+      return;
+
    /* FINISHME: According to section 3.6.1 "STATE_BASE_ADDRESS" of
     * vol1a of the G45 PRM, MI_FLUSH with the ISC invalidate should be
     * programmed prior to STATE_BASE_ADDRESS.
@@ -1026,14 +1070,52 @@ static void upload_state_base_address( struct brw_context *brw )
     * maybe this isn't required for us in particular.
     */
 
-   if (brw->gen >= 6) {
-      if (brw->gen == 6)
-	 intel_emit_post_sync_nonzero_flush(brw);
+   if (brw->gen >= 8) {
+      uint32_t mocs_wb = brw->gen >= 9 ? SKL_MOCS_WB : BDW_MOCS_WB;
+      int pkt_len = brw->gen >= 9 ? 19 : 16;
+
+      BEGIN_BATCH(pkt_len);
+      OUT_BATCH(CMD_STATE_BASE_ADDRESS << 16 | (pkt_len - 2));
+      /* General state base address: stateless DP read/write requests */
+      OUT_BATCH(mocs_wb << 4 | 1);
+      OUT_BATCH(0);
+      OUT_BATCH(mocs_wb << 16);
+      /* Surface state base address: */
+      OUT_RELOC64(brw->batch.bo, I915_GEM_DOMAIN_SAMPLER, 0,
+                  mocs_wb << 4 | 1);
+      /* Dynamic state base address: */
+      OUT_RELOC64(brw->batch.bo,
+                  I915_GEM_DOMAIN_RENDER | I915_GEM_DOMAIN_INSTRUCTION, 0,
+                  mocs_wb << 4 | 1);
+      /* Indirect object base address: MEDIA_OBJECT data */
+      OUT_BATCH(mocs_wb << 4 | 1);
+      OUT_BATCH(0);
+      /* Instruction base address: shader kernels (incl. SIP) */
+      OUT_RELOC64(brw->cache.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
+                  mocs_wb << 4 | 1);
+
+      /* General state buffer size */
+      OUT_BATCH(0xfffff001);
+      /* Dynamic state buffer size */
+      OUT_BATCH(ALIGN(brw->batch.bo->size, 4096) | 1);
+      /* Indirect object upper bound */
+      OUT_BATCH(0xfffff001);
+      /* Instruction access upper bound */
+      OUT_BATCH(ALIGN(brw->cache.bo->size, 4096) | 1);
+      if (brw->gen >= 9) {
+         OUT_BATCH(1);
+         OUT_BATCH(0);
+         OUT_BATCH(0);
+      }
+      ADVANCE_BATCH();
+   } else if (brw->gen >= 6) {
+      uint8_t mocs = brw->gen == 7 ? GEN7_MOCS_L3 : 0;
 
        BEGIN_BATCH(10);
        OUT_BATCH(CMD_STATE_BASE_ADDRESS << 16 | (10 - 2));
-       /* General state base address: stateless DP read/write requests */
-       OUT_BATCH(1);
+       OUT_BATCH(mocs << 8 | /* General State Memory Object Control State */
+                 mocs << 4 | /* Stateless Data Port Access Memory Object Control State */
+                 1); /* General State Base Address Modify Enable */
        /* Surface state base address:
 	* BINDING_TABLE_STATE
 	* SURFACE_STATE
@@ -1113,15 +1195,6 @@ static void upload_state_base_address( struct brw_context *brw )
     * obvious.
     */
 
-   brw->state.dirty.brw |= BRW_NEW_STATE_BASE_ADDRESS;
+   brw->ctx.NewDriverState |= BRW_NEW_STATE_BASE_ADDRESS;
+   brw->batch.state_base_address_emitted = true;
 }
-
-const struct brw_tracked_state brw_state_base_address = {
-   .dirty = {
-      .mesa = 0,
-      .brw = (BRW_NEW_BATCH |
-	      BRW_NEW_PROGRAM_CACHE),
-      .cache = 0,
-   },
-   .emit = upload_state_base_address
-};

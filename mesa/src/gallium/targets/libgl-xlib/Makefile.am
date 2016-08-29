@@ -24,8 +24,14 @@ GL_MAJOR = 1
 GL_MINOR = 5
 GL_TINY = $(MESA_MAJOR)$(MESA_MINOR)0$(MESA_TINY)
 
+if HAVE_SHARED_GLAPI
+SHARED_GLAPI_CFLAGS = -DGLX_SHARED_GLAPI
+SHARED_GLAPI_LIB = $(top_builddir)/src/mapi/shared-glapi/libglapi.la
+endif
+
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/include \
+	-I$(top_srcdir)/src \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/mesa \
 	-I$(top_srcdir)/src/mesa/main \
@@ -33,46 +39,54 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/gallium/drivers \
 	-I$(top_srcdir)/src/gallium/state_trackers/glx/xlib \
 	-I$(top_srcdir)/src/gallium/auxiliary \
+	-I$(top_srcdir)/src/gallium/winsys \
+	$(SHARED_GLAPI_CFLAGS) \
 	-DGALLIUM_SOFTPIPE \
 	-DGALLIUM_RBUG \
-	-DGALLIUM_TRACE \
-	-DGALLIUM_GALAHAD
-AM_CFLAGS = $(X11_CFLAGS)
+	-DGALLIUM_TRACE
 
-lib_LTLIBRARIES = libGL.la
+AM_CFLAGS = $(X11_INCLUDES)
 
-libGL_la_SOURCES = xlib.c
-libGL_la_LDFLAGS = -version-number $(GL_MAJOR):$(GL_MINOR):$(GL_TINY) -no-undefined
+lib_LTLIBRARIES = lib@GL_LIB@.la
 
-libGL_la_LIBADD = \
-	$(top_builddir)/src/gallium/state_trackers/glx/libxlib.la \
+nodist_EXTRA_lib@GL_LIB@_la_SOURCES = dummy.cpp
+lib@GL_LIB@_la_SOURCES = xlib.c
+lib@GL_LIB@_la_LDFLAGS = \
+	-no-undefined \
+	-version-number $(GL_MAJOR):$(GL_MINOR):$(GL_TINY) \
+	$(GC_SECTIONS) \
+	$(LD_NO_UNDEFINED)
+
+if HAVE_LD_VERSION_SCRIPT
+lib@GL_LIB@_la_LDFLAGS += \
+	-Wl,--version-script=$(top_srcdir)/src/gallium/targets/libgl-xlib/libgl-xlib.sym
+endif
+
+lib@GL_LIB@_la_LIBADD = \
+	$(top_builddir)/src/gallium/state_trackers/glx/xlib/libxlib.la \
 	$(top_builddir)/src/gallium/winsys/sw/xlib/libws_xlib.la \
 	$(top_builddir)/src/gallium/drivers/softpipe/libsoftpipe.la \
 	$(top_builddir)/src/gallium/drivers/trace/libtrace.la \
 	$(top_builddir)/src/gallium/drivers/rbug/librbug.la \
-	$(top_builddir)/src/gallium/drivers/galahad/libgalahad.la \
 	$(top_builddir)/src/mapi/glapi/libglapi.la \
 	$(top_builddir)/src/mesa/libmesagallium.la \
 	$(top_builddir)/src/gallium/auxiliary/libgallium.la \
+	$(SHARED_GLAPI_LIB) \
 	$(GL_LIB_DEPS) \
 	$(CLOCK_LIB)
 
 if HAVE_MESA_LLVM
-libGL_la_LINK = $(CXXLINK) $(libGL_la_LDFLAGS)
-# Mention a dummy pure C++ file to trigger generation of the $(LINK) variable
-nodist_EXTRA_libGL_la_SOURCES = dummy-cpp.cpp
-
-libGL_la_LIBADD += $(top_builddir)/src/gallium/drivers/llvmpipe/libllvmpipe.la $(LLVM_LIBS)
+lib@GL_LIB@_la_LIBADD += $(top_builddir)/src/gallium/drivers/llvmpipe/libllvmpipe.la $(LLVM_LIBS)
 AM_CPPFLAGS += -DGALLIUM_LLVMPIPE
-libGL_la_LDFLAGS += $(LLVM_LDFLAGS)
-else
-libGL_la_LINK = $(CXXLINK) $(libGL_la_LDFLAGS)
-# Mention a dummy pure C file to trigger generation of the $(LINK) variable
-nodist_EXTRA_libGL_la_SOURCES = dummy-c.c
+lib@GL_LIB@_la_LDFLAGS += $(LLVM_LDFLAGS)
 endif
 
-# Provide compatibility with scripts for the old Mesa build system for
-# a while by putting a link to the driver into /lib of the build tree.
-all-local: libGL.la
-	$(MKDIR_P) $(top_builddir)/$(LIB_DIR)/gallium
-	ln -f .libs/libGL.so* $(top_builddir)/$(LIB_DIR)/gallium/
+if HAVE_GALLIUM_SWR
+lib@GL_LIB@_la_LIBADD += $(top_builddir)/src/gallium/drivers/swr/libmesaswr.la $(LLVM_LIBS)
+AM_CPPFLAGS += -DGALLIUM_SWR
+endif
+
+EXTRA_lib@GL_LIB@_la_DEPENDENCIES = libgl-xlib.sym
+EXTRA_DIST = SConscript libgl-xlib.sym
+
+include $(top_srcdir)/install-gallium-links.mk

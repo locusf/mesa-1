@@ -744,8 +744,9 @@ class ES1APIPrinter(GLAPIPrinter):
     def _override_for_api(self, ent):
         if ent.xml_data is None:
             raise Exception('ES2 API printer requires XML input')
-        ent.hidden = ent.name not in \
-            ent.xml_data.entry_points_for_api_version('es1')
+        ent.hidden = (ent.name not in \
+            ent.xml_data.entry_points_for_api_version('es1')) \
+            or ent.hidden
         ent.handcode = False
 
     def _get_c_header(self):
@@ -767,8 +768,17 @@ class ES2APIPrinter(GLAPIPrinter):
     def _override_for_api(self, ent):
         if ent.xml_data is None:
             raise Exception('ES2 API printer requires XML input')
-        ent.hidden = ent.name not in \
-            ent.xml_data.entry_points_for_api_version('es2')
+        ent.hidden = (ent.name not in \
+            ent.xml_data.entry_points_for_api_version('es2')) \
+            or ent.hidden
+
+        # This is hella ugly.  The same-named function in desktop OpenGL is
+        # hidden, but it needs to be exposed by libGLESv2 for OpenGL ES 3.0.
+        # There's no way to express in the XML that a function should be be
+        # hidden in one API but exposed in another.
+        if ent.name == 'GetInternalformativ':
+            ent.hidden = False
+
         ent.handcode = False
 
     def _get_c_header(self):
@@ -806,25 +816,8 @@ typedef int GLclampx;
 
         return header
 
-class VGAPIPrinter(ABIPrinter):
-    """OpenVG API Printer"""
-
-    def __init__(self, entries):
-        super(VGAPIPrinter, self).__init__(entries)
-
-        self.api_defines = ['VG_VGEXT_PROTOTYPES']
-        self.api_headers = ['"VG/openvg.h"', '"VG/vgext.h"']
-        self.api_call = 'VG_API_CALL'
-        self.api_entry = 'VG_API_ENTRY'
-        self.api_attrs = 'VG_API_EXIT'
-
-        self.prefix_lib = 'vg'
-        self.prefix_app = 'vega'
-        self.prefix_noop = 'noop'
-        self.prefix_warn = 'vg'
-
 def parse_args():
-    printers = ['vgapi', 'glapi', 'es1api', 'es2api', 'shared-glapi']
+    printers = ['glapi', 'es1api', 'es2api', 'shared-glapi']
     modes = ['lib', 'app']
 
     parser = OptionParser(usage='usage: %prog [options] <filename>')
@@ -843,7 +836,6 @@ def parse_args():
 
 def main():
     printers = {
-        'vgapi': VGAPIPrinter,
         'glapi': GLAPIPrinter,
         'es1api': ES1APIPrinter,
         'es2api': ES2APIPrinter,

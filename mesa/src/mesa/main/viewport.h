@@ -34,10 +34,18 @@ struct gl_context;
 extern void GLAPIENTRY
 _mesa_Viewport(GLint x, GLint y, GLsizei width, GLsizei height);
 
+extern void GLAPIENTRY
+_mesa_ViewportArrayv(GLuint first, GLsizei count, const GLfloat * v);
+
+extern void GLAPIENTRY
+_mesa_ViewportIndexedf(GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h);
+
+extern void GLAPIENTRY
+_mesa_ViewportIndexedfv(GLuint index, const GLfloat * v);
 
 extern void 
-_mesa_set_viewport(struct gl_context *ctx, GLint x, GLint y,
-                   GLsizei width, GLsizei height);
+_mesa_set_viewport(struct gl_context *ctx, unsigned idx, GLfloat x, GLfloat y,
+                   GLfloat width, GLfloat height);
 
 
 extern void GLAPIENTRY
@@ -46,13 +54,25 @@ _mesa_DepthRange(GLclampd nearval, GLclampd farval);
 extern void GLAPIENTRY
 _mesa_DepthRangef(GLclampf nearval, GLclampf farval);
 
+extern void GLAPIENTRY
+_mesa_DepthRangeArrayv(GLuint first, GLsizei count, const GLclampd * v);
+
+extern void GLAPIENTRY
+_mesa_DepthRangeIndexed(GLuint index, GLclampd n, GLclampd f);
+
+extern void
+_mesa_set_depth_range(struct gl_context *ctx, unsigned idx,
+                      GLclampd nearval, GLclampd farval);
 
 extern void 
 _mesa_init_viewport(struct gl_context *ctx);
 
 
-extern void 
-_mesa_free_viewport_data(struct gl_context *ctx);
+extern void GLAPIENTRY
+_mesa_ClipControl(GLenum origin, GLenum depth);
 
+extern void
+_mesa_get_viewport_xform(struct gl_context *ctx, unsigned i,
+                         float scale[3], float translate[3]);
 
 #endif

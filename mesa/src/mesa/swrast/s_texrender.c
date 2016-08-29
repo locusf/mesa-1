@@ -1,6 +1,5 @@
 
 #include "main/context.h"
-#include "main/colormac.h"
 #include "main/fbobject.h"
 #include "main/macros.h"
 #include "main/teximage.h"
@@ -18,7 +17,7 @@
 static void
 delete_texture_wrapper(struct gl_context *ctx, struct gl_renderbuffer *rb)
 {
-   ASSERT(rb->RefCount == 0);
+   assert(rb->RefCount == 0);
    free(rb);
 }
 
@@ -33,7 +32,7 @@ update_wrapper(struct gl_context *ctx, struct gl_renderbuffer_attachment *att)
    struct gl_renderbuffer *rb = att->Renderbuffer;
    struct swrast_renderbuffer *srb = swrast_renderbuffer(rb);
    struct swrast_texture_image *swImage;
-   gl_format format;
+   mesa_format format;
    GLuint zOffset;
 
    (void) ctx;
@@ -73,7 +72,7 @@ update_wrapper(struct gl_context *ctx, struct gl_renderbuffer_attachment *att)
  * \param fb  the framebuffer object the texture is being bound to
  * \param att  the fb attachment point of the texture
  *
- * \sa _mesa_framebuffer_renderbuffer
+ * \sa _mesa_FramebufferRenderbuffer_sw
  */
 void
 _swrast_render_texture(struct gl_context *ctx,

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,7 +27,7 @@
 
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   *   Brian Paul
   *   Zack  Rusin
   */
@@ -105,10 +105,17 @@ update_depth_stencil_alpha(struct st_context *st)
    memset(dsa, 0, sizeof(*dsa));
    memset(&sr, 0, sizeof(sr));
 
-   if (ctx->Depth.Test && ctx->DrawBuffer->Visual.depthBits > 0) {
-      dsa->depth.enabled = 1;
-      dsa->depth.writemask = ctx->Depth.Mask;
-      dsa->depth.func = st_compare_func_to_pipe(ctx->Depth.Func);
+   if (ctx->DrawBuffer->Visual.depthBits > 0) {
+      if (ctx->Depth.Test) {
+         dsa->depth.enabled = 1;
+         dsa->depth.writemask = ctx->Depth.Mask;
+         dsa->depth.func = st_compare_func_to_pipe(ctx->Depth.Func);
+      }
+      if (ctx->Depth.BoundsTest) {
+         dsa->depth.bounds_test = 1;
+         dsa->depth.bounds_min = ctx->Depth.BoundsMin;
+         dsa->depth.bounds_max = ctx->Depth.BoundsMax;
+      }
    }
 
    if (ctx->Stencil.Enabled && ctx->DrawBuffer->Visual.stencilBits > 0) {
@@ -154,10 +161,5 @@ update_depth_stencil_alpha(struct st_context *st)
 
 
 const struct st_tracked_state st_update_depth_stencil_alpha = {
-   "st_update_depth_stencil",				/* name */
-   {							/* dirty */
-      (_NEW_DEPTH|_NEW_STENCIL|_NEW_COLOR|_NEW_BUFFERS),/* mesa */
-      0,						/* st */
-   },
    update_depth_stencil_alpha				/* update */
 };

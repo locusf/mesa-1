@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -110,7 +110,7 @@ static void
 emit_invariant(struct i915_context *i915)
 {
    i915_winsys_batchbuffer_write(i915->batch, invariant_state,
-                                 Elements(invariant_state)*sizeof(uint32_t));
+                                 ARRAY_SIZE(invariant_state)*sizeof(uint32_t));
 }
 
 static void
@@ -126,6 +126,70 @@ validate_immediate(struct i915_context *i915, unsigned *batch_space)
       i915->validation_buffers[i915->num_validation_buffers++] = i915->vbo;
 
    *batch_space = 1 + util_bitcount(dirty);
+}
+
+static uint target_fixup(struct pipe_surface *p, int component)
+{
+   const struct
+   {
+      enum pipe_format format;
+      uint hw_mask[4];
+   } fixup_mask[] = {
+      { PIPE_FORMAT_R8G8B8A8_UNORM, { S5_WRITEDISABLE_BLUE, S5_WRITEDISABLE_GREEN, S5_WRITEDISABLE_RED, S5_WRITEDISABLE_ALPHA}},
+      { PIPE_FORMAT_R8G8B8X8_UNORM, { S5_WRITEDISABLE_BLUE, S5_WRITEDISABLE_GREEN, S5_WRITEDISABLE_RED, S5_WRITEDISABLE_ALPHA}},
+      { PIPE_FORMAT_L8_UNORM,       { S5_WRITEDISABLE_RED | S5_WRITEDISABLE_GREEN | S5_WRITEDISABLE_BLUE, 0, 0, S5_WRITEDISABLE_ALPHA}},
+      { PIPE_FORMAT_I8_UNORM,       { S5_WRITEDISABLE_RED | S5_WRITEDISABLE_GREEN | S5_WRITEDISABLE_BLUE, 0, 0, S5_WRITEDISABLE_ALPHA}},
+      { PIPE_FORMAT_A8_UNORM,       { 0, 0, 0, S5_WRITEDISABLE_RED | S5_WRITEDISABLE_GREEN | S5_WRITEDISABLE_BLUE | S5_WRITEDISABLE_ALPHA}},
+      { 0,                          { S5_WRITEDISABLE_RED, S5_WRITEDISABLE_GREEN, S5_WRITEDISABLE_BLUE, S5_WRITEDISABLE_ALPHA}}
+   };
+   int i = sizeof(fixup_mask) / sizeof(*fixup_mask) - 1;
+
+   if (p)
+      for(i = 0; fixup_mask[i].format != 0; i++)
+         if (p->format == fixup_mask[i].format)
+            return fixup_mask[i].hw_mask[component];
+
+   /* Just return default masks */
+   return fixup_mask[i].hw_mask[component];
+}
+
+static void emit_immediate_s5(struct i915_context *i915, uint imm)
+{
+   /* Fixup write mask for non-BGRA render targets */
+   uint fixup_imm = imm & ~( S5_WRITEDISABLE_RED | S5_WRITEDISABLE_GREEN |
+                             S5_WRITEDISABLE_BLUE | S5_WRITEDISABLE_ALPHA );
+   struct pipe_surface *surf = i915->framebuffer.cbufs[0];
+
+   if (imm & S5_WRITEDISABLE_RED)
+      fixup_imm |= target_fixup(surf, 0);
+   if (imm & S5_WRITEDISABLE_GREEN)
+      fixup_imm |= target_fixup(surf, 1);
+   if (imm & S5_WRITEDISABLE_BLUE)
+      fixup_imm |= target_fixup(surf, 2);
+   if (imm & S5_WRITEDISABLE_ALPHA)
+      fixup_imm |= target_fixup(surf, 3);
+
+   OUT_BATCH(fixup_imm);
+}
+
+static void emit_immediate_s6(struct i915_context *i915, uint imm)
+{
+   /* Fixup blend function for A8 dst buffers.
+    * When we blend to an A8 buffer, the GPU thinks it's a G8 buffer,
+    * and therefore we need to use the color factor for alphas. */
+   uint srcRGB;
+
+   if (i915->current.target_fixup_format == PIPE_FORMAT_A8_UNORM) {
+      srcRGB = (imm >> S6_CBUF_SRC_BLEND_FACT_SHIFT) & BLENDFACT_MASK;
+      if (srcRGB == BLENDFACT_DST_ALPHA)
+         srcRGB = BLENDFACT_DST_COLR;
+      else if (srcRGB == BLENDFACT_INV_DST_ALPHA)
+         srcRGB = BLENDFACT_INV_DST_COLR;
+      imm &= ~SRC_BLND_FACT(BLENDFACT_MASK);
+      imm |= SRC_BLND_FACT(srcRGB);
+   }
+
+   OUT_BATCH(imm);
 }
 
 static void
@@ -153,23 +217,12 @@ emit_immediate(struct i915_context *i915)
 
    for (i = 1; i < I915_MAX_IMMEDIATE; i++) {
       if (dirty & (1 << i)) {
-         /* Fixup blend function for A8 dst buffers.
-          * When we blend to an A8 buffer, the GPU thinks it's a G8 buffer,
-          * and therefore we need to use the color factor for alphas. */
-         if ((i == I915_IMMEDIATE_S6) &&
-             (i915->current.target_fixup_format == PIPE_FORMAT_A8_UNORM)) {
-            uint32_t imm = i915->current.immediate[i];
-            uint32_t srcRGB = (imm >> S6_CBUF_SRC_BLEND_FACT_SHIFT) & BLENDFACT_MASK;
-            if (srcRGB == BLENDFACT_DST_ALPHA)
-               srcRGB = BLENDFACT_DST_COLR;
-            else if (srcRGB == BLENDFACT_INV_DST_ALPHA)
-               srcRGB = BLENDFACT_INV_DST_COLR;
-            imm &= ~SRC_BLND_FACT(BLENDFACT_MASK);
-            imm |= SRC_BLND_FACT(srcRGB);
-            OUT_BATCH(imm);
-         } else {
+         if (i == I915_IMMEDIATE_S5)
+            emit_immediate_s5(i915, i915->current.immediate[i]);
+         else if (i == I915_IMMEDIATE_S6)
+            emit_immediate_s6(i915, i915->current.immediate[i]);
+         else
             OUT_BATCH(i915->current.immediate[i]);
-         }
       }
    }
 }
@@ -273,11 +326,13 @@ emit_map(struct i915_context *i915)
          if (enabled & (1 << unit)) {
             struct i915_texture *texture = i915_texture(i915->fragment_sampler_views[unit]->texture);
             struct i915_winsys_buffer *buf = texture->buffer;
+            unsigned offset = i915->current.texbuffer[unit][2];
+
             assert(buf);
 
             count++;
 
-            OUT_RELOC(buf, I915_USAGE_SAMPLER, 0);
+            OUT_RELOC(buf, I915_USAGE_SAMPLER, offset);
             OUT_BATCH(i915->current.texbuffer[unit][0]); /* MS3 */
             OUT_BATCH(i915->current.texbuffer[unit][1]); /* MS4 */
          }
@@ -440,7 +495,7 @@ i915_validate_state(struct i915_context *i915, unsigned *batch_space)
 
    i915->num_validation_buffers = 0;
    if (i915->hardware_dirty & I915_HW_INVARIANT)
-      *batch_space = Elements(invariant_state);
+      *batch_space = ARRAY_SIZE(invariant_state);
    else
       *batch_space = 0;
 

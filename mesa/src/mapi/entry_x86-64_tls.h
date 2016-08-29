@@ -25,7 +25,11 @@
  *    Chia-I Wu <olv@lunarg.com>
  */
 
-#include "u_macros.h"
+#ifdef HAVE_FUNC_ATTRIBUTE_VISIBILITY
+#define HIDDEN __attribute__((visibility("hidden")))
+#else
+#define HIDDEN
+#endif
 
 __asm__(".text\n"
         ".balign 32\n"
@@ -47,13 +51,6 @@ __asm__(".text\n"
 
 #ifndef MAPI_MODE_BRIDGE
 
-__asm__("x86_64_current_tls:\n\t"
-	"movq " ENTRY_CURRENT_TABLE "@GOTTPOFF(%rip), %rax\n\t"
-	"ret");
-
-extern unsigned long
-x86_64_current_tls();
-
 #include <string.h>
 #include "u_execmem.h"
 
@@ -62,8 +59,8 @@ entry_patch_public(void)
 {
 }
 
-static char
-x86_64_entry_start[];
+extern char
+x86_64_entry_start[] HIDDEN;
 
 mapi_func
 entry_get_public(int slot)
@@ -88,10 +85,11 @@ entry_generate(int slot)
       0x41, 0xff, 0xa3, 0x34, 0x12, 0x00, 0x00,
    };
    unsigned long addr;
-   void *code;
+   char *code;
    mapi_func entry;
 
-   addr = x86_64_current_tls();
+   __asm__("movq " ENTRY_CURRENT_TABLE "@GOTTPOFF(%%rip), %0"
+           : "=r" (addr));
    if ((addr >> 32) != 0xffffffff)
       return NULL;
    addr &= 0xffffffff;

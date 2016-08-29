@@ -5,7 +5,6 @@
 
 #include "brw_context.h"
 #include "intel_bufmgr.h"
-#include "intel_reg.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,15 +18,33 @@ extern "C" {
  * - Optional MI_NOOP for ensuring the batch length is qword aligned (4 bytes)
  * - Any state emitted by vtbl->finish_batch():
  *   - Gen4-5 record ending occlusion query values (4 * 4 = 16 bytes)
+ *   - Disabling OA counters on Gen6+ (3 DWords = 12 bytes)
+ *   - Ending MI_REPORT_PERF_COUNT on Gen5+, plus associated PIPE_CONTROLs:
+ *     - Two sets of PIPE_CONTROLs, which become 4 PIPE_CONTROLs each on SNB,
+ *       which are 5 DWords each ==> 2 * 4 * 5 * 4 = 160 bytes
+ *     - 3 DWords for MI_REPORT_PERF_COUNT itself on Gen6+.  ==> 12 bytes.
+ *       On Ironlake, it's 6 DWords, but we have some slack due to the lack of
+ *       Sandybridge PIPE_CONTROL madness.
+ *   - CC_STATE workaround on HSW (17 * 4 = 68 bytes)
+ *     - 10 dwords for initial mi_flush
+ *     - 2 dwords for CC state setup
+ *     - 5 dwords for the required pipe control at the end
+ *   - Restoring L3 configuration: (24 dwords = 96 bytes)
+ *     - 2*6 dwords for two PIPE_CONTROL flushes.
+ *     - 7 dwords for L3 configuration set-up.
+ *     - 5 dwords for L3 atomic set-up (on HSW).
  */
-#define BATCH_RESERVED 24
+#define BATCH_RESERVED 308
 
 struct intel_batchbuffer;
 
+void intel_batchbuffer_emit_render_ring_prelude(struct brw_context *brw);
 void intel_batchbuffer_init(struct brw_context *brw);
 void intel_batchbuffer_free(struct brw_context *brw);
 void intel_batchbuffer_save_state(struct brw_context *brw);
 void intel_batchbuffer_reset_to_saved(struct brw_context *brw);
+void intel_batchbuffer_require_space(struct brw_context *brw, GLuint sz,
+                                     enum brw_gpu_ring ring);
 
 int _intel_batchbuffer_flush(struct brw_context *brw,
 			     const char *file, int line);
@@ -42,24 +59,25 @@ int _intel_batchbuffer_flush(struct brw_context *brw,
  * intel_buffer_dword() calls.
  */
 void intel_batchbuffer_data(struct brw_context *brw,
-                            const void *data, GLuint bytes, bool is_blit);
+                            const void *data, GLuint bytes,
+                            enum brw_gpu_ring ring);
 
-bool intel_batchbuffer_emit_reloc(struct brw_context *brw,
-                                       drm_intel_bo *buffer,
-				       uint32_t read_domains,
-				       uint32_t write_domain,
-				       uint32_t offset);
-bool intel_batchbuffer_emit_reloc_fenced(struct brw_context *brw,
-					      drm_intel_bo *buffer,
-					      uint32_t read_domains,
-					      uint32_t write_domain,
-					      uint32_t offset);
-void intel_batchbuffer_emit_mi_flush(struct brw_context *brw);
-void intel_emit_post_sync_nonzero_flush(struct brw_context *brw);
-void intel_emit_depth_stall_flushes(struct brw_context *brw);
-void gen7_emit_vs_workaround_flush(struct brw_context *brw);
+uint32_t intel_batchbuffer_reloc(struct brw_context *brw,
+                                 drm_intel_bo *buffer,
+                                 uint32_t offset,
+                                 uint32_t read_domains,
+                                 uint32_t write_domain,
+                                 uint32_t delta);
+uint64_t intel_batchbuffer_reloc64(struct brw_context *brw,
+                                   drm_intel_bo *buffer,
+                                   uint32_t offset,
+                                   uint32_t read_domains,
+                                   uint32_t write_domain,
+                                   uint32_t delta);
 
-static INLINE uint32_t float_as_int(float f)
+#define USED_BATCH(batch) ((uintptr_t)((batch).map_next - (batch).map))
+
+static inline uint32_t float_as_int(float f)
 {
    union {
       float f;
@@ -75,63 +93,47 @@ static INLINE uint32_t float_as_int(float f)
  * be passed as structs rather than dwords, but that's a little bit of
  * work...
  */
-static INLINE unsigned
+static inline unsigned
 intel_batchbuffer_space(struct brw_context *brw)
 {
    return (brw->batch.state_batch_offset - brw->batch.reserved_space)
-      - brw->batch.used*4;
+      - USED_BATCH(brw->batch) * 4;
 }
 
 
-static INLINE void
+static inline void
 intel_batchbuffer_emit_dword(struct brw_context *brw, GLuint dword)
 {
 #ifdef DEBUG
    assert(intel_batchbuffer_space(brw) >= 4);
 #endif
-   brw->batch.map[brw->batch.used++] = dword;
+   *brw->batch.map_next++ = dword;
+   assert(brw->batch.ring != UNKNOWN_RING);
 }
 
-static INLINE void
+static inline void
 intel_batchbuffer_emit_float(struct brw_context *brw, float f)
 {
    intel_batchbuffer_emit_dword(brw, float_as_int(f));
 }
 
-static INLINE void
-intel_batchbuffer_require_space(struct brw_context *brw, GLuint sz, int is_blit)
+static inline void
+intel_batchbuffer_begin(struct brw_context *brw, int n, enum brw_gpu_ring ring)
 {
-   if (brw->gen >= 6 &&
-       brw->batch.is_blit != is_blit && brw->batch.used) {
-      intel_batchbuffer_flush(brw);
-   }
-
-   brw->batch.is_blit = is_blit;
+   intel_batchbuffer_require_space(brw, n * 4, ring);
 
 #ifdef DEBUG
-   assert(sz < BATCH_SZ - BATCH_RESERVED);
-#endif
-   if (intel_batchbuffer_space(brw) < sz)
-      intel_batchbuffer_flush(brw);
-}
-
-static INLINE void
-intel_batchbuffer_begin(struct brw_context *brw, int n, bool is_blit)
-{
-   intel_batchbuffer_require_space(brw, n * 4, is_blit);
-
-   brw->batch.emit = brw->batch.used;
-#ifdef DEBUG
+   brw->batch.emit = USED_BATCH(brw->batch);
    brw->batch.total = n;
 #endif
 }
 
-static INLINE void
+static inline void
 intel_batchbuffer_advance(struct brw_context *brw)
 {
 #ifdef DEBUG
    struct intel_batchbuffer *batch = &brw->batch;
-   unsigned int _n = batch->used - batch->emit;
+   unsigned int _n = USED_BATCH(*batch) - batch->emit;
    assert(batch->total != 0);
    if (_n != batch->total) {
       fprintf(stderr, "ADVANCE_BATCH: %d of %d dwords emitted\n",
@@ -139,30 +141,47 @@ intel_batchbuffer_advance(struct brw_context *brw)
       abort();
    }
    batch->total = 0;
+#else
+   (void) brw;
 #endif
 }
 
-void intel_batchbuffer_cached_advance(struct brw_context *brw);
+#define BEGIN_BATCH(n) do {                            \
+   intel_batchbuffer_begin(brw, (n), RENDER_RING);     \
+   uint32_t *__map = brw->batch.map_next;              \
+   brw->batch.map_next += (n)
 
-/* Here are the crusty old macros, to be removed:
- */
-#define BATCH_LOCALS
+#define BEGIN_BATCH_BLT(n) do {                        \
+   intel_batchbuffer_begin(brw, (n), BLT_RING);        \
+   uint32_t *__map = brw->batch.map_next;              \
+   brw->batch.map_next += (n)
 
-#define BEGIN_BATCH(n) intel_batchbuffer_begin(brw, n, false)
-#define BEGIN_BATCH_BLT(n) intel_batchbuffer_begin(brw, n, true)
-#define OUT_BATCH(d) intel_batchbuffer_emit_dword(brw, d)
-#define OUT_BATCH_F(f) intel_batchbuffer_emit_float(brw, f)
-#define OUT_RELOC(buf, read_domains, write_domain, delta) do {		\
-   intel_batchbuffer_emit_reloc(brw, buf,			\
-				read_domains, write_domain, delta);	\
+#define OUT_BATCH(d) *__map++ = (d)
+#define OUT_BATCH_F(f) OUT_BATCH(float_as_int((f)))
+
+#define OUT_RELOC(buf, read_domains, write_domain, delta) do { \
+   uint32_t __offset = (__map - brw->batch.map) * 4;           \
+   OUT_BATCH(intel_batchbuffer_reloc(brw, (buf), __offset,     \
+                                     (read_domains),           \
+                                     (write_domain),           \
+                                     (delta)));                \
 } while (0)
-#define OUT_RELOC_FENCED(buf, read_domains, write_domain, delta) do {	\
-   intel_batchbuffer_emit_reloc_fenced(brw, buf,		\
-				       read_domains, write_domain, delta); \
+
+/* Handle 48-bit address relocations for Gen8+ */
+#define OUT_RELOC64(buf, read_domains, write_domain, delta) do {      \
+   uint32_t __offset = (__map - brw->batch.map) * 4;                  \
+   uint64_t reloc64 = intel_batchbuffer_reloc64(brw, (buf), __offset, \
+                                                (read_domains),       \
+                                                (write_domain),       \
+                                                (delta));             \
+   OUT_BATCH(reloc64);                                                \
+   OUT_BATCH(reloc64 >> 32);                                          \
 } while (0)
 
-#define ADVANCE_BATCH() intel_batchbuffer_advance(brw);
-#define CACHED_BATCH() intel_batchbuffer_cached_advance(brw);
+#define ADVANCE_BATCH()                  \
+   assert(__map == brw->batch.map_next); \
+   intel_batchbuffer_advance(brw);       \
+} while (0)
 
 #ifdef __cplusplus
 }

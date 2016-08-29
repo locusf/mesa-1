@@ -30,8 +30,8 @@
  * \author Eric Anholt <eric@anholt.net>
  */
 
-#include "glsl/glsl_types.h"
-#include "glsl/ir.h"
+#include "compiler/glsl_types.h"
+#include "compiler/glsl/ir.h"
 #include "program/prog_instruction.h" /* For WRITEMASK_* */
 
 class brw_cubemap_normalize_visitor : public ir_hierarchical_visitor {
@@ -52,7 +52,7 @@ brw_cubemap_normalize_visitor::visit_leave(ir_texture *ir)
    if (ir->sampler->type->sampler_dimensionality != GLSL_SAMPLER_DIM_CUBE)
       return visit_continue;
 
-   if (ir->op == ir_txs)
+   if (!ir->coordinate)
       return visit_continue;
 
    void *mem_ctx = ralloc_parent(ir);

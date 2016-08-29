@@ -75,7 +75,7 @@ set_vertices(struct vertex *verts, unsigned num_verts)
    vbuf.buffer_offset = 0;
    vbuf.buffer = pipe_buffer_create_with_data(info.ctx,
                                               PIPE_BIND_VERTEX_BUFFER,
-                                              PIPE_USAGE_STATIC,
+                                              PIPE_USAGE_DEFAULT,
                                               num_verts * sizeof(struct vertex),
                                               verts);
 
@@ -108,6 +108,7 @@ static void set_fragment_shader( void )
       "DCL OUT[0], COLOR\n"
       "DCL TEMP[0]\n"
       "DCL SAMP[0]\n"
+      "DCL SVIEW[0], 2D, FLOAT\n"
       "  0: TXP TEMP[0], IN[0], SAMP[0], 2D\n"
       "  1: MOV OUT[0], TEMP[0]\n"
       "  2: END\n";
@@ -128,11 +129,11 @@ static void draw( void )
 
    info.ctx->clear(info.ctx, PIPE_CLEAR_COLOR, &clear_color, 0, 0);
 
-   info.ctx->set_fragment_sampler_views(info.ctx, 1, &linear_sv);
+   info.ctx->set_sampler_views(info.ctx, PIPE_SHADER_FRAGMENT, 0, 1, &linear_sv);
    set_vertices(vertices1, 4);
    util_draw_arrays(info.ctx, PIPE_PRIM_QUADS, 0, 4);
 
-   info.ctx->set_fragment_sampler_views(info.ctx, 1, &srgb_sv);
+   info.ctx->set_sampler_views(info.ctx, PIPE_SHADER_FRAGMENT, 0, 1, &srgb_sv);
    set_vertices(vertices2, 4);
    util_draw_arrays(info.ctx, PIPE_PRIM_QUADS, 0, 4);
 
@@ -165,7 +166,8 @@ static void init_tex( void )
       sampler = graw_util_create_simple_sampler(&info,
                                                 PIPE_TEX_WRAP_REPEAT,
                                                 PIPE_TEX_FILTER_NEAREST);
-      info.ctx->bind_fragment_sampler_states(info.ctx, 1, &sampler);
+      info.ctx->bind_sampler_states(info.ctx, PIPE_SHADER_FRAGMENT,
+                                    0, 1, &sampler);
    }
 
    /* linear sampler view */
@@ -174,10 +176,10 @@ static void init_tex( void )
       memset(&sv_temp, 0, sizeof sv_temp);
       sv_temp.format = PIPE_FORMAT_B8G8R8A8_UNORM;
       sv_temp.texture = texture;
-      sv_temp.swizzle_r = PIPE_SWIZZLE_RED;
-      sv_temp.swizzle_g = PIPE_SWIZZLE_GREEN;
-      sv_temp.swizzle_b = PIPE_SWIZZLE_BLUE;
-      sv_temp.swizzle_a = PIPE_SWIZZLE_ALPHA;
+      sv_temp.swizzle_r = PIPE_SWIZZLE_X;
+      sv_temp.swizzle_g = PIPE_SWIZZLE_Y;
+      sv_temp.swizzle_b = PIPE_SWIZZLE_Z;
+      sv_temp.swizzle_a = PIPE_SWIZZLE_W;
       linear_sv = info.ctx->create_sampler_view(info.ctx, texture, &sv_temp);
       if (linear_sv == NULL)
          exit(0);
@@ -189,10 +191,10 @@ static void init_tex( void )
       memset(&sv_temp, 0, sizeof sv_temp);
       sv_temp.format = PIPE_FORMAT_B8G8R8A8_SRGB;
       sv_temp.texture = texture;
-      sv_temp.swizzle_r = PIPE_SWIZZLE_RED;
-      sv_temp.swizzle_g = PIPE_SWIZZLE_GREEN;
-      sv_temp.swizzle_b = PIPE_SWIZZLE_BLUE;
-      sv_temp.swizzle_a = PIPE_SWIZZLE_ALPHA;
+      sv_temp.swizzle_r = PIPE_SWIZZLE_X;
+      sv_temp.swizzle_g = PIPE_SWIZZLE_Y;
+      sv_temp.swizzle_b = PIPE_SWIZZLE_Z;
+      sv_temp.swizzle_a = PIPE_SWIZZLE_W;
       srgb_sv = info.ctx->create_sampler_view(info.ctx, texture, &sv_temp);
       if (srgb_sv == NULL)
          exit(0);

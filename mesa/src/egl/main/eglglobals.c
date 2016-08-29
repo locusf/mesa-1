@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
  * Copyright 2010-2011 LunarG, Inc.
  * All Rights Reserved.
@@ -30,13 +30,15 @@
 
 #include <stdlib.h>
 #include <assert.h>
+#include "c11/threads.h"
+
 #include "eglglobals.h"
 #include "egldisplay.h"
 #include "egldriver.h"
-#include "eglmutex.h"
 
 
-static _EGL_DECLARE_MUTEX(_eglGlobalMutex);
+static mtx_t _eglGlobalMutex = _MTX_INITIALIZER_NP;
+
 struct _egl_global _eglGlobal =
 {
    &_eglGlobalMutex,       /* Mutex */
@@ -47,6 +49,14 @@ struct _egl_global _eglGlobal =
       _eglUnloadDrivers, /* always called last */
       _eglFiniDisplay
    },
+
+   /* ClientExtensionsString */
+   "EGL_EXT_client_extensions"
+   " EGL_EXT_platform_base"
+   " EGL_EXT_platform_wayland"
+   " EGL_EXT_platform_x11"
+   " EGL_KHR_client_get_all_proc_addresses"
+   " EGL_MESA_platform_gbm"
 };
 
 
@@ -65,7 +75,7 @@ _eglAddAtExitCall(void (*func)(void))
    if (func) {
       static EGLBoolean registered = EGL_FALSE;
 
-      _eglLockMutex(_eglGlobal.Mutex);
+      mtx_lock(_eglGlobal.Mutex);
 
       if (!registered) {
          atexit(_eglAtExit);
@@ -75,6 +85,6 @@ _eglAddAtExitCall(void (*func)(void))
       assert(_eglGlobal.NumAtExitCalls < ARRAY_SIZE(_eglGlobal.AtExitCalls));
       _eglGlobal.AtExitCalls[_eglGlobal.NumAtExitCalls++] = func;
 
-      _eglUnlockMutex(_eglGlobal.Mutex);
+      mtx_unlock(_eglGlobal.Mutex);
    }
 }

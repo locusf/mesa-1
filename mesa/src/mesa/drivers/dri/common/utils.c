@@ -30,38 +30,16 @@
  */
 
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/cpuinfo.h"
 #include "main/extensions.h"
 #include "utils.h"
-
-
-unsigned
-driParseDebugString( const char * debug, 
-		     const struct dri_debug_control * control  )
-{
-   unsigned   flag;
-
-
-   flag = 0;
-   if ( debug != NULL ) {
-      while( control->string != NULL ) {
-	 if ( !strcmp( debug, "all" ) ||
-	      strstr( debug, control->string ) != NULL ) {
-	    flag |= control->flag;
-	 }
-
-	 control++;
-      }
-   }
-
-   return flag;
-}
-
-
+#include "dri_util.h"
 
 /**
  * Create the \c GL_RENDERER string for DRI drivers.
@@ -150,7 +128,7 @@ driGetRendererString( char * buffer, const char * hardware_name,
  *                      If the function fails and returns \c GL_FALSE, this
  *                      value will be unmodified, but some elements in the
  *                      linked list may be modified.
- * \param format        Mesa gl_format enum describing the pixel format
+ * \param format        Mesa mesa_format enum describing the pixel format
  * \param depth_bits    Array of depth buffer sizes to be exposed.
  * \param stencil_bits  Array of stencil buffer sizes to be exposed.
  * \param num_depth_stencil_bits  Number of entries in both \c depth_bits and
@@ -165,8 +143,10 @@ driGetRendererString( char * buffer, const char * hardware_name,
  * \param msaa_samples  Array of msaa sample count. 0 represents a visual
  *                      without a multisample buffer.
  * \param num_msaa_modes Number of entries in \c msaa_samples.
- * \param visType       GLX visual type.  Usually either \c GLX_TRUE_COLOR or
- *                      \c GLX_DIRECT_COLOR.
+ * \param enable_accum  Add an accum buffer to the configs
+ * \param color_depth_match Whether the color depth must match the zs depth
+ *                          This forces 32-bit color to have 24-bit depth, and
+ *                          16-bit color to have 16-bit depth.
  * 
  * \returns
  * Pointer to any array of pointers to the \c __DRIconfig structures created
@@ -175,20 +155,28 @@ driGetRendererString( char * buffer, const char * hardware_name,
  * \c format).
  */
 __DRIconfig **
-driCreateConfigs(gl_format format,
+driCreateConfigs(mesa_format format,
 		 const uint8_t * depth_bits, const uint8_t * stencil_bits,
 		 unsigned num_depth_stencil_bits,
 		 const GLenum * db_modes, unsigned num_db_modes,
 		 const uint8_t * msaa_samples, unsigned num_msaa_modes,
-		 GLboolean enable_accum)
+		 GLboolean enable_accum, GLboolean color_depth_match)
 {
    static const uint32_t masks_table[][4] = {
-      /* MESA_FORMAT_RGB565 */
+      /* MESA_FORMAT_B5G6R5_UNORM */
       { 0x0000F800, 0x000007E0, 0x0000001F, 0x00000000 },
-      /* MESA_FORMAT_XRGB8888 */
+      /* MESA_FORMAT_B8G8R8X8_UNORM */
       { 0x00FF0000, 0x0000FF00, 0x000000FF, 0x00000000 },
-      /* MESA_FORMAT_ARGB8888 */
+      /* MESA_FORMAT_B8G8R8A8_UNORM */
       { 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000 },
+      /* MESA_FORMAT_B10G10R10X2_UNORM */
+      { 0x3FF00000, 0x000FFC00, 0x000003FF, 0x00000000 },
+      /* MESA_FORMAT_B10G10R10A2_UNORM */
+      { 0x3FF00000, 0x000FFC00, 0x000003FF, 0xC0000000 },
+      /* MESA_FORMAT_R8G8B8A8_UNORM */
+      { 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000 },
+      /* MESA_FORMAT_R8G8B8X8_UNORM */
+      { 0x000000FF, 0x0000FF00, 0x00FF0000, 0x00000000 },
    };
 
    const uint32_t * masks;
@@ -204,19 +192,32 @@ driCreateConfigs(gl_format format,
    bool is_srgb;
 
    switch (format) {
-   case MESA_FORMAT_RGB565:
+   case MESA_FORMAT_B5G6R5_UNORM:
       masks = masks_table[0];
       break;
-   case MESA_FORMAT_XRGB8888:
+   case MESA_FORMAT_B8G8R8X8_UNORM:
+   case MESA_FORMAT_B8G8R8X8_SRGB:
       masks = masks_table[1];
       break;
-   case MESA_FORMAT_ARGB8888:
-   case MESA_FORMAT_SARGB8:
+   case MESA_FORMAT_B8G8R8A8_UNORM:
+   case MESA_FORMAT_B8G8R8A8_SRGB:
       masks = masks_table[2];
+      break;
+   case MESA_FORMAT_R8G8B8A8_UNORM:
+      masks = masks_table[5];
+      break;
+   case MESA_FORMAT_R8G8B8X8_UNORM:
+      masks = masks_table[6];
+      break;
+   case MESA_FORMAT_B10G10R10X2_UNORM:
+      masks = masks_table[3];
+      break;
+   case MESA_FORMAT_B10G10R10A2_UNORM:
+      masks = masks_table[4];
       break;
    default:
       fprintf(stderr, "[%s:%u] Unknown framebuffer type %s (%d).\n",
-              __FUNCTION__, __LINE__,
+              __func__, __LINE__,
               _mesa_get_format_name(format), format);
       return NULL;
    }
@@ -228,7 +229,7 @@ driCreateConfigs(gl_format format,
    is_srgb = _mesa_get_format_color_encoding(format) == GL_SRGB;
 
    num_modes = num_depth_stencil_bits * num_db_modes * num_accum_bits * num_msaa_modes;
-   configs = calloc(1, (num_modes + 1) * sizeof *configs);
+   configs = calloc(num_modes + 1, sizeof *configs);
    if (configs == NULL)
        return NULL;
 
@@ -237,6 +238,19 @@ driCreateConfigs(gl_format format,
 	for ( i = 0 ; i < num_db_modes ; i++ ) {
 	    for ( h = 0 ; h < num_msaa_modes; h++ ) {
 	    	for ( j = 0 ; j < num_accum_bits ; j++ ) {
+		    if (color_depth_match &&
+			(depth_bits[k] || stencil_bits[k])) {
+			/* Depth can really only be 0, 16, 24, or 32. A 32-bit
+			 * color format still matches 24-bit depth, as there
+			 * is an implicit 8-bit stencil. So really we just
+			 * need to make sure that color/depth are both 16 or
+			 * both non-16.
+			 */
+			if ((depth_bits[k] + stencil_bits[k] == 16) !=
+			    (red_bits + green_bits + blue_bits + alpha_bits == 16))
+			    continue;
+		    }
+
 		    *c = malloc (sizeof **c);
 		    modes = &(*c)->modes;
 		    c++;
@@ -297,6 +311,7 @@ driCreateConfigs(gl_format format,
 			__DRI_ATTRIB_TEXTURE_2D_BIT |
 			__DRI_ATTRIB_TEXTURE_RECTANGLE_BIT;
 
+		    modes->yInverted = GL_TRUE;
 		    modes->sRGBCapable = is_srgb;
 		}
 	    }
@@ -439,7 +454,7 @@ int
 driGetConfigAttrib(const __DRIconfig *config,
 		   unsigned int attrib, unsigned int *value)
 {
-    int i;
+    unsigned i;
 
     for (i = 0; i < ARRAY_SIZE(attribMap); i++)
 	if (attribMap[i].attrib == attrib)
@@ -466,4 +481,72 @@ driIndexConfigAttrib(const __DRIconfig *config, int index,
     }
 
     return GL_FALSE;
+}
+
+/**
+ * Implement queries for values that are common across all Mesa drivers
+ *
+ * Currently only the following queries are supported by this function:
+ *
+ *     - \c __DRI2_RENDERER_VERSION
+ *     - \c __DRI2_RENDERER_PREFERRED_PROFILE
+ *     - \c __DRI2_RENDERER_OPENGL_CORE_PROFILE_VERSION
+ *     - \c __DRI2_RENDERER_OPENGL_COMPATIBLITY_PROFILE_VERSION
+ *     - \c __DRI2_RENDERER_ES_PROFILE_VERSION
+ *     - \c __DRI2_RENDERER_ES2_PROFILE_VERSION
+ *
+ * \returns
+ * Zero if a recognized value of \c param is supplied, -1 otherwise.
+ */
+int
+driQueryRendererIntegerCommon(__DRIscreen *psp, int param, unsigned int *value)
+{
+   switch (param) {
+   case __DRI2_RENDERER_VERSION: {
+      static const char *const ver = PACKAGE_VERSION;
+      char *endptr;
+      int v[3];
+
+      v[0] = strtol(ver, &endptr, 10);
+      assert(endptr[0] == '.');
+      if (endptr[0] != '.')
+         return -1;
+
+      v[1] = strtol(endptr + 1, &endptr, 10);
+      assert(endptr[0] == '.');
+      if (endptr[0] != '.')
+         return -1;
+
+      v[2] = strtol(endptr + 1, &endptr, 10);
+
+      value[0] = v[0];
+      value[1] = v[1];
+      value[2] = v[2];
+      return 0;
+   }
+   case __DRI2_RENDERER_PREFERRED_PROFILE:
+      value[0] = (psp->max_gl_core_version != 0)
+         ? (1U << __DRI_API_OPENGL_CORE) : (1U << __DRI_API_OPENGL);
+      return 0;
+   case __DRI2_RENDERER_OPENGL_CORE_PROFILE_VERSION:
+      value[0] = psp->max_gl_core_version / 10;
+      value[1] = psp->max_gl_core_version % 10;
+      return 0;
+   case __DRI2_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION:
+      value[0] = psp->max_gl_compat_version / 10;
+      value[1] = psp->max_gl_compat_version % 10;
+      return 0;
+   case __DRI2_RENDERER_OPENGL_ES_PROFILE_VERSION:
+      value[0] = psp->max_gl_es1_version / 10;
+      value[1] = psp->max_gl_es1_version % 10;
+      return 0;
+   case __DRI2_RENDERER_OPENGL_ES2_PROFILE_VERSION:
+      value[0] = psp->max_gl_es2_version / 10;
+      value[1] = psp->max_gl_es2_version % 10;
+      return 0;
+   default:
+      break;
+   }
+
+   return -1;
 }

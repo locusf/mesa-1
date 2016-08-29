@@ -25,6 +25,7 @@
  *
  */
 
+#include "util/bitset.h"
 #include "brw_vec4.h"
 
 namespace brw {
@@ -36,46 +37,64 @@ struct block_data {
     * Note that for our purposes, "defined" means unconditionally, completely
     * defined.
     */
-   bool *def;
+   BITSET_WORD *def;
 
    /**
     * Which variables are used before being defined in the block.
     */
-   bool *use;
+   BITSET_WORD *use;
 
    /** Which defs reach the entry point of the block. */
-   bool *livein;
+   BITSET_WORD *livein;
 
    /** Which defs reach the exit point of the block. */
-   bool *liveout;
+   BITSET_WORD *liveout;
+
+   BITSET_WORD flag_def[1];
+   BITSET_WORD flag_use[1];
+   BITSET_WORD flag_livein[1];
+   BITSET_WORD flag_liveout[1];
 };
 
 class vec4_live_variables {
 public:
-   static void* operator new(size_t size, void *ctx)
-   {
-      void *node;
+   DECLARE_RALLOC_CXX_OPERATORS(vec4_live_variables)
 
-      node = rzalloc_size(ctx, size);
-      assert(node != NULL);
-
-      return node;
-   }
-
-   vec4_live_variables(vec4_visitor *v, cfg_t *cfg);
+   vec4_live_variables(const simple_allocator &alloc, cfg_t *cfg);
    ~vec4_live_variables();
 
+   int num_vars;
+   int bitset_words;
+
+   /** Per-basic-block information on live variables */
+   struct block_data *block_data;
+
+protected:
    void setup_def_use();
    void compute_live_variables();
 
-   vec4_visitor *v;
+   const simple_allocator &alloc;
    cfg_t *cfg;
    void *mem_ctx;
-
-   int num_vars;
-
-   /** Per-basic-block information on live variables */
-   struct block_data *bd;
 };
+
+inline unsigned
+var_from_reg(const simple_allocator &alloc, const src_reg &reg,
+             unsigned c = 0)
+{
+   assert(reg.file == VGRF && reg.nr < alloc.count &&
+          reg.reg_offset < alloc.sizes[reg.nr] && c < 4);
+   return (4 * (alloc.offsets[reg.nr] + reg.reg_offset) +
+           BRW_GET_SWZ(reg.swizzle, c));
+}
+
+inline unsigned
+var_from_reg(const simple_allocator &alloc, const dst_reg &reg,
+             unsigned c = 0)
+{
+   assert(reg.file == VGRF && reg.nr < alloc.count &&
+          reg.reg_offset < alloc.sizes[reg.nr] && c < 4);
+   return 4 * (alloc.offsets[reg.nr] + reg.reg_offset) + c;
+}
 
 } /* namespace brw */

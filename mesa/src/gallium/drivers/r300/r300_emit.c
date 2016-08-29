@@ -42,15 +42,18 @@ void r300_emit_blend_state(struct r300_context* r300,
     struct r300_blend_state* blend = (struct r300_blend_state*)state;
     struct pipe_framebuffer_state* fb =
         (struct pipe_framebuffer_state*)r300->fb_state.state;
+    struct pipe_surface *cb;
     CS_LOCALS(r300);
 
-    if (fb->nr_cbufs) {
-        if (fb->cbufs[0]->format == PIPE_FORMAT_R16G16B16A16_FLOAT) {
+    cb = fb->nr_cbufs ? r300_get_nonnull_cb(fb, 0) : NULL;
+
+    if (cb) {
+        if (cb->format == PIPE_FORMAT_R16G16B16A16_FLOAT) {
             WRITE_CS_TABLE(blend->cb_noclamp, size);
-        } else if (fb->cbufs[0]->format == PIPE_FORMAT_R16G16B16X16_FLOAT) {
+        } else if (cb->format == PIPE_FORMAT_R16G16B16X16_FLOAT) {
             WRITE_CS_TABLE(blend->cb_noclamp_noalpha, size);
         } else {
-            unsigned swz = r300_surface(fb->cbufs[0])->colormask_swizzle;
+            unsigned swz = r300_surface(cb)->colormask_swizzle;
             WRITE_CS_TABLE(blend->cb_clamp[swz], size);
         }
     } else {
@@ -88,9 +91,11 @@ void r300_emit_dsa_state(struct r300_context* r300, unsigned size, void* state)
     /* Choose the alpha ref value between 8-bit (FG_ALPHA_FUNC.AM_VAL) and
      * 16-bit (FG_ALPHA_VALUE). */
     if (is_r500 && (alpha_func & R300_FG_ALPHA_FUNC_ENABLE)) {
-        if (fb->nr_cbufs &&
-            (fb->cbufs[0]->format == PIPE_FORMAT_R16G16B16A16_FLOAT ||
-             fb->cbufs[0]->format == PIPE_FORMAT_R16G16B16X16_FLOAT)) {
+        struct pipe_surface *cb = fb->nr_cbufs ? r300_get_nonnull_cb(fb, 0) : NULL;
+
+        if (cb &&
+            (cb->format == PIPE_FORMAT_R16G16B16A16_FLOAT ||
+             cb->format == PIPE_FORMAT_R16G16B16X16_FLOAT)) {
             alpha_func |= R500_FG_ALPHA_FUNC_FP16_ENABLE;
         } else {
             alpha_func |= R500_FG_ALPHA_FUNC_8BIT;
@@ -419,7 +424,7 @@ void r300_emit_fb_state(struct r300_context* r300, unsigned size, void* state)
 
     /* Set up colorbuffers. */
     for (i = 0; i < fb->nr_cbufs; i++) {
-        surf = r300_surface(fb->cbufs[i]);
+        surf = r300_surface(r300_get_nonnull_cb(fb, i));
 
         OUT_CS_REG(R300_RB3D_COLOROFFSET0 + (4 * i), surf->offset);
         OUT_CS_RELOC(surf);
@@ -600,7 +605,7 @@ void r300_emit_fb_state_pipelined(struct r300_context *r300,
      * (must be written after unpipelined regs) */
     OUT_CS_REG_SEQ(R300_US_OUT_FMT_0, 4);
     for (i = 0; i < num_cbufs; i++) {
-        OUT_CS(r300_surface(fb->cbufs[i])->format);
+        OUT_CS(r300_surface(r300_get_nonnull_cb(fb, i))->format);
     }
     for (; i < 1; i++) {
         OUT_CS(R300_US_OUT_FMT_C4_8 |
@@ -689,7 +694,7 @@ static void r300_emit_query_end_frag_pipes(struct r300_context *r300,
             OUT_CS_RELOC(r300->query_current);
         case 2:
             /* pipe 1 only */
-            /* As mentioned above, accomodate RV380 and older. */
+            /* As mentioned above, accommodate RV380 and older. */
             OUT_CS_REG(R300_SU_REG_DEST,
                     1 << (caps->high_second_pipe ? 3 : 1));
             OUT_CS_REG(R300_ZB_ZPASS_ADDR, (query->num_results + 1) * 4);
@@ -1042,9 +1047,9 @@ void r300_emit_vertex_arrays_swtcl(struct r300_context *r300, boolean indexed)
     OUT_CS(r300->draw_vbo_offset);
     OUT_CS(0);
 
-    assert(r300->vbo_cs);
-    cs_winsys->cs_write_reloc(cs_copy, r300->vbo_cs);
-    CS_USED_DW(2);
+    assert(r300->vbo);
+    OUT_CS(0xc0001000); /* PKT3_NOP */
+    OUT_CS(r300->rws->cs_lookup_buffer(r300->cs, r300->vbo) * 4);
     END_CS;
 }
 
@@ -1131,6 +1136,7 @@ void r300_emit_vs_state(struct r300_context* r300, unsigned size, void* state)
             R300_PVS_NUM_CNTLRS(pvs_num_controllers) |
             R300_PVS_NUM_FPUS(r300screen->caps.num_vert_fpus) |
             R300_PVS_VF_MAX_VTX_NUM(12) |
+            (r300->clip_halfz ? R300_DX_CLIP_SPACE_DEF : 0) |
             (r300screen->caps.is_r500 ? R500_TCL_STATE_OPTIMIZATION : 0));
 
     /* Emit flow control instructions.  Even if there are no fc instructions,
@@ -1310,27 +1316,36 @@ validate:
     if (r300->fb_state.dirty) {
         /* Color buffers... */
         for (i = 0; i < fb->nr_cbufs; i++) {
+            if (!fb->cbufs[i])
+                continue;
             tex = r300_resource(fb->cbufs[i]->texture);
             assert(tex && tex->buf && "cbuf is marked, but NULL!");
-            r300->rws->cs_add_reloc(r300->cs, tex->cs_buf,
+            r300->rws->cs_add_buffer(r300->cs, tex->buf,
                                     RADEON_USAGE_READWRITE,
-                                    r300_surface(fb->cbufs[i])->domain);
+                                    r300_surface(fb->cbufs[i])->domain,
+                                    tex->b.b.nr_samples > 1 ?
+                                    RADEON_PRIO_COLOR_BUFFER_MSAA :
+                                    RADEON_PRIO_COLOR_BUFFER);
         }
         /* ...depth buffer... */
         if (fb->zsbuf) {
             tex = r300_resource(fb->zsbuf->texture);
             assert(tex && tex->buf && "zsbuf is marked, but NULL!");
-            r300->rws->cs_add_reloc(r300->cs, tex->cs_buf,
+            r300->rws->cs_add_buffer(r300->cs, tex->buf,
                                     RADEON_USAGE_READWRITE,
-                                    r300_surface(fb->zsbuf)->domain);
+                                    r300_surface(fb->zsbuf)->domain,
+                                    tex->b.b.nr_samples > 1 ?
+                                    RADEON_PRIO_DEPTH_BUFFER_MSAA :
+                                    RADEON_PRIO_DEPTH_BUFFER);
         }
     }
     /* The AA resolve buffer. */
     if (r300->aa_state.dirty) {
         if (aa->dest) {
-            r300->rws->cs_add_reloc(r300->cs, aa->dest->cs_buf,
+            r300->rws->cs_add_buffer(r300->cs, aa->dest->buf,
                                     RADEON_USAGE_WRITE,
-                                    aa->dest->domain);
+                                    aa->dest->domain,
+                                    RADEON_PRIO_COLOR_BUFFER);
         }
     }
     if (r300->textures_state.dirty) {
@@ -1341,18 +1356,20 @@ validate:
             }
 
             tex = r300_resource(texstate->sampler_views[i]->base.texture);
-            r300->rws->cs_add_reloc(r300->cs, tex->cs_buf, RADEON_USAGE_READ,
-                                    tex->domain);
+            r300->rws->cs_add_buffer(r300->cs, tex->buf, RADEON_USAGE_READ,
+                                    tex->domain, RADEON_PRIO_SAMPLER_TEXTURE);
         }
     }
     /* ...occlusion query buffer... */
     if (r300->query_current)
-        r300->rws->cs_add_reloc(r300->cs, r300->query_current->cs_buf,
-                                RADEON_USAGE_WRITE, RADEON_DOMAIN_GTT);
+        r300->rws->cs_add_buffer(r300->cs, r300->query_current->buf,
+                                RADEON_USAGE_WRITE, RADEON_DOMAIN_GTT,
+                                RADEON_PRIO_QUERY);
     /* ...vertex buffer for SWTCL path... */
-    if (r300->vbo_cs)
-        r300->rws->cs_add_reloc(r300->cs, r300->vbo_cs,
-                                RADEON_USAGE_READ, RADEON_DOMAIN_GTT);
+    if (r300->vbo)
+        r300->rws->cs_add_buffer(r300->cs, r300->vbo,
+                                RADEON_USAGE_READ, RADEON_DOMAIN_GTT,
+                                RADEON_PRIO_VERTEX_BUFFER);
     /* ...vertex buffers for HWTCL path... */
     if (do_validate_vertex_buffers && r300->vertex_arrays_dirty) {
         struct pipe_vertex_buffer *vbuf = r300->vertex_buffer;
@@ -1365,16 +1382,18 @@ validate:
             if (!buf)
                 continue;
 
-            r300->rws->cs_add_reloc(r300->cs, r300_resource(buf)->cs_buf,
+            r300->rws->cs_add_buffer(r300->cs, r300_resource(buf)->buf,
                                     RADEON_USAGE_READ,
-                                    r300_resource(buf)->domain);
+                                    r300_resource(buf)->domain,
+                                    RADEON_PRIO_SAMPLER_BUFFER);
         }
     }
     /* ...and index buffer for HWTCL path. */
     if (index_buffer)
-        r300->rws->cs_add_reloc(r300->cs, r300_resource(index_buffer)->cs_buf,
+        r300->rws->cs_add_buffer(r300->cs, r300_resource(index_buffer)->buf,
                                 RADEON_USAGE_READ,
-                                r300_resource(index_buffer)->domain);
+                                r300_resource(index_buffer)->domain,
+                                RADEON_PRIO_INDEX_BUFFER);
 
     /* Now do the validation (flush is called inside cs_validate on failure). */
     if (!r300->rws->cs_validate(r300->cs)) {
@@ -1415,8 +1434,7 @@ unsigned r300_get_num_cs_end_dwords(struct r300_context *r300)
     dwords += r300->hyperz_state.size + 2; /* emit_hyperz_end + zcache flush */
     if (r300->screen->caps.is_r500)
         dwords += 2; /* emit_index_bias */
-    if (r300->screen->info.drm_minor >= 6)
-        dwords += 3; /* MSPOS */
+    dwords += 3; /* MSPOS */
 
     return dwords;
 }

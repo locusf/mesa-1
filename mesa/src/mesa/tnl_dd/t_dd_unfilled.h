@@ -22,7 +22,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 #if !HAVE_SPEC
@@ -59,8 +59,8 @@ static void TAG(unfilled_tri)( struct gl_context *ctx,
       }
    }
 
-/*     fprintf(stderr, "%s %s %d %d %d\n", __FUNCTION__, */
-/*  	   _mesa_lookup_enum_by_nr( mode ), */
+/*     fprintf(stderr, "%s %s %d %d %d\n", __func__, */
+/*  	   _mesa_enum_to_string( mode ), */
 /*  	   ef[e0], ef[e1], ef[e2]); */
 
    if (mode == GL_POINT) {

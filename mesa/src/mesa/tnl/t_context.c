@@ -22,7 +22,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 
@@ -35,6 +35,8 @@
 #include "math/m_translate.h"
 #include "math/m_xform.h"
 #include "main/state.h"
+#include "main/viewport.h"
+#include "util/simple_list.h"
 
 #include "tnl.h"
 #include "t_context.h"
@@ -69,6 +71,8 @@ _tnl_CreateContext( struct gl_context *ctx )
       _tnl_install_pipeline( ctx, _tnl_default_pipeline );
    }
 
+   _math_matrix_ctr(&tnl->_WindowMap);
+
    tnl->NeedNdcCoords = GL_TRUE;
    tnl->AllowVertexFog = GL_TRUE;
    tnl->AllowPixelFog = GL_TRUE;
@@ -93,7 +97,7 @@ _tnl_CreateContext( struct gl_context *ctx )
    }
 
    /* plug in the VBO drawing function */
-   vbo_set_draw_func(ctx, _tnl_vbo_draw_prims);
+   vbo_set_draw_func(ctx, _tnl_draw_prims);
 
    _math_init_transformation();
    _math_init_translate();
@@ -107,6 +111,8 @@ _tnl_DestroyContext( struct gl_context *ctx )
 {
    struct tnl_shine_tab *s, *tmps;
    TNLcontext *tnl = TNL_CONTEXT(ctx);
+
+   _math_matrix_dtr(&tnl->_WindowMap);
 
    /* Free lighting shininess exponentiation table */
    foreach_s( s, tmps, tnl->_ShineTabList ) {
@@ -130,7 +136,7 @@ _tnl_InvalidateState( struct gl_context *ctx, GLuint new_state )
    GLuint i;
 
    if (new_state & (_NEW_HINT | _NEW_PROGRAM)) {
-      ASSERT(tnl->AllowVertexFog || tnl->AllowPixelFog);
+      assert(tnl->AllowVertexFog || tnl->AllowPixelFog);
       tnl->_DoVertexFog = ((tnl->AllowVertexFog && (ctx->Hint.Fog != GL_NICEST))
          || !tnl->AllowPixelFog) && !fp;
    }
@@ -181,6 +187,13 @@ _tnl_InvalidateState( struct gl_context *ctx, GLuint new_state )
             tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_GENERIC(i));
          }
       }
+   }
+
+   if (new_state & (_NEW_VIEWPORT | _NEW_BUFFERS)) {
+      float scale[3], translate[3];
+      _mesa_get_viewport_xform(ctx, 0, scale, translate);
+      _math_matrix_viewport(&tnl->_WindowMap, scale, translate,
+                            ctx->DrawBuffer->_DepthMaxF);
    }
 }
 

@@ -29,6 +29,7 @@ libgtest_la_SOURCES = \
 	src/gtest_main.cc
 
 EXTRA_DIST = \
+	include \
 	src/gtest.cc \
 	src/gtest-death-test.cc \
 	src/gtest-filepath.cc \

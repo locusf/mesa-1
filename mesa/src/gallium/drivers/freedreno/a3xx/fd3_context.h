@@ -29,40 +29,55 @@
 #ifndef FD3_CONTEXT_H_
 #define FD3_CONTEXT_H_
 
+#include "util/u_upload_mgr.h"
+
 #include "freedreno_drmif.h"
 
 #include "freedreno_context.h"
+
+#include "ir3_shader.h"
+
 
 struct fd3_context {
 	struct fd_context base;
 
 	struct fd_bo *vs_pvt_mem, *fs_pvt_mem;
 
-	/* not sure how big this actually needs to be.. the blob driver
-	 * combines it w/ the solid_vertexbuf, we could probably do the
-	 * same to save an extra bo allocation..
+	/* This only needs to be 4 * num_of_pipes bytes (ie. 32 bytes).  We
+	 * could combine it with another allocation.
 	 */
 	struct fd_bo *vsc_size_mem;
 
-	struct fd_bo *vsc_pipe_mem;
+	struct u_upload_mgr *border_color_uploader;
+	struct pipe_resource *border_color_buf;
 
-	/* vertex buf used for clear/gmem->mem vertices, and mem->gmem
-	 * vertices:
-	 */
-	struct pipe_resource *solid_vbuf;
+	/* if *any* of bits are set in {v,f}saturate_{s,t,r} */
+	bool vsaturate, fsaturate;
 
-	/* vertex buf used for mem->gmem tex coords:
+	/* bitmask of sampler which needs coords clamped for vertex
+	 * shader:
 	 */
-	struct pipe_resource *blit_texcoord_vbuf;
+	unsigned vsaturate_s, vsaturate_t, vsaturate_r;
+
+	/* bitmask of sampler which needs coords clamped for frag
+	 * shader:
+	 */
+	unsigned fsaturate_s, fsaturate_t, fsaturate_r;
+
+	/* some state changes require a different shader variant.  Keep
+	 * track of this so we know when we need to re-emit shader state
+	 * due to variant change.  See fixup_shader_state()
+	 */
+	struct ir3_shader_key last_key;
 };
 
-static INLINE struct fd3_context *
+static inline struct fd3_context *
 fd3_context(struct fd_context *ctx)
 {
 	return (struct fd3_context *)ctx;
 }
 
 struct pipe_context *
-fd3_context_create(struct pipe_screen *pscreen, void *priv);
+fd3_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags);
 
 #endif /* FD3_CONTEXT_H_ */

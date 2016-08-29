@@ -22,7 +22,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 
@@ -50,8 +50,6 @@ void vbo_exec_init( struct gl_context *ctx )
 
    ctx->Driver.NeedFlush = 0;
    ctx->Driver.CurrentExecPrimitive = PRIM_OUTSIDE_BEGIN_END;
-   ctx->Driver.BeginVertices = vbo_exec_BeginVertices;
-   ctx->Driver.FlushVertices = vbo_exec_FlushVertices;
 
    vbo_exec_invalidate_state( ctx, ~0 );
 }
@@ -75,32 +73,17 @@ void vbo_exec_destroy( struct gl_context *ctx )
  * invoked according to the state flags.  That will have to wait for a
  * mesa rework:
  */ 
-void vbo_exec_invalidate_state( struct gl_context *ctx, GLuint new_state )
+void vbo_exec_invalidate_state( struct gl_context *ctx, GLbitfield new_state )
 {
    struct vbo_context *vbo = vbo_context(ctx);
    struct vbo_exec_context *exec = &vbo->exec;
 
    if (!exec->validating && new_state & (_NEW_PROGRAM|_NEW_ARRAY)) {
       exec->array.recalculate_inputs = GL_TRUE;
-
-      /* If we ended up here because a VAO was deleted, the _DrawArrays
-       * pointer which pointed to the VAO might be invalid now, so set it
-       * to NULL.  This prevents crashes in driver functions like Clear
-       * where driver state validation might occur, but the vbo module is
-       * still in an invalid state.
-       *
-       * Drivers should skip vertex array state validation if _DrawArrays
-       * is NULL.  It also has no effect on performance, because attrib
-       * bindings will be recalculated anyway.
-       */
-      if (vbo->last_draw_method == DRAW_ARRAYS) {
-         ctx->Array._DrawArrays = NULL;
-         vbo->last_draw_method = DRAW_NONE;
-      }
    }
 
    if (new_state & _NEW_EVAL)
-      exec->eval.recalculate_maps = 1;
+      exec->eval.recalculate_maps = GL_TRUE;
 
    _ae_invalidate_state(ctx, new_state);
 }
@@ -148,6 +131,18 @@ vbo_count_tessellated_primitives(GLenum mode, GLuint count,
       break;
    case GL_QUADS:
       num_primitives = (count / 4) * 2;
+      break;
+   case GL_LINES_ADJACENCY:
+      num_primitives = count / 4;
+      break;
+   case GL_LINE_STRIP_ADJACENCY:
+      num_primitives = count >= 4 ? count - 3 : 0;
+      break;
+   case GL_TRIANGLES_ADJACENCY:
+      num_primitives = count / 6;
+      break;
+   case GL_TRIANGLE_STRIP_ADJACENCY:
+      num_primitives = count >= 6 ? (count - 4) / 2 : 0;
       break;
    default:
       assert(!"Unexpected primitive type in count_tessellated_primitives");

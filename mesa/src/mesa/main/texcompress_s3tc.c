@@ -29,13 +29,8 @@
  * GL_EXT_texture_compression_s3tc support.
  */
 
-#ifndef USE_EXTERNAL_DXTN_LIB
-#define USE_EXTERNAL_DXTN_LIB 1
-#endif
-
 #include "glheader.h"
 #include "imports.h"
-#include "colormac.h"
 #include "dlopen.h"
 #include "image.h"
 #include "macros.h"
@@ -44,14 +39,15 @@
 #include "texcompress_s3tc.h"
 #include "texstore.h"
 #include "format_unpack.h"
+#include "util/format_srgb.h"
 
 
 #if defined(_WIN32) || defined(WIN32)
 #define DXTN_LIBNAME "dxtn.dll"
 #define RTLD_LAZY 0
 #define RTLD_GLOBAL 0
-#elif defined(__DJGPP__)
-#define DXTN_LIBNAME "dxtn.dxe"
+#elif defined(__CYGWIN__)
+#define DXTN_LIBNAME "cygtxc_dxtn.dll"
 #else
 #define DXTN_LIBNAME "libtxc_dxtn.so"
 #endif
@@ -78,7 +74,6 @@ _mesa_init_texture_s3tc( struct gl_context *ctx )
 {
    /* called during context initialization */
    ctx->Mesa_DXTn = GL_FALSE;
-#if USE_EXTERNAL_DXTN_LIB
    if (!dxtlibhandle) {
       dxtlibhandle = _mesa_dlopen(DXTN_LIBNAME, 0);
       if (!dxtlibhandle) {
@@ -119,9 +114,6 @@ _mesa_init_texture_s3tc( struct gl_context *ctx )
    if (dxtlibhandle) {
       ctx->Mesa_DXTn = GL_TRUE;
    }
-#else
-   (void) ctx;
-#endif
 }
 
 /**
@@ -134,23 +126,28 @@ _mesa_texstore_rgb_dxt1(TEXSTORE_PARAMS)
    GLubyte *dst;
    const GLubyte *tempImage = NULL;
 
-   ASSERT(dstFormat == MESA_FORMAT_RGB_DXT1 ||
+   assert(dstFormat == MESA_FORMAT_RGB_DXT1 ||
           dstFormat == MESA_FORMAT_SRGB_DXT1);
 
    if (srcFormat != GL_RGB ||
        srcType != GL_UNSIGNED_BYTE ||
        ctx->_ImageTransferState ||
-       srcPacking->RowLength != srcWidth ||
+       ALIGN(srcPacking->RowLength, srcPacking->Alignment) != srcWidth ||
        srcPacking->SwapBytes) {
       /* convert image to RGB/GLubyte */
-      tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
-                                             baseInternalFormat,
-                                             _mesa_get_format_base_format(dstFormat),
-                                             srcWidth, srcHeight, srcDepth,
-                                             srcFormat, srcType, srcAddr,
-                                             srcPacking);
+      GLubyte *tempImageSlices[1];
+      int rgbRowStride = 3 * srcWidth * sizeof(GLubyte);
+      tempImage = malloc(srcWidth * srcHeight * 3 * sizeof(GLubyte));
       if (!tempImage)
          return GL_FALSE; /* out of memory */
+      tempImageSlices[0] = (GLubyte *) tempImage;
+      _mesa_texstore(ctx, dims,
+                     baseInternalFormat,
+                     MESA_FORMAT_RGB_UNORM8,
+                     rgbRowStride, tempImageSlices,
+                     srcWidth, srcHeight, srcDepth,
+                     srcFormat, srcType, srcAddr,
+                     srcPacking);
       pixels = tempImage;
       srcFormat = GL_RGB;
    }
@@ -186,23 +183,29 @@ _mesa_texstore_rgba_dxt1(TEXSTORE_PARAMS)
    GLubyte *dst;
    const GLubyte *tempImage = NULL;
 
-   ASSERT(dstFormat == MESA_FORMAT_RGBA_DXT1 ||
+   assert(dstFormat == MESA_FORMAT_RGBA_DXT1 ||
           dstFormat == MESA_FORMAT_SRGBA_DXT1);
 
    if (srcFormat != GL_RGBA ||
        srcType != GL_UNSIGNED_BYTE ||
        ctx->_ImageTransferState ||
-       srcPacking->RowLength != srcWidth ||
+       ALIGN(srcPacking->RowLength, srcPacking->Alignment) != srcWidth ||
        srcPacking->SwapBytes) {
       /* convert image to RGBA/GLubyte */
-      tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
-                                             baseInternalFormat,
-                                             _mesa_get_format_base_format(dstFormat),
-                                             srcWidth, srcHeight, srcDepth,
-                                             srcFormat, srcType, srcAddr,
-                                             srcPacking);
+      GLubyte *tempImageSlices[1];
+      int rgbaRowStride = 4 * srcWidth * sizeof(GLubyte);
+      tempImage = malloc(srcWidth * srcHeight * 4 * sizeof(GLubyte));
       if (!tempImage)
          return GL_FALSE; /* out of memory */
+      tempImageSlices[0] = (GLubyte *) tempImage;
+      _mesa_texstore(ctx, dims,
+                     baseInternalFormat,
+                     _mesa_little_endian() ? MESA_FORMAT_R8G8B8A8_UNORM
+                                           : MESA_FORMAT_A8B8G8R8_UNORM,
+                     rgbaRowStride, tempImageSlices,
+                     srcWidth, srcHeight, srcDepth,
+                     srcFormat, srcType, srcAddr,
+                     srcPacking);
       pixels = tempImage;
       srcFormat = GL_RGBA;
    }
@@ -238,23 +241,29 @@ _mesa_texstore_rgba_dxt3(TEXSTORE_PARAMS)
    GLubyte *dst;
    const GLubyte *tempImage = NULL;
 
-   ASSERT(dstFormat == MESA_FORMAT_RGBA_DXT3 ||
+   assert(dstFormat == MESA_FORMAT_RGBA_DXT3 ||
           dstFormat == MESA_FORMAT_SRGBA_DXT3);
 
    if (srcFormat != GL_RGBA ||
        srcType != GL_UNSIGNED_BYTE ||
        ctx->_ImageTransferState ||
-       srcPacking->RowLength != srcWidth ||
+       ALIGN(srcPacking->RowLength, srcPacking->Alignment) != srcWidth ||
        srcPacking->SwapBytes) {
       /* convert image to RGBA/GLubyte */
-      tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
-                                             baseInternalFormat,
-                                             _mesa_get_format_base_format(dstFormat),
-                                             srcWidth, srcHeight, srcDepth,
-                                             srcFormat, srcType, srcAddr,
-                                             srcPacking);
+      GLubyte *tempImageSlices[1];
+      int rgbaRowStride = 4 * srcWidth * sizeof(GLubyte);
+      tempImage = malloc(srcWidth * srcHeight * 4 * sizeof(GLubyte));
       if (!tempImage)
          return GL_FALSE; /* out of memory */
+      tempImageSlices[0] = (GLubyte *) tempImage;
+      _mesa_texstore(ctx, dims,
+                     baseInternalFormat,
+                     _mesa_little_endian() ? MESA_FORMAT_R8G8B8A8_UNORM
+                                           : MESA_FORMAT_A8B8G8R8_UNORM,
+                     rgbaRowStride, tempImageSlices,
+                     srcWidth, srcHeight, srcDepth,
+                     srcFormat, srcType, srcAddr,
+                     srcPacking);
       pixels = tempImage;
    }
    else {
@@ -289,23 +298,29 @@ _mesa_texstore_rgba_dxt5(TEXSTORE_PARAMS)
    GLubyte *dst;
    const GLubyte *tempImage = NULL;
 
-   ASSERT(dstFormat == MESA_FORMAT_RGBA_DXT5 ||
+   assert(dstFormat == MESA_FORMAT_RGBA_DXT5 ||
           dstFormat == MESA_FORMAT_SRGBA_DXT5);
 
    if (srcFormat != GL_RGBA ||
        srcType != GL_UNSIGNED_BYTE ||
        ctx->_ImageTransferState ||
-       srcPacking->RowLength != srcWidth ||
+       ALIGN(srcPacking->RowLength, srcPacking->Alignment) != srcWidth ||
        srcPacking->SwapBytes) {
       /* convert image to RGBA/GLubyte */
-      tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
-                                             baseInternalFormat,
-                                   	     _mesa_get_format_base_format(dstFormat),
-                                             srcWidth, srcHeight, srcDepth,
-                                             srcFormat, srcType, srcAddr,
-                                             srcPacking);
+      GLubyte *tempImageSlices[1];
+      int rgbaRowStride = 4 * srcWidth * sizeof(GLubyte);
+      tempImage = malloc(srcWidth * srcHeight * 4 * sizeof(GLubyte));
       if (!tempImage)
          return GL_FALSE; /* out of memory */
+      tempImageSlices[0] = (GLubyte *) tempImage;
+      _mesa_texstore(ctx, dims,
+                     baseInternalFormat,
+                     _mesa_little_endian() ? MESA_FORMAT_R8G8B8A8_UNORM
+                                           : MESA_FORMAT_A8B8G8R8_UNORM,
+                     rgbaRowStride, tempImageSlices,
+                     srcWidth, srcHeight, srcDepth,
+                     srcFormat, srcType, srcAddr,
+                     srcPacking);
       pixels = tempImage;
    }
    else {
@@ -419,9 +434,9 @@ fetch_srgb_dxt1(const GLubyte *map,
    if (fetch_ext_rgb_dxt1) {
       GLubyte tex[4];
       fetch_ext_rgb_dxt1(rowStride, map, i, j, tex);
-      texel[RCOMP] = _mesa_nonlinear_to_linear(tex[RCOMP]);
-      texel[GCOMP] = _mesa_nonlinear_to_linear(tex[GCOMP]);
-      texel[BCOMP] = _mesa_nonlinear_to_linear(tex[BCOMP]);
+      texel[RCOMP] = util_format_srgb_8unorm_to_linear_float(tex[RCOMP]);
+      texel[GCOMP] = util_format_srgb_8unorm_to_linear_float(tex[GCOMP]);
+      texel[BCOMP] = util_format_srgb_8unorm_to_linear_float(tex[BCOMP]);
       texel[ACOMP] = UBYTE_TO_FLOAT(tex[ACOMP]);
    }
    else {
@@ -436,9 +451,9 @@ fetch_srgba_dxt1(const GLubyte *map,
    if (fetch_ext_rgba_dxt1) {
       GLubyte tex[4];
       fetch_ext_rgba_dxt1(rowStride, map, i, j, tex);
-      texel[RCOMP] = _mesa_nonlinear_to_linear(tex[RCOMP]);
-      texel[GCOMP] = _mesa_nonlinear_to_linear(tex[GCOMP]);
-      texel[BCOMP] = _mesa_nonlinear_to_linear(tex[BCOMP]);
+      texel[RCOMP] = util_format_srgb_8unorm_to_linear_float(tex[RCOMP]);
+      texel[GCOMP] = util_format_srgb_8unorm_to_linear_float(tex[GCOMP]);
+      texel[BCOMP] = util_format_srgb_8unorm_to_linear_float(tex[BCOMP]);
       texel[ACOMP] = UBYTE_TO_FLOAT(tex[ACOMP]);
    }
    else {
@@ -453,9 +468,9 @@ fetch_srgba_dxt3(const GLubyte *map,
    if (fetch_ext_rgba_dxt3) {
       GLubyte tex[4];
       fetch_ext_rgba_dxt3(rowStride, map, i, j, tex);
-      texel[RCOMP] = _mesa_nonlinear_to_linear(tex[RCOMP]);
-      texel[GCOMP] = _mesa_nonlinear_to_linear(tex[GCOMP]);
-      texel[BCOMP] = _mesa_nonlinear_to_linear(tex[BCOMP]);
+      texel[RCOMP] = util_format_srgb_8unorm_to_linear_float(tex[RCOMP]);
+      texel[GCOMP] = util_format_srgb_8unorm_to_linear_float(tex[GCOMP]);
+      texel[BCOMP] = util_format_srgb_8unorm_to_linear_float(tex[BCOMP]);
       texel[ACOMP] = UBYTE_TO_FLOAT(tex[ACOMP]);
    }
    else {
@@ -470,9 +485,9 @@ fetch_srgba_dxt5(const GLubyte *map,
    if (fetch_ext_rgba_dxt5) {
       GLubyte tex[4];
       fetch_ext_rgba_dxt5(rowStride, map, i, j, tex);
-      texel[RCOMP] = _mesa_nonlinear_to_linear(tex[RCOMP]);
-      texel[GCOMP] = _mesa_nonlinear_to_linear(tex[GCOMP]);
-      texel[BCOMP] = _mesa_nonlinear_to_linear(tex[BCOMP]);
+      texel[RCOMP] = util_format_srgb_8unorm_to_linear_float(tex[RCOMP]);
+      texel[GCOMP] = util_format_srgb_8unorm_to_linear_float(tex[GCOMP]);
+      texel[BCOMP] = util_format_srgb_8unorm_to_linear_float(tex[BCOMP]);
       texel[ACOMP] = UBYTE_TO_FLOAT(tex[ACOMP]);
    }
    else {
@@ -483,7 +498,7 @@ fetch_srgba_dxt5(const GLubyte *map,
 
 
 compressed_fetch_func
-_mesa_get_dxt_fetch_func(gl_format format)
+_mesa_get_dxt_fetch_func(mesa_format format)
 {
    switch (format) {
    case MESA_FORMAT_RGB_DXT1:

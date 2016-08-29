@@ -25,21 +25,22 @@
 # Authors:
 #    Ian Romanick <idr@us.ibm.com>
 
+import argparse
+
 import license
-import gl_XML, glX_XML
-import sys, getopt
+import gl_XML
+import glX_XML
+
 
 class PrintGlProcs(gl_XML.gl_print_base):
-    def __init__(self, long_strings, es=False):
+    def __init__(self, es=False):
         gl_XML.gl_print_base.__init__(self)
 
         self.es = es
-        self.long_strings = long_strings
         self.name = "gl_procs.py (from Mesa)"
         self.license = license.bsd_license_template % ( \
 """Copyright (C) 1999-2001  Brian Paul   All Rights Reserved.
 (C) Copyright IBM Corporation 2004, 2006""", "BRIAN PAUL, IBM")
-
 
     def printRealHeader(self):
         print """
@@ -74,22 +75,11 @@ typedef struct {
         return
 
     def printFunctionString(self, name):
-        if self.long_strings:
-            print '    "gl%s\\0"' % (name)
-        else:
-            print "    'g','l',",
-            for c in name:
-                print "'%s'," % (c),
-
-            print "'\\0',"
-
+        print '    "gl%s\\0"' % (name)
 
     def printBody(self, api):
         print ''
-        if self.long_strings:
-            print 'static const char gl_string_table[] ='
-        else:
-            print 'static const char gl_string_table[] = {'
+        print 'static const char gl_string_table[] ='
 
         base_offset = 0
         table = []
@@ -119,11 +109,7 @@ typedef struct {
                     base_offset += len(n) + 3
 
 
-        if self.long_strings:
-            print '    ;'
-        else:
-            print '};'
-
+        print '    ;'
         print ''
         print ''
         print "#ifdef USE_MGL_NAMESPACE"
@@ -177,39 +163,28 @@ typedef struct {
         return
 
 
-def show_usage():
-    print "Usage: %s [-f input_file_name] [-m mode] [-c]" % sys.argv[0]
-    print "-c          Enable compatibility with OpenGL ES."
-    print "-m mode     mode can be one of:"
-    print "    long  - Create code for compilers that can handle very"
-    print "            long string constants. (default)"
-    print "    short - Create code for compilers that can only handle"
-    print "            ANSI C89 string constants."
-    sys.exit(1)
+def _parser():
+    """Parse arguments and return a namepsace."""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-f', '--filename',
+                        default='gl_API.xml',
+                        metavar="input_file_name",
+                        dest='file_name',
+                        help="Path to an XML description of OpenGL API.")
+    parser.add_argument('-c', '--es-version',
+                        dest='es',
+                        action="store_true",
+                        help="filter functions for es")
+    return parser.parse_args()
+
+
+def main():
+    """Main function."""
+    args = _parser()
+    api = gl_XML.parse_GL_API(args.file_name, glX_XML.glx_item_factory())
+    PrintGlProcs(args.es).Print(api)
+
 
 if __name__ == '__main__':
-    file_name = "gl_API.xml"
-
-    try:
-        (args, trail) = getopt.getopt(sys.argv[1:], "f:m:c")
-    except Exception,e:
-        show_usage()
-
-    long_string = 1
-    es = False
-    for (arg,val) in args:
-        if arg == "-f":
-            file_name = val
-        elif arg == "-m":
-            if val == "short":
-                long_string = 0
-            elif val == "long":
-                long_string = 1
-            else:
-                show_usage()
-        elif arg == "-c":
-            es = True
-
-    api = gl_XML.parse_GL_API(file_name, glX_XML.glx_item_factory())
-    printer = PrintGlProcs(long_string, es)
-    printer.Print(api)
+    main()

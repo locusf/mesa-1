@@ -24,14 +24,10 @@
 include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
-noinst_LTLIBRARIES = libilo.la
-
 AM_CPPFLAGS = \
-	-Iinclude \
-	-I$(top_srcdir)/src/gallium/winsys/intel \
-	$(GALLIUM_CFLAGS)
+	$(GALLIUM_DRIVER_CFLAGS)
 
-AM_CFLAGS = \
-	$(VISIBILITY_CFLAGS)
+noinst_HEADERS = $(GENHW_FILES)
+noinst_LTLIBRARIES = libilo.la
 
 libilo_la_SOURCES = $(C_SOURCES)

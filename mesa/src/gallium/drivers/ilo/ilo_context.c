@@ -26,14 +26,14 @@
  */
 
 #include "util/u_upload_mgr.h"
-#include "intel_chipset.h"
 
-#include "ilo_3d.h"
 #include "ilo_blit.h"
 #include "ilo_blitter.h"
 #include "ilo_cp.h"
+#include "ilo_draw.h"
 #include "ilo_gpgpu.h"
 #include "ilo_query.h"
+#include "ilo_render.h"
 #include "ilo_resource.h"
 #include "ilo_screen.h"
 #include "ilo_shader.h"
@@ -43,18 +43,12 @@
 #include "ilo_context.h"
 
 static void
-ilo_context_cp_flushed(struct ilo_cp *cp, void *data)
+ilo_context_cp_submitted(struct ilo_cp *cp, void *data)
 {
    struct ilo_context *ilo = ilo_context(data);
 
-   if (ilo->last_cp_bo)
-      intel_bo_unreference(ilo->last_cp_bo);
-
-   /* remember the just flushed bo, on which fences could wait */
-   ilo->last_cp_bo = cp->bo;
-   intel_bo_reference(ilo->last_cp_bo);
-
-   ilo_3d_cp_flushed(ilo->hw3d);
+   /* builder buffers are reallocated */
+   ilo_render_invalidate_builder(ilo->render);
 }
 
 static void
@@ -64,27 +58,56 @@ ilo_flush(struct pipe_context *pipe,
 {
    struct ilo_context *ilo = ilo_context(pipe);
 
+   ilo_cp_submit(ilo->cp,
+         (flags & PIPE_FLUSH_END_OF_FRAME) ? "frame end" : "user request");
+
    if (f) {
-      struct ilo_fence *fence;
+      struct pipe_screen *screen = pipe->screen;
+      screen->fence_reference(screen, f, NULL);
+      *f = ilo_screen_fence_create(pipe->screen, ilo->cp->last_submitted_bo);
+   }
+}
 
-      fence = CALLOC_STRUCT(ilo_fence);
-      if (fence) {
-         pipe_reference_init(&fence->reference, 1);
+static void
+ilo_render_condition(struct pipe_context *pipe,
+                     struct pipe_query *query,
+                     boolean condition,
+                     uint mode)
+{
+   struct ilo_context *ilo = ilo_context(pipe);
 
-         /* reference the batch bo that we want to wait on */
-         if (ilo_cp_empty(ilo->cp))
-            fence->bo = ilo->last_cp_bo;
-         else
-            fence->bo = ilo->cp->bo;
+   /* reference count? */
+   ilo->render_condition.query = query;
+   ilo->render_condition.condition = condition;
+   ilo->render_condition.mode = mode;
+}
 
-         if (fence->bo)
-            intel_bo_reference(fence->bo);
-      }
+bool
+ilo_skip_rendering(struct ilo_context *ilo)
+{
+   uint64_t result;
+   bool wait;
 
-      *f = (struct pipe_fence_handle *) fence;
+   if (!ilo->render_condition.query)
+      return false;
+
+   switch (ilo->render_condition.mode) {
+   case PIPE_RENDER_COND_WAIT:
+   case PIPE_RENDER_COND_BY_REGION_WAIT:
+      wait = true;
+      break;
+   case PIPE_RENDER_COND_NO_WAIT:
+   case PIPE_RENDER_COND_BY_REGION_NO_WAIT:
+   default:
+      wait = false;
+      break;
    }
 
-   ilo_cp_flush(ilo->cp);
+   if (ilo->base.get_query_result(&ilo->base, ilo->render_condition.query,
+            wait, (union pipe_query_result *) &result))
+      return ((bool) result == ilo->render_condition.condition);
+   else
+      return false;
 }
 
 static void
@@ -92,18 +115,15 @@ ilo_context_destroy(struct pipe_context *pipe)
 {
    struct ilo_context *ilo = ilo_context(pipe);
 
-   ilo_cleanup_states(ilo);
-
-   if (ilo->last_cp_bo)
-      intel_bo_unreference(ilo->last_cp_bo);
+   ilo_state_vector_cleanup(&ilo->state_vector);
 
    if (ilo->uploader)
       u_upload_destroy(ilo->uploader);
 
    if (ilo->blitter)
       ilo_blitter_destroy(ilo->blitter);
-   if (ilo->hw3d)
-      ilo_3d_destroy(ilo->hw3d);
+   if (ilo->render)
+      ilo_render_destroy(ilo->render);
    if (ilo->shader_cache)
       ilo_shader_cache_destroy(ilo->shader_cache);
    if (ilo->cp)
@@ -115,7 +135,7 @@ ilo_context_destroy(struct pipe_context *pipe)
 }
 
 static struct pipe_context *
-ilo_context_create(struct pipe_screen *screen, void *priv)
+ilo_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
 {
    struct ilo_screen *is = ilo_screen(screen);
    struct ilo_context *ilo;
@@ -124,7 +144,7 @@ ilo_context_create(struct pipe_screen *screen, void *priv)
    if (!ilo)
       return NULL;
 
-   ilo->winsys = is->winsys;
+   ilo->winsys = is->dev.winsys;
    ilo->dev = &is->dev;
 
    /*
@@ -134,33 +154,27 @@ ilo_context_create(struct pipe_screen *screen, void *priv)
    util_slab_create(&ilo->transfer_mempool,
          sizeof(struct ilo_transfer), 64, UTIL_SLAB_SINGLETHREADED);
 
-   ilo->cp = ilo_cp_create(ilo->winsys, is->dev.has_llc);
    ilo->shader_cache = ilo_shader_cache_create();
+   ilo->cp = ilo_cp_create(ilo->dev, ilo->winsys, ilo->shader_cache);
    if (ilo->cp)
-      ilo->hw3d = ilo_3d_create(ilo->cp, ilo->dev);
+      ilo->render = ilo_render_create(&ilo->cp->builder);
 
-   if (!ilo->cp || !ilo->shader_cache || !ilo->hw3d) {
+   if (!ilo->cp || !ilo->shader_cache || !ilo->render) {
       ilo_context_destroy(&ilo->base);
       return NULL;
    }
 
-   ilo->uploader = u_upload_create(&ilo->base, 1024 * 1024, 16,
-         PIPE_BIND_CONSTANT_BUFFER | PIPE_BIND_INDEX_BUFFER);
-   if (!ilo->uploader) {
-      ilo_context_destroy(&ilo->base);
-      return NULL;
-   }
-
-   ilo_cp_set_flush_callback(ilo->cp,
-         ilo_context_cp_flushed, (void *) ilo);
+   ilo_cp_set_submit_callback(ilo->cp,
+         ilo_context_cp_submitted, (void *) ilo);
 
    ilo->base.screen = screen;
    ilo->base.priv = priv;
 
    ilo->base.destroy = ilo_context_destroy;
    ilo->base.flush = ilo_flush;
+   ilo->base.render_condition = ilo_render_condition;
 
-   ilo_init_3d_functions(ilo);
+   ilo_init_draw_functions(ilo);
    ilo_init_query_functions(ilo);
    ilo_init_state_functions(ilo);
    ilo_init_blit_functions(ilo);
@@ -168,9 +182,21 @@ ilo_context_create(struct pipe_screen *screen, void *priv)
    ilo_init_video_functions(ilo);
    ilo_init_gpgpu_functions(ilo);
 
-   ilo_init_states(ilo);
+   ilo_init_draw(ilo);
+   ilo_state_vector_init(ilo->dev, &ilo->state_vector);
 
-   /* this must be called last as u_blitter is a client of the pipe context */
+   /*
+    * These must be called last as u_upload/u_blitter are clients of the pipe
+    * context.
+    */
+   ilo->uploader = u_upload_create(&ilo->base, 1024 * 1024,
+         PIPE_BIND_CONSTANT_BUFFER | PIPE_BIND_INDEX_BUFFER,
+                                   PIPE_USAGE_STREAM);
+   if (!ilo->uploader) {
+      ilo_context_destroy(&ilo->base);
+      return NULL;
+   }
+
    ilo->blitter = ilo_blitter_create(ilo);
    if (!ilo->blitter) {
       ilo_context_destroy(&ilo->base);

@@ -34,7 +34,7 @@ SEARCH_INCLUDES        = YES
 INCLUDE_PATH           = ../include/
 INCLUDE_FILE_PATTERNS  = 
 PREDEFINED             = 
-EXPAND_AS_DEFINED      = _glthread_DECLARE_STATIC_MUTEX
+EXPAND_AS_DEFINED      = 
 SKIP_FUNCTION_MACROS   = YES
 #---------------------------------------------------------------------------
 # Configuration::addtions related to external references   
@@ -43,7 +43,6 @@ TAGFILES		= tnl_dd.tag=../tnl_dd \
 			 vbo.tag=../vbo \
                          glapi.tag=../glapi \
                          math.tag=../math \
-                         shader.tag=../shader \
                          swrast.tag=../swrast \
                          swrast_setup.tag=../swrast_setup \
                          tnl.tag=../tnl

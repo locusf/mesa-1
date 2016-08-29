@@ -45,10 +45,11 @@
  * Vertex and index buffers need hardware backing.  Constant buffers
  * do not.  No other types of buffers currently supported.
  */
-static INLINE boolean
+static inline boolean
 svga_buffer_needs_hw_storage(unsigned usage)
 {
-   return usage & (PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER);
+   return (usage & (PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER |
+                    PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_STREAM_OUTPUT)) != 0;
 }
 
 
@@ -75,17 +76,60 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
    struct svga_screen *ss = svga_screen(pipe->screen);
    struct svga_buffer *sbuf = svga_buffer(resource);
    struct pipe_transfer *transfer;
-   uint8_t *map;
+   uint8_t *map = NULL;
+   int64_t begin = svga_get_time(svga);
 
-   transfer = CALLOC_STRUCT(pipe_transfer);
-   if (transfer == NULL) {
-      return NULL;
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_BUFFERTRANSFERMAP);
+
+   assert(box->y == 0);
+   assert(box->z == 0);
+   assert(box->height == 1);
+   assert(box->depth == 1);
+
+   transfer = MALLOC_STRUCT(pipe_transfer);
+   if (!transfer) {
+      goto done;
    }
 
    transfer->resource = resource;
    transfer->level = level;
    transfer->usage = usage;
    transfer->box = *box;
+   transfer->stride = 0;
+   transfer->layer_stride = 0;
+
+   if ((usage & PIPE_TRANSFER_READ) && sbuf->dirty) {
+      enum pipe_error ret;
+
+      /* Host-side buffers can only be dirtied with vgpu10 features
+       * (streamout and buffer copy).
+       */
+      assert(svga_have_vgpu10(svga));
+
+      if (!sbuf->user) {
+         (void) svga_buffer_handle(svga, resource);
+      }
+
+      if (sbuf->dma.pending > 0) {
+         svga_buffer_upload_flush(svga, sbuf);
+         svga_context_finish(svga);
+      }
+
+      assert(sbuf->handle);
+
+      ret = SVGA3D_vgpu10_ReadbackSubResource(svga->swc, sbuf->handle, 0);
+      if (ret != PIPE_OK) {
+         svga_context_flush(svga, NULL);
+         ret = SVGA3D_vgpu10_ReadbackSubResource(svga->swc, sbuf->handle, 0);
+         assert(ret == PIPE_OK);
+      }
+
+      svga->hud.num_readbacks++;
+
+      svga_context_finish(svga);
+
+      sbuf->dirty = FALSE;
+   }
 
    if (usage & PIPE_TRANSFER_WRITE) {
       if (usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE) {
@@ -103,9 +147,13 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
             /*
              * Instead of flushing the context command buffer, simply discard
              * the current hwbuf, and start a new one.
+             * With GB objects, the map operation takes care of this
+             * if passed the PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE flag,
+             * and the old backing store is busy.
              */
 
-            svga_buffer_destroy_hw_storage(ss, sbuf);
+            if (!svga_have_gb_objects(svga))
+               svga_buffer_destroy_hw_storage(ss, sbuf);
          }
 
          sbuf->map.num_ranges = 0;
@@ -132,7 +180,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
          if (sbuf->dma.pending) {
             svga_buffer_upload_flush(svga, sbuf);
 
-            if (sbuf->hwbuf) {
+            if (svga_buffer_has_hw_storage(sbuf)) {
                /*
                 * We have a pending DMA upload from a hardware buffer, therefore
                 * we need to ensure that the host finishes processing that DMA
@@ -157,7 +205,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
                    */
 
                   FREE(transfer);
-                  return NULL;
+                  goto done;
                }
 
                svga_context_flush(svga, NULL);
@@ -168,7 +216,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
       }
    }
 
-   if (!sbuf->swbuf && !sbuf->hwbuf) {
+   if (!sbuf->swbuf && !svga_buffer_has_hw_storage(sbuf)) {
       if (svga_buffer_create_hw_storage(ss, sbuf) != PIPE_OK) {
          /*
           * We can't create a hardware buffer big enough, so create a malloc
@@ -184,7 +232,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
          sbuf->swbuf = align_malloc(sbuf->b.b.width0, 16);
          if (!sbuf->swbuf) {
             FREE(transfer);
-            return NULL;
+            goto done;
          }
       }
    }
@@ -193,11 +241,19 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
       /* User/malloc buffer */
       map = sbuf->swbuf;
    }
-   else if (sbuf->hwbuf) {
-      struct svga_screen *ss = svga_screen(pipe->screen);
-      struct svga_winsys_screen *sws = ss->sws;
+   else if (svga_buffer_has_hw_storage(sbuf)) {
+      boolean retry;
 
-      map = sws->buffer_map(sws, sbuf->hwbuf, transfer->usage);
+      map = svga_buffer_hw_storage_map(svga, sbuf, transfer->usage, &retry);
+      if (map == NULL && retry) {
+         /*
+          * At this point, svga_buffer_get_transfer() has already
+          * hit the DISCARD_WHOLE_RESOURCE path and flushed HWTNL
+          * for this buffer.
+          */
+         svga_context_flush(svga, NULL);
+         map = svga_buffer_hw_storage_map(svga, sbuf, transfer->usage, &retry);
+      }
    }
    else {
       map = NULL;
@@ -210,7 +266,11 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
    } else {
       FREE(transfer);
    }
-   
+
+   svga->hud.map_buffer_time += (svga_get_time(svga) - begin);
+
+done:
+   SVGA_STATS_TIME_POP(svga_sws(svga));
    return map;
 }
 
@@ -240,18 +300,20 @@ svga_buffer_transfer_unmap( struct pipe_context *pipe,
                             struct pipe_transfer *transfer )
 {
    struct svga_screen *ss = svga_screen(pipe->screen);
-   struct svga_winsys_screen *sws = ss->sws;
+   struct svga_context *svga = svga_context(pipe);
    struct svga_buffer *sbuf = svga_buffer(transfer->resource);
-   
+
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_BUFFERTRANSFERUNMAP);
+
    pipe_mutex_lock(ss->swc_mutex);
-   
+
    assert(sbuf->map.count);
    if (sbuf->map.count) {
       --sbuf->map.count;
    }
 
-   if (sbuf->hwbuf) {
-      sws->buffer_unmap(sws, sbuf->hwbuf);
+   if (svga_buffer_has_hw_storage(sbuf)) {
+      svga_buffer_hw_storage_unmap(svga, sbuf);
    }
 
    if (transfer->usage & PIPE_TRANSFER_WRITE) {
@@ -263,7 +325,7 @@ svga_buffer_transfer_unmap( struct pipe_context *pipe,
           */
 
          SVGA_DBG(DEBUG_DMA, "flushing the whole buffer\n");
-   
+
          sbuf->dma.flags.discard = TRUE;
 
          svga_buffer_add_range(sbuf, 0, sbuf->b.b.width0);
@@ -272,6 +334,7 @@ svga_buffer_transfer_unmap( struct pipe_context *pipe,
 
    pipe_mutex_unlock(ss->swc_mutex);
    FREE(transfer);
+   SVGA_STATS_TIME_POP(svga_sws(svga));
 }
 
 
@@ -283,35 +346,37 @@ svga_buffer_destroy( struct pipe_screen *screen,
    struct svga_buffer *sbuf = svga_buffer( buf );
 
    assert(!p_atomic_read(&buf->reference.count));
-   
+
    assert(!sbuf->dma.pending);
 
-   if(sbuf->handle)
+   if (sbuf->handle)
       svga_buffer_destroy_host_surface(ss, sbuf);
-   
-   if(sbuf->uploaded.buffer)
+
+   if (sbuf->uploaded.buffer)
       pipe_resource_reference(&sbuf->uploaded.buffer, NULL);
 
-   if(sbuf->hwbuf)
+   if (sbuf->hwbuf)
       svga_buffer_destroy_hw_storage(ss, sbuf);
-   
-   if(sbuf->swbuf && !sbuf->user)
+
+   if (sbuf->swbuf && !sbuf->user)
       align_free(sbuf->swbuf);
-   
-   ss->total_resource_bytes -= sbuf->size;
+
+   ss->hud.total_resource_bytes -= sbuf->size;
+   assert(ss->hud.num_resources > 0);
+   if (ss->hud.num_resources > 0)
+      ss->hud.num_resources--;
 
    FREE(sbuf);
 }
 
 
-struct u_resource_vtbl svga_buffer_vtbl = 
+struct u_resource_vtbl svga_buffer_vtbl =
 {
    u_default_resource_get_handle,      /* get_handle */
    svga_buffer_destroy,		     /* resource_destroy */
    svga_buffer_transfer_map,	     /* transfer_map */
    svga_buffer_transfer_flush_region,  /* transfer_flush_region */
    svga_buffer_transfer_unmap,	     /* transfer_unmap */
-   u_default_transfer_inline_write   /* transfer_inline_write */
 };
 
 
@@ -322,39 +387,76 @@ svga_buffer_create(struct pipe_screen *screen,
 {
    struct svga_screen *ss = svga_screen(screen);
    struct svga_buffer *sbuf;
-   
+
+   SVGA_STATS_TIME_PUSH(ss->sws, SVGA_STATS_TIME_CREATEBUFFER);
+
    sbuf = CALLOC_STRUCT(svga_buffer);
-   if(!sbuf)
+   if (!sbuf)
       goto error1;
-   
+
    sbuf->b.b = *template;
    sbuf->b.vtbl = &svga_buffer_vtbl;
    pipe_reference_init(&sbuf->b.b.reference, 1);
    sbuf->b.b.screen = screen;
+   sbuf->bind_flags = template->bind;
 
-   if(svga_buffer_needs_hw_storage(template->bind)) {
-      if(svga_buffer_create_host_surface(ss, sbuf) != PIPE_OK)
+   if (template->bind & PIPE_BIND_CONSTANT_BUFFER) {
+      /* Constant buffers can only have the PIPE_BIND_CONSTANT_BUFFER
+       * flag set.
+       */
+      if (ss->sws->have_vgpu10) {
+         sbuf->bind_flags = PIPE_BIND_CONSTANT_BUFFER;
+
+         /* Constant buffer size needs to be in multiples of 16. */
+         sbuf->b.b.width0 = align(sbuf->b.b.width0, 16);
+      }
+   }
+
+   if (svga_buffer_needs_hw_storage(template->bind)) {
+
+      /* If the buffer will be used for vertex/index/stream data, set all
+       * the flags so that the buffer will be accepted for all those uses.
+       * Note that the PIPE_BIND_ flags we get from the state tracker are
+       * just a hint about how the buffer may be used.  And OpenGL buffer
+       * object may be used for many different things.
+       */
+      if (!(template->bind & PIPE_BIND_CONSTANT_BUFFER)) {
+         /* Not a constant buffer.  The buffer may be used for vertex data,
+          * indexes or stream-out.
+          */
+         sbuf->bind_flags |= (PIPE_BIND_VERTEX_BUFFER |
+                              PIPE_BIND_INDEX_BUFFER);
+         if (ss->sws->have_vgpu10)
+            sbuf->bind_flags |= PIPE_BIND_STREAM_OUTPUT;
+      }
+
+      if (svga_buffer_create_host_surface(ss, sbuf) != PIPE_OK)
          goto error2;
    }
    else {
-      sbuf->swbuf = align_malloc(template->width0, 64);
-      if(!sbuf->swbuf)
+      sbuf->swbuf = align_malloc(sbuf->b.b.width0, 64);
+      if (!sbuf->swbuf)
          goto error2;
    }
-      
+
    debug_reference(&sbuf->b.b.reference,
                    (debug_reference_descriptor)debug_describe_resource, 0);
 
-   sbuf->size = util_resource_size(template);
-   ss->total_resource_bytes += sbuf->size;
+   sbuf->size = util_resource_size(&sbuf->b.b);
+   ss->hud.total_resource_bytes += sbuf->size;
 
-   return &sbuf->b.b; 
+   ss->hud.num_resources++;
+   SVGA_STATS_TIME_POP(ss->sws);
+
+   return &sbuf->b.b;
 
 error2:
    FREE(sbuf);
 error1:
+   SVGA_STATS_TIME_POP(ss->sws);
    return NULL;
 }
+
 
 struct pipe_resource *
 svga_user_buffer_create(struct pipe_screen *screen,
@@ -363,11 +465,12 @@ svga_user_buffer_create(struct pipe_screen *screen,
 			unsigned bind)
 {
    struct svga_buffer *sbuf;
-   
+   struct svga_screen *ss = svga_screen(screen);
+
    sbuf = CALLOC_STRUCT(svga_buffer);
-   if(!sbuf)
+   if (!sbuf)
       goto no_sbuf;
-      
+
    pipe_reference_init(&sbuf->b.b.reference, 1);
    sbuf->b.vtbl = &svga_buffer_vtbl;
    sbuf->b.b.screen = screen;
@@ -379,13 +482,16 @@ svga_user_buffer_create(struct pipe_screen *screen,
    sbuf->b.b.depth0 = 1;
    sbuf->b.b.array_size = 1;
 
+   sbuf->bind_flags = bind;
    sbuf->swbuf = ptr;
    sbuf->user = TRUE;
 
    debug_reference(&sbuf->b.b.reference,
                    (debug_reference_descriptor)debug_describe_resource, 0);
-   
-   return &sbuf->b.b; 
+
+   ss->hud.num_resources++;
+
+   return &sbuf->b.b;
 
 no_sbuf:
    return NULL;

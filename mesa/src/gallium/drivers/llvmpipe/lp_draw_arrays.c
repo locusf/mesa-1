@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -33,6 +33,7 @@
 
 #include "pipe/p_defines.h"
 #include "pipe/p_context.h"
+#include "util/u_draw.h"
 #include "util/u_prim.h"
 
 #include "lp_context.h"
@@ -59,6 +60,11 @@ llvmpipe_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info)
 
    if (!llvmpipe_check_render_cond(lp))
       return;
+
+   if (info->indirect) {
+      util_draw_indirect(pipe, info);
+      return;
+   }
 
    if (lp->dirty)
       llvmpipe_update_derived( lp );
@@ -112,11 +118,11 @@ llvmpipe_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info)
    llvmpipe_prepare_geometry_sampling(lp,
                                       lp->num_sampler_views[PIPE_SHADER_GEOMETRY],
                                       lp->sampler_views[PIPE_SHADER_GEOMETRY]);
-   if (lp->gs && !lp->gs->shader.tokens) {
+   if (lp->gs && lp->gs->no_tokens) {
       /* we have an empty geometry shader with stream output, so
          attach the stream output info to the current vertex shader */
       if (lp->vs) {
-         draw_vs_attach_so(lp->vs->draw_data, &lp->gs->shader.stream_output);
+         draw_vs_attach_so(lp->vs, &lp->gs->stream_output);
       }
    }
    draw_collect_pipeline_statistics(draw,
@@ -136,16 +142,13 @@ llvmpipe_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info)
    }
    draw_set_mapped_so_targets(draw, 0, NULL);
 
-   if (lp->gs && !lp->gs->shader.tokens) {
+   if (lp->gs && lp->gs->no_tokens) {
       /* we have attached stream output to the vs for rendering,
          now lets reset it */
       if (lp->vs) {
-         draw_vs_reset_so(lp->vs->draw_data);
+         draw_vs_reset_so(lp->vs);
       }
    }
-   
-   llvmpipe_cleanup_vertex_sampling(lp);
-   llvmpipe_cleanup_geometry_sampling(lp);
 
    /*
     * TODO: Flush only when a user vertex/index buffer is present

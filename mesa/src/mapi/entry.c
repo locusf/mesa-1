@@ -27,7 +27,9 @@
 
 #include "entry.h"
 #include "u_current.h"
-#include "u_macros.h"
+
+#define _U_STRINGIFY(x) #x
+#define U_STRINGIFY(x) _U_STRINGIFY(x)
 
 /* define macros for use by assembly dispatchers */
 #define ENTRY_CURRENT_TABLE U_STRINGIFY(u_current_table)
@@ -36,7 +38,7 @@
 #ifdef MAPI_MODE_BRIDGE
 #define ENTRY_CURRENT_TABLE_GET "_glapi_get_dispatch"
 #else
-#define ENTRY_CURRENT_TABLE_GET U_STRINGIFY(u_current_get_internal)
+#define ENTRY_CURRENT_TABLE_GET U_STRINGIFY(u_current_get_table_internal)
 #endif
 
 #if defined(USE_X86_ASM) && defined(__GNUC__)
@@ -51,13 +53,13 @@
 
 #include <stdlib.h>
 
-static INLINE const struct mapi_table *
+static inline const struct mapi_table *
 entry_current_get(void)
 {
 #ifdef MAPI_MODE_BRIDGE
    return GET_DISPATCH();
 #else
-   return u_current_get();
+   return u_current_get_table();
 #endif
 }
 

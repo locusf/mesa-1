@@ -119,9 +119,12 @@ public:
 class dce_cleanup : public vpass {
 	using vpass::visit;
 
+	bool remove_unused;
+
 public:
 
-	dce_cleanup(shader &s) : vpass(s) {}
+	dce_cleanup(shader &s) : vpass(s),
+		remove_unused(s.dce_flags & DF_REMOVE_UNUSED) {}
 
 	virtual bool visit(node &n, bool enter);
 	virtual bool visit(alu_group_node &n, bool enter);
@@ -135,7 +138,7 @@ public:
 private:
 
 	void cleanup_dst(node &n);
-	void cleanup_dst_vec(vvec &vv);
+	bool cleanup_dst_vec(vvec &vv);
 
 };
 
@@ -692,8 +695,9 @@ public:
 
 	void run_on(container_node *c);
 
-	void finalize_alu_group(alu_group_node *g);
-	void finalize_alu_src(alu_group_node *g, alu_node *a);
+	void insert_rv6xx_load_ar_workaround(alu_group_node *b4);
+	void finalize_alu_group(alu_group_node *g, node *prev_node);
+	bool finalize_alu_src(alu_group_node *g, alu_node *a, alu_group_node *prev_node);
 
 	void emit_set_grad(fetch_node* f);
 	void finalize_fetch(fetch_node *f);
@@ -705,8 +709,14 @@ public:
 	void update_ngpr(unsigned gpr);
 	void update_nstack(region_node *r, unsigned add = 0);
 
+	unsigned get_stack_depth(node *n, unsigned &loops, unsigned &ifs,
+	                         unsigned add = 0);
+
 	void cf_peephole();
 
+private:
+	void copy_fetch_src(fetch_node &dst, fetch_node &src, unsigned arg_start);
+	void emit_set_texture_offsets(fetch_node &f);
 };
 
 

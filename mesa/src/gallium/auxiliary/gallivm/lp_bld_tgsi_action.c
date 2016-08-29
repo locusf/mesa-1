@@ -2,7 +2,7 @@
  * 
  * Copyright 2011-2012 Advanced Micro Devices, Inc.
  * Copyright 2009 VMware, Inc.
- * Copyright 2007-2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007-2008 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -20,7 +20,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -45,8 +45,10 @@
 #include "lp_bld_arit.h"
 #include "lp_bld_bitarit.h"
 #include "lp_bld_const.h"
+#include "lp_bld_conv.h"
 #include "lp_bld_gather.h"
 #include "lp_bld_logic.h"
+#include "lp_bld_pack.h"
 
 #include "tgsi/tgsi_exec.h"
 
@@ -530,6 +532,77 @@ static struct lp_build_tgsi_action log_action = {
    log_emit	 /* emit */
 };
 
+/* TGSI_OPCODE_PK2H */
+
+static void
+pk2h_fetch_args(
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   /* src0.x */
+   emit_data->args[0] = lp_build_emit_fetch(bld_base, emit_data->inst,
+                                            0, TGSI_CHAN_X);
+   /* src0.y */
+   emit_data->args[1] = lp_build_emit_fetch(bld_base, emit_data->inst,
+                                            0, TGSI_CHAN_Y);
+}
+
+static void
+pk2h_emit(
+   const struct lp_build_tgsi_action *action,
+   struct lp_build_tgsi_context *bld_base,
+   struct lp_build_emit_data *emit_data)
+{
+   struct gallivm_state *gallivm = bld_base->base.gallivm;
+   struct lp_type f16i_t;
+   LLVMValueRef lo, hi, res;
+
+   f16i_t = lp_type_uint_vec(16, bld_base->base.type.length * 32);
+   lo = lp_build_float_to_half(gallivm, emit_data->args[0]);
+   hi = lp_build_float_to_half(gallivm, emit_data->args[1]);
+   /* maybe some interleave doubling vector width would be useful... */
+   lo = lp_build_pad_vector(gallivm, lo, bld_base->base.type.length * 2);
+   hi = lp_build_pad_vector(gallivm, hi, bld_base->base.type.length * 2);
+   res = lp_build_interleave2(gallivm, f16i_t, lo, hi, 0);
+
+   emit_data->output[emit_data->chan] = res;
+}
+
+static struct lp_build_tgsi_action pk2h_action = {
+   pk2h_fetch_args, /* fetch_args */
+   pk2h_emit        /* emit */
+};
+
+/* TGSI_OPCODE_UP2H */
+
+static void
+up2h_emit(
+   const struct lp_build_tgsi_action *action,
+   struct lp_build_tgsi_context *bld_base,
+   struct lp_build_emit_data *emit_data)
+{
+   struct gallivm_state *gallivm = bld_base->base.gallivm;
+   LLVMBuilderRef builder = gallivm->builder;
+   LLVMContextRef context = gallivm->context;
+   LLVMValueRef lo, hi, res[2], arg;
+   unsigned nr = bld_base->base.type.length;
+   LLVMTypeRef i16t = LLVMVectorType(LLVMInt16TypeInContext(context), nr * 2);
+
+   arg = LLVMBuildBitCast(builder, emit_data->args[0], i16t, "");
+   lo = lp_build_uninterleave1(gallivm, nr * 2, arg, 0);
+   hi = lp_build_uninterleave1(gallivm, nr * 2, arg, 1);
+   res[0] = lp_build_half_to_float(gallivm, lo);
+   res[1] = lp_build_half_to_float(gallivm, hi);
+
+   emit_data->output[0] = emit_data->output[2] = res[0];
+   emit_data->output[1] = emit_data->output[3] = res[1];
+}
+
+static struct lp_build_tgsi_action up2h_action = {
+   scalar_unary_fetch_args, /* fetch_args */
+   up2h_emit                /* emit */
+};
+
 /* TGSI_OPCODE_LRP */
 
 static void
@@ -538,12 +611,19 @@ lrp_emit(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   LLVMValueRef tmp;
-   tmp = lp_build_emit_llvm_binary(bld_base, TGSI_OPCODE_SUB,
-                                   emit_data->args[1],
-                                   emit_data->args[2]);
-   emit_data->output[emit_data->chan] = lp_build_emit_llvm_ternary(bld_base,
-                    TGSI_OPCODE_MAD, emit_data->args[0], tmp, emit_data->args[2]);
+   struct lp_build_context *bld = &bld_base->base;
+   LLVMValueRef inv, a, b;
+
+   /* This uses the correct version: (1 - t)*a + t*b
+    *
+    * An alternative version is "a + t*(b-a)". The problem is this version
+    * doesn't return "b" for t = 1, because "a + (b-a)" isn't equal to "b"
+    * because of the floating-point rounding.
+    */
+   inv = lp_build_sub(bld, bld_base->base.one, emit_data->args[0]);
+   a = lp_build_mul(bld, emit_data->args[1], emit_data->args[0]);
+   b = lp_build_mul(bld, emit_data->args[2], inv);
+   emit_data->output[emit_data->chan] = lp_build_add(bld, a, b);
 }
 
 /* TGSI_OPCODE_MAD */
@@ -691,28 +771,6 @@ const struct lp_build_tgsi_action scs_action = {
    scs_emit	 /* emit */
 };
 
-/* TGSI_OPCODE_SFL */
-
-static void
-sfl_emit(
-   const struct lp_build_tgsi_action * action,
-   struct lp_build_tgsi_context * bld_base,
-   struct lp_build_emit_data * emit_data)
-{
-   emit_data->output[emit_data->chan] = bld_base->base.zero;
-}
-
-/* TGSI_OPCODE_STR */
-
-static void
-str_emit(
-   const struct lp_build_tgsi_action * action,
-   struct lp_build_tgsi_context * bld_base,
-   struct lp_build_emit_data * emit_data)
-{
-   emit_data->output[emit_data->chan] = bld_base->base.one;
-}
-
 /* TGSI_OPCODE_SUB */
 static void
 sub_emit(
@@ -720,10 +778,23 @@ sub_emit(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-	emit_data->output[emit_data->chan] = LLVMBuildFSub(
-				bld_base->base.gallivm->builder,
-				emit_data->args[0],
-				emit_data->args[1], "");
+   emit_data->output[emit_data->chan] =
+      LLVMBuildFSub(bld_base->base.gallivm->builder,
+                    emit_data->args[0],
+                    emit_data->args[1], "");
+}
+
+/* TGSI_OPCODE_F2U */
+static void
+f2u_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] =
+      LLVMBuildFPToUI(bld_base->base.gallivm->builder,
+                      emit_data->args[0],
+                      bld_base->base.int_vec_type, "");
 }
 
 /* TGSI_OPCODE_U2F */
@@ -733,9 +804,10 @@ u2f_emit(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = LLVMBuildUIToFP(bld_base->base.gallivm->builder,
-							emit_data->args[0],
-							bld_base->base.vec_type, "");
+   emit_data->output[emit_data->chan] =
+      LLVMBuildUIToFP(bld_base->base.gallivm->builder,
+                      emit_data->args[0],
+                      bld_base->base.vec_type, "");
 }
 
 static void
@@ -761,6 +833,64 @@ umul_emit(
 {
    emit_data->output[emit_data->chan] = lp_build_mul(&bld_base->uint_bld,
                                    emit_data->args[0], emit_data->args[1]);
+}
+
+/* TGSI_OPCODE_IMUL_HI */
+static void
+imul_hi_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   LLVMBuilderRef builder = bld_base->base.gallivm->builder;
+   struct lp_build_context *int_bld = &bld_base->int_bld;
+   struct lp_type type = int_bld->type;
+   LLVMValueRef src0, src1;
+   LLVMValueRef dst64;
+   LLVMTypeRef typeRef;
+
+   assert(type.width == 32);
+   type.width = 64;
+   typeRef = lp_build_vec_type(bld_base->base.gallivm, type);
+   src0 = LLVMBuildSExt(builder, emit_data->args[0], typeRef, "");
+   src1 = LLVMBuildSExt(builder, emit_data->args[1], typeRef, "");
+   dst64 = LLVMBuildMul(builder, src0, src1, "");
+   dst64 = LLVMBuildAShr(
+            builder, dst64,
+            lp_build_const_vec(bld_base->base.gallivm, type, 32), "");
+   type.width = 32;
+   typeRef = lp_build_vec_type(bld_base->base.gallivm, type);
+   emit_data->output[emit_data->chan] =
+         LLVMBuildTrunc(builder, dst64, typeRef, "");
+}
+
+/* TGSI_OPCODE_UMUL_HI */
+static void
+umul_hi_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   LLVMBuilderRef builder = bld_base->base.gallivm->builder;
+   struct lp_build_context *uint_bld = &bld_base->uint_bld;
+   struct lp_type type = uint_bld->type;
+   LLVMValueRef src0, src1;
+   LLVMValueRef dst64;
+   LLVMTypeRef typeRef;
+
+   assert(type.width == 32);
+   type.width = 64;
+   typeRef = lp_build_vec_type(bld_base->base.gallivm, type);
+   src0 = LLVMBuildZExt(builder, emit_data->args[0], typeRef, "");
+   src1 = LLVMBuildZExt(builder, emit_data->args[1], typeRef, "");
+   dst64 = LLVMBuildMul(builder, src0, src1, "");
+   dst64 = LLVMBuildLShr(
+            builder, dst64,
+            lp_build_const_vec(bld_base->base.gallivm, type, 32), "");
+   type.width = 32;
+   typeRef = lp_build_vec_type(bld_base->base.gallivm, type);
+   emit_data->output[emit_data->chan] =
+         LLVMBuildTrunc(builder, dst64, typeRef, "");
 }
 
 /* TGSI_OPCODE_MAX */
@@ -844,6 +974,125 @@ const struct lp_build_tgsi_action xpd_action = {
    xpd_emit	 /* emit */
 };
 
+/* TGSI_OPCODE_D2F */
+static void
+d2f_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] =
+      LLVMBuildFPTrunc(bld_base->base.gallivm->builder,
+                      emit_data->args[0],
+                       bld_base->base.vec_type, "");
+}
+
+/* TGSI_OPCODE_D2I */
+static void
+d2i_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] =
+      LLVMBuildFPToSI(bld_base->base.gallivm->builder,
+                      emit_data->args[0],
+                      bld_base->base.int_vec_type, "");
+}
+
+/* TGSI_OPCODE_D2U */
+static void
+d2u_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] =
+      LLVMBuildFPToUI(bld_base->base.gallivm->builder,
+                      emit_data->args[0],
+                      bld_base->base.int_vec_type, "");
+}
+
+/* TGSI_OPCODE_F2D */
+static void
+f2d_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] =
+      LLVMBuildFPExt(bld_base->base.gallivm->builder,
+                      emit_data->args[0],
+                      bld_base->dbl_bld.vec_type, "");
+}
+
+/* TGSI_OPCODE_U2D */
+static void
+u2d_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] =
+      LLVMBuildUIToFP(bld_base->base.gallivm->builder,
+                      emit_data->args[0],
+                      bld_base->dbl_bld.vec_type, "");
+}
+
+/* TGSI_OPCODE_I2D */
+static void
+i2d_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] =
+      LLVMBuildSIToFP(bld_base->base.gallivm->builder,
+                      emit_data->args[0],
+                      bld_base->dbl_bld.vec_type, "");
+}
+
+/* TGSI_OPCODE_DMAD */
+static void
+dmad_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   LLVMValueRef tmp;
+   tmp = lp_build_emit_llvm_binary(bld_base, TGSI_OPCODE_DMUL,
+                                   emit_data->args[0],
+                                   emit_data->args[1]);
+   emit_data->output[emit_data->chan] = lp_build_emit_llvm_binary(bld_base,
+                                       TGSI_OPCODE_DADD, tmp, emit_data->args[2]);
+}
+
+/*.TGSI_OPCODE_DRCP.*/
+static void drcp_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   LLVMValueRef one;
+   one = lp_build_const_vec(bld_base->dbl_bld.gallivm, bld_base->dbl_bld.type, 1.0f);
+   emit_data->output[emit_data->chan] = LLVMBuildFDiv(
+      bld_base->base.gallivm->builder,
+      one, emit_data->args[0], "");
+}
+
+/* TGSI_OPCODE_DFRAC */
+static void dfrac_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   LLVMValueRef tmp;
+   tmp = lp_build_floor(&bld_base->dbl_bld,
+			emit_data->args[0]);
+   emit_data->output[emit_data->chan] =  LLVMBuildFSub(bld_base->base.gallivm->builder,
+                                                       emit_data->args[0], tmp, "");
+}
+
 void
 lp_set_default_actions(struct lp_build_tgsi_context * bld_base)
 {
@@ -856,10 +1105,12 @@ lp_set_default_actions(struct lp_build_tgsi_context * bld_base)
    bld_base->op_actions[TGSI_OPCODE_EXP] = exp_action;
    bld_base->op_actions[TGSI_OPCODE_LIT] = lit_action;
    bld_base->op_actions[TGSI_OPCODE_LOG] = log_action;
+   bld_base->op_actions[TGSI_OPCODE_PK2H] = pk2h_action;
    bld_base->op_actions[TGSI_OPCODE_RSQ] = rsq_action;
    bld_base->op_actions[TGSI_OPCODE_SQRT] = sqrt_action;
    bld_base->op_actions[TGSI_OPCODE_POW] = pow_action;
    bld_base->op_actions[TGSI_OPCODE_SCS] = scs_action;
+   bld_base->op_actions[TGSI_OPCODE_UP2H] = up2h_action;
    bld_base->op_actions[TGSI_OPCODE_XPD] = xpd_action;
 
    bld_base->op_actions[TGSI_OPCODE_BREAKC].fetch_args = scalar_unary_fetch_args;
@@ -886,17 +1137,37 @@ lp_set_default_actions(struct lp_build_tgsi_context * bld_base)
    bld_base->op_actions[TGSI_OPCODE_MUL].emit = mul_emit;
    bld_base->op_actions[TGSI_OPCODE_DIV].emit = fdiv_emit;
    bld_base->op_actions[TGSI_OPCODE_RCP].emit = rcp_emit;
-   bld_base->op_actions[TGSI_OPCODE_SFL].emit = sfl_emit;
-   bld_base->op_actions[TGSI_OPCODE_STR].emit = str_emit;
    bld_base->op_actions[TGSI_OPCODE_SUB].emit = sub_emit;
 
    bld_base->op_actions[TGSI_OPCODE_UARL].emit = mov_emit;
+   bld_base->op_actions[TGSI_OPCODE_F2U].emit = f2u_emit;
    bld_base->op_actions[TGSI_OPCODE_U2F].emit = u2f_emit;
    bld_base->op_actions[TGSI_OPCODE_UMAD].emit = umad_emit;
    bld_base->op_actions[TGSI_OPCODE_UMUL].emit = umul_emit;
+   bld_base->op_actions[TGSI_OPCODE_IMUL_HI].emit = imul_hi_emit;
+   bld_base->op_actions[TGSI_OPCODE_UMUL_HI].emit = umul_hi_emit;
 
    bld_base->op_actions[TGSI_OPCODE_MAX].emit = fmax_emit;
    bld_base->op_actions[TGSI_OPCODE_MIN].emit = fmin_emit;
+
+   bld_base->op_actions[TGSI_OPCODE_DADD].emit = add_emit;
+   bld_base->op_actions[TGSI_OPCODE_DMAX].emit = fmax_emit;
+   bld_base->op_actions[TGSI_OPCODE_DMIN].emit = fmin_emit;
+   bld_base->op_actions[TGSI_OPCODE_DMUL].emit = mul_emit;
+
+   bld_base->op_actions[TGSI_OPCODE_D2F].emit = d2f_emit;
+   bld_base->op_actions[TGSI_OPCODE_D2I].emit = d2i_emit;
+   bld_base->op_actions[TGSI_OPCODE_D2U].emit = d2u_emit;
+
+   bld_base->op_actions[TGSI_OPCODE_F2D].emit = f2d_emit;
+   bld_base->op_actions[TGSI_OPCODE_I2D].emit = i2d_emit;
+   bld_base->op_actions[TGSI_OPCODE_U2D].emit = u2d_emit;
+
+   bld_base->op_actions[TGSI_OPCODE_DMAD].emit = dmad_emit;
+
+   bld_base->op_actions[TGSI_OPCODE_DRCP].emit = drcp_emit;
+   bld_base->op_actions[TGSI_OPCODE_DFRAC].emit = dfrac_emit;
+
 }
 
 /* CPU Only default actions */
@@ -1006,24 +1277,6 @@ ucmp_emit_cpu(
                       cond, emit_data->args[1], emit_data->args[2]);
 }
 
-
-/* TGSI_OPCODE_CND (CPU Only) */
-static void
-cnd_emit_cpu(
-   const struct lp_build_tgsi_action * action,
-   struct lp_build_tgsi_context * bld_base,
-   struct lp_build_emit_data * emit_data)
-{
-   LLVMValueRef half, tmp;
-   half = lp_build_const_vec(bld_base->base.gallivm, bld_base->base.type, 0.5);
-   tmp = lp_build_cmp(&bld_base->base, PIPE_FUNC_GREATER,
-                      emit_data->args[2], half);
-   emit_data->output[emit_data->chan] = lp_build_select(&bld_base->base,
-                                          tmp,
-                                          emit_data->args[0],
-                                          emit_data->args[1]);
-}
-
 /* TGSI_OPCODE_COS (CPU Only) */
 static void
 cos_emit_cpu(
@@ -1057,20 +1310,6 @@ ex2_emit_cpu(
                                                         emit_data->args[0]);
 }
 
-/* TGSI_OPCODE_EXP (CPU Only) */
-static void
-exp_emit_cpu(
-   const struct lp_build_tgsi_action * action,
-   struct lp_build_tgsi_context * bld_base,
-   struct lp_build_emit_data * emit_data)
-{
-   lp_build_exp2_approx(&bld_base->base, emit_data->args[0],
-                        &emit_data->output[TGSI_CHAN_X],
-                        &emit_data->output[TGSI_CHAN_Y],
-                        &emit_data->output[TGSI_CHAN_Z]);
-   emit_data->output[TGSI_CHAN_W] = bld_base->base.one;
-}
-
 /* TGSI_OPCODE_F2I (CPU Only) */
 static void
 f2i_emit_cpu(
@@ -1082,16 +1321,68 @@ f2i_emit_cpu(
                                                         emit_data->args[0]);
 }
 
-/* TGSI_OPCODE_F2U (CPU Only) */
+/* TGSI_OPCODE_FSET Helper (CPU Only) */
 static void
-f2u_emit_cpu(
+fset_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data,
+   unsigned pipe_func)
+{
+   LLVMValueRef cond;
+
+   if (pipe_func != PIPE_FUNC_NOTEQUAL) {
+      cond = lp_build_cmp_ordered(&bld_base->base, pipe_func,
+                                  emit_data->args[0], emit_data->args[1]);
+   }
+   else {
+      cond = lp_build_cmp(&bld_base->base, pipe_func,
+                          emit_data->args[0], emit_data->args[1]);
+
+   }
+   emit_data->output[emit_data->chan] = cond;
+}
+
+
+/* TGSI_OPCODE_FSEQ (CPU Only) */
+static void
+fseq_emit_cpu(
    const struct lp_build_tgsi_action * action,
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   /* FIXME: implement and use lp_build_utrunc() */
-   emit_data->output[emit_data->chan] = lp_build_itrunc(&bld_base->base,
-                                                        emit_data->args[0]);
+   fset_emit_cpu(action, bld_base, emit_data, PIPE_FUNC_EQUAL);
+}
+
+/* TGSI_OPCODE_ISGE (CPU Only) */
+static void
+fsge_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   fset_emit_cpu(action, bld_base, emit_data, PIPE_FUNC_GEQUAL);
+}
+
+/* TGSI_OPCODE_ISLT (CPU Only) */
+static void
+fslt_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   fset_emit_cpu(action, bld_base, emit_data, PIPE_FUNC_LESS);
+}
+
+/* TGSI_OPCODE_USNE (CPU Only) */
+
+static void
+fsne_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   fset_emit_cpu(action, bld_base, emit_data, PIPE_FUNC_NOTEQUAL);
 }
 
 /* TGSI_OPCODE_FLR (CPU Only) */
@@ -1135,8 +1426,24 @@ idiv_emit_cpu(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = lp_build_div(&bld_base->int_bld,
-                                   emit_data->args[0], emit_data->args[1]);
+   LLVMBuilderRef builder = bld_base->base.gallivm->builder;
+   LLVMValueRef div_mask = lp_build_cmp(&bld_base->uint_bld,
+                                        PIPE_FUNC_EQUAL, emit_data->args[1],
+                                        bld_base->uint_bld.zero);
+   /* We want to make sure that we never divide/mod by zero to not
+    * generate sigfpe. We don't want to crash just because the
+    * shader is doing something weird. */
+   LLVMValueRef divisor = LLVMBuildOr(builder,
+                                      div_mask,
+                                      emit_data->args[1], "");
+   LLVMValueRef result = lp_build_div(&bld_base->int_bld,
+                                      emit_data->args[0], divisor);
+   LLVMValueRef not_div_mask = LLVMBuildNot(builder,
+                                            div_mask,"");
+   /* idiv by zero doesn't have a guaranteed return value chose 0 for now. */
+   emit_data->output[emit_data->chan] = LLVMBuildAnd(builder,
+                                                     not_div_mask,
+                                                     result, "");
 }
 
 /* TGSI_OPCODE_INEG (CPU Only) */
@@ -1203,8 +1510,12 @@ ishr_emit_cpu(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = lp_build_shr(&bld_base->int_bld,
-                                   emit_data->args[0], emit_data->args[1]);
+   struct lp_build_context *int_bld = &bld_base->int_bld;
+   LLVMValueRef mask = lp_build_const_vec(int_bld->gallivm, int_bld->type,
+                                          int_bld->type.width - 1);
+   LLVMValueRef masked_count = lp_build_and(int_bld, emit_data->args[1], mask);
+   emit_data->output[emit_data->chan] = lp_build_shr(int_bld, emit_data->args[0],
+                                                     masked_count);
 }
 
 /* TGSI_OPCODE_ISLT (CPU Only) */
@@ -1236,8 +1547,8 @@ lg2_emit_cpu(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = lp_build_log2(&bld_base->base,
-                                                        emit_data->args[0]);
+   emit_data->output[emit_data->chan] = lp_build_log2_safe(&bld_base->base,
+                                                           emit_data->args[0]);
 }
 
 /* TGSI_OPCODE_LOG (CPU Only) */
@@ -1253,7 +1564,7 @@ log_emit_cpu(
    LLVMValueRef src0 = emit_data->args[0];
 
    lp_build_log2_approx(&bld_base->base, src0,
-                        &p_exp, &p_floor_log2, &p_log2);
+                        &p_exp, &p_floor_log2, &p_log2, FALSE);
 
    emit_data->output[TGSI_CHAN_X] = p_floor_log2;
 
@@ -1266,6 +1577,19 @@ log_emit_cpu(
 
 }
 
+/* TGSI_OPCODE_MAD (CPU Only) */
+
+static void
+mad_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] =
+      lp_build_mad(&bld_base->base,
+                   emit_data->args[0], emit_data->args[1], emit_data->args[2]);
+}
+
 /* TGSI_OPCODE_MAX (CPU Only) */
 
 static void
@@ -1274,8 +1598,10 @@ max_emit_cpu(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = lp_build_max(&bld_base->base,
-                                   emit_data->args[0], emit_data->args[1]);
+   emit_data->output[emit_data->chan] =
+      lp_build_max_ext(&bld_base->base,
+                       emit_data->args[0], emit_data->args[1],
+                       GALLIVM_NAN_RETURN_OTHER);
 }
 
 /* TGSI_OPCODE_MIN (CPU Only) */
@@ -1285,8 +1611,10 @@ min_emit_cpu(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = lp_build_min(&bld_base->base,
-                                   emit_data->args[0], emit_data->args[1]);
+   emit_data->output[emit_data->chan] =
+      lp_build_min_ext(&bld_base->base,
+                       emit_data->args[0], emit_data->args[1],
+                       GALLIVM_NAN_RETURN_OTHER);
 }
 
 /* TGSI_OPCODE_MOD (CPU Only) */
@@ -1296,8 +1624,22 @@ mod_emit_cpu(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = lp_build_mod(&bld_base->int_bld,
-                                   emit_data->args[0], emit_data->args[1]);
+   LLVMBuilderRef builder = bld_base->base.gallivm->builder;
+   LLVMValueRef div_mask = lp_build_cmp(&bld_base->uint_bld,
+                                        PIPE_FUNC_EQUAL, emit_data->args[1],
+                                        bld_base->uint_bld.zero);
+   /* We want to make sure that we never divide/mod by zero to not
+    * generate sigfpe. We don't want to crash just because the
+    * shader is doing something weird. */
+   LLVMValueRef divisor = LLVMBuildOr(builder,
+                                      div_mask,
+                                      emit_data->args[1], "");
+   LLVMValueRef result = lp_build_mod(&bld_base->int_bld,
+                                      emit_data->args[0], divisor);
+   /* umod by zero doesn't have a guaranteed return value chose -1 for now. */
+   emit_data->output[emit_data->chan] = LLVMBuildOr(builder,
+                                                    div_mask,
+                                                    result, "");
 }
 
 /* TGSI_OPCODE_NOT */
@@ -1388,8 +1730,17 @@ set_emit_cpu(
    struct lp_build_emit_data * emit_data,
    unsigned pipe_func)
 {
-   LLVMValueRef cond = lp_build_cmp(&bld_base->base, pipe_func,
-                                    emit_data->args[0], emit_data->args[1]);
+   LLVMValueRef cond;
+
+   if (pipe_func != PIPE_FUNC_NOTEQUAL) {
+      cond = lp_build_cmp_ordered(&bld_base->base, pipe_func,
+                                  emit_data->args[0], emit_data->args[1]);
+   }
+   else {
+      cond = lp_build_cmp(&bld_base->base, pipe_func,
+                          emit_data->args[0], emit_data->args[1]);
+
+   }
    emit_data->output[emit_data->chan] = lp_build_select(&bld_base->base,
                                           cond,
                                           bld_base->base.one,
@@ -1435,8 +1786,12 @@ shl_emit_cpu(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = lp_build_shl(&bld_base->uint_bld,
-                                   emit_data->args[0], emit_data->args[1]);
+   struct lp_build_context *uint_bld = &bld_base->uint_bld;
+   LLVMValueRef mask = lp_build_const_vec(uint_bld->gallivm, uint_bld->type,
+                                          uint_bld->type.width - 1);
+   LLVMValueRef masked_count = lp_build_and(uint_bld, emit_data->args[1], mask);
+   emit_data->output[emit_data->chan] = lp_build_shl(uint_bld, emit_data->args[0],
+                                                     masked_count);
 }
 
 /* TGSI_OPCODE_SIN (CPU Only) */
@@ -1541,15 +1896,15 @@ udiv_emit_cpu(
    LLVMValueRef div_mask = lp_build_cmp(&bld_base->uint_bld,
                                         PIPE_FUNC_EQUAL, emit_data->args[1],
                                         bld_base->uint_bld.zero);
-   /* We want to make sure that we never divide/mod by zero to not 
-    * generate sigfpe. We don't want to crash just because the 
+   /* We want to make sure that we never divide/mod by zero to not
+    * generate sigfpe. We don't want to crash just because the
     * shader is doing something weird. */
    LLVMValueRef divisor = LLVMBuildOr(builder,
                                       div_mask,
                                       emit_data->args[1], "");
    LLVMValueRef result = lp_build_div(&bld_base->uint_bld,
                                       emit_data->args[0], divisor);
-   /* udiv by zero is guaranteed to return 0xffffffff */
+   /* udiv by zero is guaranteed to return 0xffffffff at least with d3d10 */
    emit_data->output[emit_data->chan] = LLVMBuildOr(builder,
                                                     div_mask,
                                                     result, "");
@@ -1643,8 +1998,12 @@ ushr_emit_cpu(
    struct lp_build_tgsi_context * bld_base,
    struct lp_build_emit_data * emit_data)
 {
-   emit_data->output[emit_data->chan] = lp_build_shr(&bld_base->uint_bld,
-                                   emit_data->args[0], emit_data->args[1]);
+   struct lp_build_context *uint_bld = &bld_base->uint_bld;
+   LLVMValueRef mask = lp_build_const_vec(uint_bld->gallivm, uint_bld->type,
+                                          uint_bld->type.width - 1);
+   LLVMValueRef masked_count = lp_build_and(uint_bld, emit_data->args[1], mask);
+   emit_data->output[emit_data->chan] = lp_build_shr(uint_bld, emit_data->args[0],
+                                                     masked_count);
 }
 
 /* TGSI_OPCODE_ISLT (CPU Only) */
@@ -1680,6 +2039,107 @@ xor_emit_cpu(
                                                      emit_data->args[1]);
 }
 
+/* TGSI_OPCODE_DABS (CPU Only) */
+static void
+dabs_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] = lp_build_abs(&bld_base->dbl_bld,
+                                                       emit_data->args[0]);
+}
+
+/* TGSI_OPCODE_DNEG (CPU Only) */
+static void
+dneg_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] = lp_build_sub(&bld_base->dbl_bld,
+                                                     bld_base->dbl_bld.zero,
+                                                     emit_data->args[0]);
+}
+
+/* TGSI_OPCODE_DSET Helper (CPU Only) */
+static void
+dset_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data,
+   unsigned pipe_func)
+{
+   LLVMBuilderRef builder = bld_base->base.gallivm->builder;
+   LLVMValueRef cond = lp_build_cmp(&bld_base->dbl_bld, pipe_func,
+                                    emit_data->args[0], emit_data->args[1]);
+   /* arguments were 64 bit but store as 32 bit */
+   cond = LLVMBuildTrunc(builder, cond, bld_base->int_bld.int_vec_type, "");
+   emit_data->output[emit_data->chan] = cond;
+}
+
+/* TGSI_OPCODE_DSEQ (CPU Only) */
+static void
+dseq_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   dset_emit_cpu(action, bld_base, emit_data, PIPE_FUNC_EQUAL);
+}
+
+/* TGSI_OPCODE_DSGE (CPU Only) */
+static void
+dsge_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   dset_emit_cpu(action, bld_base, emit_data, PIPE_FUNC_GEQUAL);
+}
+
+/* TGSI_OPCODE_DSLT (CPU Only) */
+static void
+dslt_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   dset_emit_cpu(action, bld_base, emit_data, PIPE_FUNC_LESS);
+}
+
+/* TGSI_OPCODE_DSNE (CPU Only) */
+static void
+dsne_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   dset_emit_cpu(action, bld_base, emit_data, PIPE_FUNC_NOTEQUAL);
+}
+
+/* Double Reciprocal squareroot (CPU Only) */
+static void
+drecip_sqrt_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] = lp_build_rsqrt(&bld_base->dbl_bld,
+                                                         emit_data->args[0]);
+}
+
+/* Double Squareroot (CPU Only) */
+static void
+dsqrt_emit_cpu(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   emit_data->output[emit_data->chan] = lp_build_sqrt(&bld_base->dbl_bld,
+                                                      emit_data->args[0]);
+}
+
 void
 lp_set_default_actions_cpu(
    struct lp_build_tgsi_context * bld_base)
@@ -1691,15 +2151,16 @@ lp_set_default_actions_cpu(
    bld_base->op_actions[TGSI_OPCODE_ARL].emit = arl_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_ARR].emit = arr_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_CEIL].emit = ceil_emit_cpu;
-   bld_base->op_actions[TGSI_OPCODE_CND].emit = cnd_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_COS].emit = cos_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_CMP].emit = cmp_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_DIV].emit = div_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_EX2].emit = ex2_emit_cpu;
-   bld_base->op_actions[TGSI_OPCODE_EXP].emit = exp_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_F2I].emit = f2i_emit_cpu;
-   bld_base->op_actions[TGSI_OPCODE_F2U].emit = f2u_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_FLR].emit = flr_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_FSEQ].emit = fseq_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_FSGE].emit = fsge_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_FSLT].emit = fslt_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_FSNE].emit = fsne_emit_cpu;
 
    bld_base->op_actions[TGSI_OPCODE_I2F].emit = i2f_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_IABS].emit = iabs_emit_cpu;
@@ -1714,6 +2175,7 @@ lp_set_default_actions_cpu(
 
    bld_base->op_actions[TGSI_OPCODE_LG2].emit = lg2_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_LOG].emit = log_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_MAD].emit = mad_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_MAX].emit = max_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_MIN].emit = min_emit_cpu;
    bld_base->op_actions[TGSI_OPCODE_MOD].emit = mod_emit_cpu;
@@ -1750,5 +2212,15 @@ lp_set_default_actions_cpu(
    bld_base->op_actions[TGSI_OPCODE_USNE].emit = usne_emit_cpu;
 
    bld_base->op_actions[TGSI_OPCODE_XOR].emit = xor_emit_cpu;
+
+   bld_base->op_actions[TGSI_OPCODE_DABS].emit = dabs_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_DNEG].emit = dneg_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_DSEQ].emit = dseq_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_DSGE].emit = dsge_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_DSLT].emit = dslt_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_DSNE].emit = dsne_emit_cpu;
+
+   bld_base->op_actions[TGSI_OPCODE_DRSQ].emit = drecip_sqrt_emit_cpu;
+   bld_base->op_actions[TGSI_OPCODE_DSQRT].emit = dsqrt_emit_cpu;
 
 }

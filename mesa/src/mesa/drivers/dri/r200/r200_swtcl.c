@@ -29,17 +29,16 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
 #include "main/mtypes.h"
-#include "main/colormac.h"
 #include "main/enums.h"
 #include "main/image.h"
 #include "main/imports.h"
 #include "main/macros.h"
-#include "main/simple_list.h"
+#include "util/simple_list.h"
 
 #include "swrast/s_context.h"
 #include "swrast/s_fog.h"
@@ -210,7 +209,7 @@ static void r200_predict_emit_size( r200ContextPtr rmesa )
       if (rcommonEnsureCmdBufSpace(&rmesa->radeon,
 	       state_size +
 	       vertex_array_size + prim_size,
-	       __FUNCTION__))
+	       __func__))
 	 rmesa->radeon.swtcl.emit_prediction = radeonCountStateEmitSize(&rmesa->radeon);
       else
 	 rmesa->radeon.swtcl.emit_prediction = state_size;
@@ -318,7 +317,7 @@ void r200_swtcl_flush(struct gl_context *ctx, uint32_t current_offset)
 /**************************************************************************/
 
 
-static INLINE GLuint reduced_hw_prim( struct gl_context *ctx, GLuint prim)
+static inline GLuint reduced_hw_prim( struct gl_context *ctx, GLuint prim)
 {
    switch (prim) {
    case GL_POINTS:
@@ -350,7 +349,6 @@ static void r200ResetLineStipple( struct gl_context *ctx );
 #define HAVE_LINE_STRIPS 1
 #define HAVE_TRIANGLES   1
 #define HAVE_TRI_STRIPS  1
-#define HAVE_TRI_STRIP_1 0
 #define HAVE_TRI_FANS    1
 #define HAVE_QUADS       0
 #define HAVE_QUAD_STRIPS 0
@@ -411,8 +409,8 @@ static struct {
 
 
 #define DO_FALLBACK  0
-#define DO_UNFILLED (IND & R200_UNFILLED_BIT)
-#define DO_TWOSIDE  (IND & R200_TWOSIDE_BIT)
+#define DO_UNFILLED ((IND & R200_UNFILLED_BIT) != 0)
+#define DO_TWOSIDE  ((IND & R200_TWOSIDE_BIT) != 0)
 #define DO_FLAT      0
 #define DO_OFFSET     0
 #define DO_TRI       1

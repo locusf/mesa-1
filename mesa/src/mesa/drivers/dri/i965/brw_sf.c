@@ -1,8 +1,8 @@
 /*
  Copyright (C) Intel Corp.  2006.  All Rights Reserved.
- Intel funded Tungsten Graphics (http://www.tungstengraphics.com) to
+ Intel funded Tungsten Graphics to
  develop this 3D driver.
- 
+
  Permission is hereby granted, free of charge, to any person obtaining
  a copy of this software and associated documentation files (the
  "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  distribute, sublicense, and/or sell copies of the Software, and to
  permit persons to whom the Software is furnished to do so, subject to
  the following conditions:
- 
+
  The above copyright notice and this permission notice (including the
  next paragraph) shall be included in all copies or substantial
  portions of the Software.
- 
+
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
@@ -22,15 +22,14 @@
  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- 
+
  **********************************************************************/
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
-  
 
-#include "main/glheader.h"
+
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/enums.h"
@@ -45,7 +44,7 @@
 #include "brw_sf.h"
 #include "brw_state.h"
 
-#include "glsl/ralloc.h"
+#include "util/ralloc.h"
 
 static void compile_sf_prog( struct brw_context *brw,
 			     struct brw_sf_prog_key *key )
@@ -54,14 +53,13 @@ static void compile_sf_prog( struct brw_context *brw,
    const GLuint *program;
    void *mem_ctx;
    GLuint program_size;
-   GLuint i;
 
    memset(&c, 0, sizeof(c));
 
    mem_ctx = ralloc_context(NULL);
    /* Begin the compilation:
     */
-   brw_init_compile(brw, &c.func, mem_ctx);
+   brw_init_codegen(brw->intelScreen->devinfo, &c.func, mem_ctx);
 
    c.key = *key;
    c.vue_map = brw->vue_map_geom_out;
@@ -81,8 +79,9 @@ static void compile_sf_prog( struct brw_context *brw,
 
    c.prog_data.urb_read_length = c.nr_attr_regs;
    c.prog_data.urb_entry_size = c.nr_setup_regs * 2;
+   c.has_flat_shading = brw_any_flat_varyings(&key->interpolation_mode);
 
-   /* Which primitive?  Or all three? 
+   /* Which primitive?  Or all three?
     */
    switch (key->primitive) {
    case SF_TRIANGLES:
@@ -105,23 +104,26 @@ static void compile_sf_prog( struct brw_context *brw,
       brw_emit_anyprim_setup( &c );
       break;
    default:
-      assert(0);
-      return;
+      unreachable("not reached");
    }
+
+   /* FINISHME: SF programs use calculated jumps (i.e., JMPI with a register
+    * source). Compacting would be difficult.
+    */
+   /* brw_compact_instructions(&c.func, 0, 0, NULL); */
 
    /* get the program
     */
    program = brw_get_program(&c.func, &program_size);
 
    if (unlikely(INTEL_DEBUG & DEBUG_SF)) {
-      printf("sf:\n");
-      for (i = 0; i < program_size / sizeof(struct brw_instruction); i++)
-	 brw_disasm(stdout, &((struct brw_instruction *)program)[i],
-		    brw->gen);
-      printf("\n");
+      fprintf(stderr, "sf:\n");
+      brw_disassemble(brw->intelScreen->devinfo,
+                      c.func.store, 0, program_size, stderr);
+      fprintf(stderr, "\n");
    }
 
-   brw_upload_cache(&brw->cache, BRW_SF_PROG,
+   brw_upload_cache(&brw->cache, BRW_CACHE_SF_PROG,
 		    &c.key, sizeof(c.key),
 		    program, program_size,
 		    &c.prog_data, sizeof(c.prog_data),
@@ -131,11 +133,26 @@ static void compile_sf_prog( struct brw_context *brw,
 
 /* Calculate interpolants for triangle and line rasterization.
  */
-static void
+void
 brw_upload_sf_prog(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    struct brw_sf_prog_key key;
+
+   if (!brw_state_dirty(brw,
+                        _NEW_BUFFERS |
+                        _NEW_HINT |
+                        _NEW_LIGHT |
+                        _NEW_POINT |
+                        _NEW_POLYGON |
+                        _NEW_PROGRAM |
+                        _NEW_TRANSFORM,
+                        BRW_NEW_BLORP |
+                        BRW_NEW_INTERPOLATION_MAP |
+                        BRW_NEW_REDUCED_PRIMITIVE |
+                        BRW_NEW_VUE_MAP_GEOM_OUT))
+      return;
+
    /* _NEW_BUFFERS */
    bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
 
@@ -148,7 +165,7 @@ brw_upload_sf_prog(struct brw_context *brw)
 
    /* BRW_NEW_REDUCED_PRIMITIVE */
    switch (brw->reduced_primitive) {
-   case GL_TRIANGLES: 
+   case GL_TRIANGLES:
       /* NOTE: We just use the edgeflag attribute as an indicator that
        * unfilled triangles are active.  We don't actually do the
        * edgeflag testing here, it is already done in the clip
@@ -159,11 +176,11 @@ brw_upload_sf_prog(struct brw_context *brw)
       else
 	 key.primitive = SF_TRIANGLES;
       break;
-   case GL_LINES: 
-      key.primitive = SF_LINES; 
+   case GL_LINES:
+      key.primitive = SF_LINES;
       break;
-   case GL_POINTS: 
-      key.primitive = SF_POINTS; 
+   case GL_POINTS:
+      key.primitive = SF_POINTS;
       break;
    }
 
@@ -173,12 +190,7 @@ brw_upload_sf_prog(struct brw_context *brw)
    /* _NEW_POINT */
    key.do_point_sprite = ctx->Point.PointSprite;
    if (key.do_point_sprite) {
-      int i;
-
-      for (i = 0; i < 8; i++) {
-	 if (ctx->Point.CoordReplace[i])
-	    key.point_sprite_coord_replace |= (1 << i);
-      }
+      key.point_sprite_coord_replace = ctx->Point.CoordReplace & 0xff;
    }
    if (brw->fragment_program->Base.InputsRead & BITFIELD64_BIT(VARYING_SLOT_PNTC))
       key.do_point_coord = 1;
@@ -189,8 +201,10 @@ brw_upload_sf_prog(struct brw_context *brw)
    if ((ctx->Point.SpriteOrigin == GL_LOWER_LEFT) != render_to_fbo)
       key.sprite_origin_lower_left = true;
 
+   /* BRW_NEW_INTERPOLATION_MAP */
+   key.interpolation_mode = brw->interpolation_mode;
+
    /* _NEW_LIGHT | _NEW_PROGRAM */
-   key.do_flat_shading = (ctx->Light.ShadeModel == GL_FLAT);
    key.do_twoside_color = ((ctx->Light.Enabled && ctx->Light.Model.TwoSide) ||
                            ctx->VertexProgram._TwoSideEnabled);
 
@@ -200,23 +214,12 @@ brw_upload_sf_prog(struct brw_context *brw)
        * face orientation, just as we invert the viewport in
        * sf_unit_create_from_key().
        */
-      key.frontface_ccw = (ctx->Polygon.FrontFace == GL_CCW) != render_to_fbo;
+      key.frontface_ccw = ctx->Polygon._FrontBit == render_to_fbo;
    }
 
-   if (!brw_search_cache(&brw->cache, BRW_SF_PROG,
+   if (!brw_search_cache(&brw->cache, BRW_CACHE_SF_PROG,
 			 &key, sizeof(key),
 			 &brw->sf.prog_offset, &brw->sf.prog_data)) {
       compile_sf_prog( brw, &key );
    }
 }
-
-
-const struct brw_tracked_state brw_sf_prog = {
-   .dirty = {
-      .mesa  = (_NEW_HINT | _NEW_LIGHT | _NEW_POLYGON | _NEW_POINT |
-                _NEW_TRANSFORM | _NEW_BUFFERS | _NEW_PROGRAM),
-      .brw   = (BRW_NEW_REDUCED_PRIMITIVE | BRW_NEW_VUE_MAP_GEOM_OUT)
-   },
-   .emit = brw_upload_sf_prog
-};
-

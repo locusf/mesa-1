@@ -31,12 +31,12 @@
 
 #include "main/glheader.h"
 #include "main/context.h"
-#include "main/colormac.h"
 #include "main/imports.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/state.h"
 #include "main/samplerobj.h"
+#include "main/teximage.h"
 #include "program/prog_instruction.h"
 
 #include "s_aatriangle.h"
@@ -77,8 +77,8 @@ _swrast_culltriangle( struct gl_context *ctx,
 #define NAME flat_rgba_triangle
 #define INTERP_Z 1
 #define SETUP_CODE				\
-   ASSERT(ctx->Texture._EnabledCoordUnits == 0);\
-   ASSERT(ctx->Light.ShadeModel==GL_FLAT);	\
+   assert(ctx->Texture._EnabledCoordUnits == 0);\
+   assert(ctx->Light.ShadeModel==GL_FLAT);	\
    span.interpMask |= SPAN_RGBA;		\
    span.red = ChanToFixed(v2->color[0]);	\
    span.green = ChanToFixed(v2->color[1]);	\
@@ -103,8 +103,8 @@ _swrast_culltriangle( struct gl_context *ctx,
 #define SETUP_CODE				\
    {						\
       /* texturing must be off */		\
-      ASSERT(ctx->Texture._EnabledCoordUnits == 0);	\
-      ASSERT(ctx->Light.ShadeModel==GL_SMOOTH);	\
+      assert(ctx->Texture._EnabledCoordUnits == 0);	\
+      assert(ctx->Light.ShadeModel==GL_SMOOTH);	\
    }
 #define RENDER_SPAN( span )  _swrast_write_rgba_span(ctx, &span);
 #include "s_tritemp.h"
@@ -127,7 +127,7 @@ _swrast_culltriangle( struct gl_context *ctx,
    const struct gl_texture_object *obj = 				\
       ctx->Texture.Unit[0].CurrentTex[TEXTURE_2D_INDEX];		\
    const struct gl_texture_image *texImg =				\
-      obj->Image[0][obj->BaseLevel];					\
+      _mesa_base_tex_image(obj);					\
    const struct swrast_texture_image *swImg =				\
       swrast_texture_image_const(texImg);				\
    const GLfloat twidth = (GLfloat) texImg->Width;			\
@@ -136,7 +136,7 @@ _swrast_culltriangle( struct gl_context *ctx,
    const GLubyte *texture = (const GLubyte *) swImg->ImageSlices[0];	\
    const GLint smask = texImg->Width - 1;				\
    const GLint tmask = texImg->Height - 1;				\
-   ASSERT(texImg->TexFormat == MESA_FORMAT_RGB888);			\
+   assert(texImg->TexFormat == MESA_FORMAT_BGR_UNORM8);			\
    if (!rb || !texture) {						\
       return;								\
    }
@@ -185,7 +185,7 @@ _swrast_culltriangle( struct gl_context *ctx,
    const struct gl_texture_object *obj = 				\
       ctx->Texture.Unit[0].CurrentTex[TEXTURE_2D_INDEX];		\
    const struct gl_texture_image *texImg = 				\
-       obj->Image[0][obj->BaseLevel]; 					\
+      _mesa_base_tex_image(obj);					\
    const struct swrast_texture_image *swImg =				\
       swrast_texture_image_const(texImg);				\
    const GLfloat twidth = (GLfloat) texImg->Width;			\
@@ -194,7 +194,7 @@ _swrast_culltriangle( struct gl_context *ctx,
    const GLubyte *texture = (const GLubyte *) swImg->ImageSlices[0];	\
    const GLint smask = texImg->Width - 1;				\
    const GLint tmask = texImg->Height - 1;				\
-   ASSERT(texImg->TexFormat == MESA_FORMAT_RGB888);			\
+   assert(texImg->TexFormat == MESA_FORMAT_BGR_UNORM8);			\
    if (!rb || !texture) {						\
       return;								\
    }
@@ -417,7 +417,7 @@ affine_span(struct gl_context *ctx, SWspan *span,
    switch (info->filter) {
    case GL_NEAREST:
       switch (info->format) {
-      case MESA_FORMAT_RGB888:
+      case MESA_FORMAT_BGR_UNORM8:
          switch (info->envmode) {
          case GL_MODULATE:
             SPAN_NEAREST(NEAREST_RGB;MODULATE,3);
@@ -437,7 +437,7 @@ affine_span(struct gl_context *ctx, SWspan *span,
             return;
          }
          break;
-      case MESA_FORMAT_RGBA8888:
+      case MESA_FORMAT_A8B8G8R8_UNORM:
          switch(info->envmode) {
          case GL_MODULATE:
             SPAN_NEAREST(NEAREST_RGBA;MODULATE,4);
@@ -466,7 +466,7 @@ affine_span(struct gl_context *ctx, SWspan *span,
       span->intTex[0] -= FIXED_HALF;
       span->intTex[1] -= FIXED_HALF;
       switch (info->format) {
-      case MESA_FORMAT_RGB888:
+      case MESA_FORMAT_BGR_UNORM8:
          switch (info->envmode) {
          case GL_MODULATE:
             SPAN_LINEAR(LINEAR_RGB;MODULATE,3);
@@ -486,7 +486,7 @@ affine_span(struct gl_context *ctx, SWspan *span,
             return;
          }
          break;
-      case MESA_FORMAT_RGBA8888:
+      case MESA_FORMAT_A8B8G8R8_UNORM:
          switch (info->envmode) {
          case GL_MODULATE:
             SPAN_LINEAR(LINEAR_RGBA;MODULATE,4);
@@ -512,7 +512,7 @@ affine_span(struct gl_context *ctx, SWspan *span,
       break;
    }
    span->interpMask &= ~SPAN_RGBA;
-   ASSERT(span->arrayMask & SPAN_RGBA);
+   assert(span->arrayMask & SPAN_RGBA);
 
    _swrast_write_rgba_span(ctx, span);
 
@@ -542,7 +542,7 @@ affine_span(struct gl_context *ctx, SWspan *span,
    const struct gl_texture_object *obj = 				\
       ctx->Texture.Unit[0].CurrentTex[TEXTURE_2D_INDEX];		\
    const struct gl_texture_image *texImg = 				\
-      obj->Image[0][obj->BaseLevel]; 					\
+      _mesa_base_tex_image(obj);					\
    const struct swrast_texture_image *swImg =				\
       swrast_texture_image_const(texImg);				\
    const GLfloat twidth = (GLfloat) texImg->Width;			\
@@ -572,10 +572,10 @@ affine_span(struct gl_context *ctx, SWspan *span,
    }									\
 									\
    switch (info.format) {						\
-   case MESA_FORMAT_RGB888:						\
+   case MESA_FORMAT_BGR_UNORM8:						\
       info.tbytesline = texImg->Width * 3;				\
       break;								\
-   case MESA_FORMAT_RGBA8888:						\
+   case MESA_FORMAT_A8B8G8R8_UNORM:						\
       info.tbytesline = texImg->Width * 4;				\
       break;								\
    default:								\
@@ -689,7 +689,7 @@ fast_persp_span(struct gl_context *ctx, SWspan *span,
    switch (info->filter) {
    case GL_NEAREST:
       switch (info->format) {
-      case MESA_FORMAT_RGB888:
+      case MESA_FORMAT_BGR_UNORM8:
          switch (info->envmode) {
          case GL_MODULATE:
             SPAN_NEAREST(NEAREST_RGB;MODULATE,3);
@@ -709,7 +709,7 @@ fast_persp_span(struct gl_context *ctx, SWspan *span,
             return;
          }
          break;
-      case MESA_FORMAT_RGBA8888:
+      case MESA_FORMAT_A8B8G8R8_UNORM:
          switch(info->envmode) {
          case GL_MODULATE:
             SPAN_NEAREST(NEAREST_RGBA;MODULATE,4);
@@ -736,7 +736,7 @@ fast_persp_span(struct gl_context *ctx, SWspan *span,
 
    case GL_LINEAR:
       switch (info->format) {
-      case MESA_FORMAT_RGB888:
+      case MESA_FORMAT_BGR_UNORM8:
          switch (info->envmode) {
          case GL_MODULATE:
             SPAN_LINEAR(LINEAR_RGB;MODULATE,3);
@@ -756,7 +756,7 @@ fast_persp_span(struct gl_context *ctx, SWspan *span,
             return;
          }
          break;
-      case MESA_FORMAT_RGBA8888:
+      case MESA_FORMAT_A8B8G8R8_UNORM:
          switch (info->envmode) {
          case GL_MODULATE:
             SPAN_LINEAR(LINEAR_RGBA;MODULATE,4);
@@ -782,7 +782,7 @@ fast_persp_span(struct gl_context *ctx, SWspan *span,
       break;
    }
    
-   ASSERT(span->arrayMask & SPAN_RGBA);
+   assert(span->arrayMask & SPAN_RGBA);
    _swrast_write_rgba_span(ctx, span);
 
 #undef SPAN_NEAREST
@@ -811,7 +811,7 @@ fast_persp_span(struct gl_context *ctx, SWspan *span,
    const struct gl_texture_object *obj = 				\
       ctx->Texture.Unit[0].CurrentTex[TEXTURE_2D_INDEX];		\
    const struct gl_texture_image *texImg = 				\
-      obj->Image[0][obj->BaseLevel];			 		\
+      _mesa_base_tex_image(obj);					\
    const struct swrast_texture_image *swImg =				\
       swrast_texture_image_const(texImg);				\
    info.texture = (const GLchan *) swImg->ImageSlices[0];		\
@@ -838,10 +838,10 @@ fast_persp_span(struct gl_context *ctx, SWspan *span,
    }									\
 									\
    switch (info.format) {						\
-   case MESA_FORMAT_RGB888:						\
+   case MESA_FORMAT_BGR_UNORM8:						\
       info.tbytesline = texImg->Width * 3;				\
       break;								\
-   case MESA_FORMAT_RGBA8888:						\
+   case MESA_FORMAT_A8B8G8R8_UNORM:						\
       info.tbytesline = texImg->Width * 4;				\
       break;								\
    default:								\
@@ -884,10 +884,10 @@ fast_persp_span(struct gl_context *ctx, SWspan *span,
    struct gl_renderbuffer *rb =                                         \
       ctx->DrawBuffer->Attachment[BUFFER_DEPTH].Renderbuffer;           \
    struct gl_query_object *q = ctx->Query.CurrentOcclusionObject;	\
-   ASSERT(ctx->Depth.Test);						\
-   ASSERT(!ctx->Depth.Mask);						\
-   ASSERT(ctx->Depth.Func == GL_LESS);					\
-   assert(rb->Format == MESA_FORMAT_Z16);                               \
+   assert(ctx->Depth.Test);						\
+   assert(!ctx->Depth.Mask);						\
+   assert(ctx->Depth.Func == GL_LESS);					\
+   assert(rb->Format == MESA_FORMAT_Z_UNORM16);                               \
    if (!q) {								\
       return;								\
    }
@@ -1014,7 +1014,7 @@ _swrast_choose_triangle( struct gl_context *ctx )
 
       if (ctx->Polygon.SmoothFlag) {
          _swrast_set_aa_triangle_function(ctx);
-         ASSERT(swrast->Triangle);
+         assert(swrast->Triangle);
          return;
       }
 
@@ -1025,7 +1025,7 @@ _swrast_choose_triangle( struct gl_context *ctx )
           ctx->Depth.Func == GL_LESS &&
           !ctx->Stencil._Enabled &&
           depthRb &&
-          depthRb->Format == MESA_FORMAT_Z16) {
+          depthRb->Format == MESA_FORMAT_Z_UNORM16) {
          if (ctx->Color.ColorMask[0][0] == 0 &&
 	     ctx->Color.ColorMask[0][1] == 0 &&
 	     ctx->Color.ColorMask[0][2] == 0 &&
@@ -1050,7 +1050,7 @@ _swrast_choose_triangle( struct gl_context *ctx )
          const struct gl_texture_image *texImg;
          const struct swrast_texture_image *swImg;
          GLenum minFilter, magFilter, envMode;
-         gl_format format;
+         mesa_format format;
          texObj2D = ctx->Texture.Unit[0].CurrentTex[TEXTURE_2D_INDEX];
          if (ctx->Texture.Unit[0].Sampler)
             samp = ctx->Texture.Unit[0].Sampler;
@@ -1059,7 +1059,7 @@ _swrast_choose_triangle( struct gl_context *ctx )
          else
             samp = NULL;
 
-         texImg = texObj2D ? texObj2D->Image[0][texObj2D->BaseLevel] : NULL;
+         texImg = texObj2D ? _mesa_base_tex_image(texObj2D) : NULL;
          swImg = swrast_texture_image_const(texImg);
 
          format = texImg ? texImg->TexFormat : MESA_FORMAT_NONE;
@@ -1071,8 +1071,8 @@ _swrast_choose_triangle( struct gl_context *ctx )
          if (ctx->Texture._EnabledCoordUnits == 0x1
              && !_swrast_use_fragment_program(ctx)
              && !ctx->ATIFragmentShader._Enabled
-             && ctx->Texture._EnabledUnits == 0x1
-             && ctx->Texture.Unit[0]._ReallyEnabled == TEXTURE_2D_BIT
+             && ctx->Texture._MaxEnabledTexImageUnit == 0
+             && ctx->Texture.Unit[0]._Current->Target == GL_TEXTURE_2D
              && samp->WrapS == GL_REPEAT
              && samp->WrapT == GL_REPEAT
              && texObj2D->_Swizzle == SWIZZLE_NOOP
@@ -1080,7 +1080,7 @@ _swrast_choose_triangle( struct gl_context *ctx )
              && texImg->Border == 0
              && (_mesa_format_row_stride(format, texImg->Width) ==
                  swImg->RowStride)
-             && (format == MESA_FORMAT_RGB888 || format == MESA_FORMAT_RGBA8888)
+             && (format == MESA_FORMAT_BGR_UNORM8 || format == MESA_FORMAT_A8B8G8R8_UNORM)
              && minFilter == magFilter
              && ctx->Light.Model.ColorControl == GL_SINGLE_COLOR
              && !swrast->_FogEnabled
@@ -1088,7 +1088,7 @@ _swrast_choose_triangle( struct gl_context *ctx )
              && ctx->Texture.Unit[0].EnvMode != GL_COMBINE4_NV) {
 	    if (ctx->Hint.PerspectiveCorrection==GL_FASTEST) {
 	       if (minFilter == GL_NEAREST
-		   && format == MESA_FORMAT_RGB888
+		   && format == MESA_FORMAT_BGR_UNORM8
 		   && (envMode == GL_REPLACE || envMode == GL_DECAL)
 		   && ((swrast->_RasterMask == (DEPTH_BIT | TEXTURE_BIT)
 			&& ctx->Depth.Func == GL_LESS
@@ -1107,7 +1107,7 @@ _swrast_choose_triangle( struct gl_context *ctx )
 #if CHAN_BITS != 8
                   USE(general_triangle);
 #else
-                  if (format == MESA_FORMAT_RGBA8888 && !_mesa_little_endian()) {
+                  if (format == MESA_FORMAT_A8B8G8R8_UNORM && !_mesa_little_endian()) {
                      /* We only handle RGBA8888 correctly on little endian
                       * in the optimized code above.
                       */
@@ -1133,8 +1133,8 @@ _swrast_choose_triangle( struct gl_context *ctx )
          }
       }
       else {
-         ASSERT(!swrast->_FogEnabled);
-         ASSERT(!_mesa_need_secondary_color(ctx));
+         assert(!swrast->_FogEnabled);
+         assert(!_mesa_need_secondary_color(ctx));
 	 if (ctx->Light.ShadeModel==GL_SMOOTH) {
 	    /* smooth shaded, no texturing, stippled or some raster ops */
 #if CHAN_BITS != 8

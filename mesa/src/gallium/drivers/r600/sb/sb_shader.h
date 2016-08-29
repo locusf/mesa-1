@@ -71,6 +71,16 @@ enum chunk_flags {
 	RCF_PREALLOC = (1 << 4)
 };
 
+enum dce_flags {
+	DF_REMOVE_DEAD  = (1 << 0),
+	DF_REMOVE_UNUSED = (1 << 1),
+	DF_EXPAND = (1 << 2),
+};
+
+inline dce_flags operator |(dce_flags l, dce_flags r) {
+	return (dce_flags)((unsigned)l|(unsigned)r);
+}
+
 inline chunk_flags operator |(chunk_flags l, chunk_flags r) {
 	return (chunk_flags)((unsigned)l|(unsigned)r);
 }
@@ -297,6 +307,8 @@ public:
 
 	unsigned ngpr, nstack;
 
+	unsigned dce_flags;
+
 	shader(sb_context &sctx, shader_target t, unsigned id);
 
 	~shader();
@@ -311,7 +323,7 @@ public:
 
 
 	value* get_special_ro_value(unsigned sel);
-	value* get_kcache_value(unsigned bank, unsigned index, unsigned chan);
+	value* get_kcache_value(unsigned bank, unsigned index, unsigned chan, alu_kcache_index_mode index_mode);
 
 	value* get_value_version(value* v, unsigned ver);
 

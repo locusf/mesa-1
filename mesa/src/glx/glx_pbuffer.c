@@ -39,7 +39,7 @@
 
 #ifdef GLX_USE_APPLEGL
 #include <pthread.h>
-#include "apple_glx_drawable.h"
+#include "apple/apple_glx_drawable.h"
 #endif
 
 #include "glx_error.h"
@@ -60,7 +60,7 @@ warn_GLX_1_3(Display * dpy, const char *function_name)
 {
    struct glx_display *priv = __glXInitialize(dpy);
 
-   if (priv->minorVersion < 3) {
+   if (priv && priv->minorVersion < 3) {
       fprintf(stderr,
               "WARNING: Application calling GLX 1.3 function \"%s\" "
               "when GLX 1.3 is not supported!  This is an application bug!\n",
@@ -91,7 +91,7 @@ ChangeDrawableAttribute(Display * dpy, GLXDrawable drawable,
    CARD8 opcode;
    int i;
 
-   if ((dpy == NULL) || (drawable == 0)) {
+   if ((priv == NULL) || (dpy == NULL) || (drawable == 0)) {
       return;
    }
 
@@ -197,6 +197,11 @@ CreateDRIDrawable(Display *dpy, struct glx_config *config,
    __GLXDRIdrawable *pdraw;
    struct glx_screen *psc;
 
+   if (priv == NULL) {
+      fprintf(stderr, "failed to create drawable\n");
+      return GL_FALSE;
+   }
+
    psc = priv->screens[config->screen];
    if (psc->driScreen == NULL)
       return GL_TRUE;
@@ -226,7 +231,7 @@ DestroyDRIDrawable(Display *dpy, GLXDrawable drawable, int destroy_xdrawable)
    __GLXDRIdrawable *pdraw = GetGLXDRIDrawable(dpy, drawable);
    XID xid;
 
-   if (pdraw != NULL) {
+   if (priv != NULL && pdraw != NULL) {
       xid = pdraw->xDrawable;
       (*pdraw->destroyDrawable) (pdraw);
       __glxHashDelete(priv->drawHash, drawable);
@@ -280,6 +285,10 @@ GetDrawableAttribute(Display * dpy, GLXDrawable drawable,
    unsigned int num_attributes;
    GLboolean use_glx_1_3;
 
+#if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
+   __GLXDRIdrawable *pdraw;
+#endif
+
    if (dpy == NULL)
       return 0;
 
@@ -294,6 +303,9 @@ GetDrawableAttribute(Display * dpy, GLXDrawable drawable,
    }
 
    priv = __glXInitialize(dpy);
+   if (priv == NULL)
+      return 0;
+
    use_glx_1_3 = ((priv->majorVersion > 1) || (priv->minorVersion >= 3));
 
    *value = 0;
@@ -302,6 +314,36 @@ GetDrawableAttribute(Display * dpy, GLXDrawable drawable,
    opcode = __glXSetupForCommand(dpy);
    if (!opcode)
       return 0;
+
+#if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
+   pdraw = GetGLXDRIDrawable(dpy, drawable);
+
+   if (attribute == GLX_BACK_BUFFER_AGE_EXT) {
+      struct glx_context *gc = __glXGetCurrentContext();
+      struct glx_screen *psc;
+
+      /* The GLX_EXT_buffer_age spec says:
+       *
+       *   "If querying GLX_BACK_BUFFER_AGE_EXT and <draw> is not bound to
+       *   the calling thread's current context a GLXBadDrawable error is
+       *   generated."
+       */
+      if (pdraw == NULL || gc == &dummyContext || gc->currentDpy != dpy ||
+         (gc->currentDrawable != drawable &&
+         gc->currentReadable != drawable)) {
+         __glXSendError(dpy, GLXBadDrawable, drawable,
+                        X_GLXGetDrawableAttributes, false);
+         return 0;
+      }
+
+      psc = pdraw->psc;
+
+      if (psc->driScreen->getBufferAge != NULL)
+         *value = psc->driScreen->getBufferAge(pdraw);
+
+      return 0;
+   }
+#endif
 
    LockDisplay(dpy);
 
@@ -355,13 +397,11 @@ GetDrawableAttribute(Display * dpy, GLXDrawable drawable,
          }
 
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
-         {
-            __GLXDRIdrawable *pdraw = GetGLXDRIDrawable(dpy, drawable);
-
-            if (pdraw != NULL && !pdraw->textureTarget)
+         if (pdraw != NULL) {
+            if (!pdraw->textureTarget)
                pdraw->textureTarget =
                   determineTextureTarget((const int *) data, num_attributes);
-            if (pdraw != NULL && !pdraw->textureFormat)
+            if (!pdraw->textureFormat)
                pdraw->textureFormat =
                   determineTextureFormat((const int *) data, num_attributes);
          }
@@ -504,6 +544,9 @@ CreatePbuffer(Display * dpy, struct glx_config *config,
    Pixmap pixmap;
    GLboolean glx_1_3 = GL_FALSE;
 
+   if (priv == NULL)
+      return None;
+
    i = 0;
    if (attrib_list) {
       while (attrib_list[i * 2])
@@ -593,7 +636,7 @@ DestroyPbuffer(Display * dpy, GLXDrawable drawable)
    struct glx_display *priv = __glXInitialize(dpy);
    CARD8 opcode;
 
-   if ((dpy == NULL) || (drawable == 0)) {
+   if ((priv == NULL) || (dpy == NULL) || (drawable == 0)) {
       return;
    }
 
@@ -636,7 +679,7 @@ DestroyPbuffer(Display * dpy, GLXDrawable drawable)
 /**
  * Create a new pbuffer.
  */
-_X_EXPORT GLXPbufferSGIX
+_GLX_PUBLIC GLXPbufferSGIX
 glXCreateGLXPbufferSGIX(Display * dpy, GLXFBConfigSGIX config,
                         unsigned int width, unsigned int height,
                         int *attrib_list)
@@ -651,7 +694,7 @@ glXCreateGLXPbufferSGIX(Display * dpy, GLXFBConfigSGIX config,
 /**
  * Create a new pbuffer.
  */
-_X_EXPORT GLXPbuffer
+_GLX_PUBLIC GLXPbuffer
 glXCreatePbuffer(Display * dpy, GLXFBConfig config, const int *attrib_list)
 {
    int i, width, height;
@@ -726,7 +769,7 @@ glXCreatePbuffer(Display * dpy, GLXFBConfig config, const int *attrib_list)
 /**
  * Destroy an existing pbuffer.
  */
-_X_EXPORT void
+_GLX_PUBLIC void
 glXDestroyPbuffer(Display * dpy, GLXPbuffer pbuf)
 {
 #ifdef GLX_USE_APPLEGL
@@ -742,7 +785,7 @@ glXDestroyPbuffer(Display * dpy, GLXPbuffer pbuf)
 /**
  * Query an attribute of a drawable.
  */
-_X_EXPORT void
+_GLX_PUBLIC void
 glXQueryDrawable(Display * dpy, GLXDrawable drawable,
                  int attribute, unsigned int *value)
 {
@@ -791,7 +834,7 @@ glXQueryDrawable(Display * dpy, GLXDrawable drawable,
 /**
  * Query an attribute of a pbuffer.
  */
-_X_EXPORT int
+_GLX_PUBLIC int
 glXQueryGLXPbufferSGIX(Display * dpy, GLXPbufferSGIX drawable,
                        int attribute, unsigned int *value)
 {
@@ -802,7 +845,7 @@ glXQueryGLXPbufferSGIX(Display * dpy, GLXPbufferSGIX drawable,
 /**
  * Select the event mask for a drawable.
  */
-_X_EXPORT void
+_GLX_PUBLIC void
 glXSelectEvent(Display * dpy, GLXDrawable drawable, unsigned long mask)
 {
 #ifdef GLX_USE_APPLEGL
@@ -835,7 +878,7 @@ glXSelectEvent(Display * dpy, GLXDrawable drawable, unsigned long mask)
 /**
  * Get the selected event mask for a drawable.
  */
-_X_EXPORT void
+_GLX_PUBLIC void
 glXGetSelectedEvent(Display * dpy, GLXDrawable drawable, unsigned long *mask)
 {
 #ifdef GLX_USE_APPLEGL
@@ -872,7 +915,7 @@ glXGetSelectedEvent(Display * dpy, GLXDrawable drawable, unsigned long *mask)
 }
 
 
-_X_EXPORT GLXPixmap
+_GLX_PUBLIC GLXPixmap
 glXCreatePixmap(Display * dpy, GLXFBConfig config, Pixmap pixmap,
                 const int *attrib_list)
 {
@@ -892,7 +935,7 @@ glXCreatePixmap(Display * dpy, GLXFBConfig config, Pixmap pixmap,
 }
 
 
-_X_EXPORT GLXWindow
+_GLX_PUBLIC GLXWindow
 glXCreateWindow(Display * dpy, GLXFBConfig config, Window win,
                 const int *attrib_list)
 {
@@ -927,7 +970,7 @@ glXCreateWindow(Display * dpy, GLXFBConfig config, Window win,
 }
 
 
-_X_EXPORT void
+_GLX_PUBLIC void
 glXDestroyPixmap(Display * dpy, GLXPixmap pixmap)
 {
    WARN_ONCE_GLX_1_3(dpy, __func__);
@@ -940,7 +983,7 @@ glXDestroyPixmap(Display * dpy, GLXPixmap pixmap)
 }
 
 
-_X_EXPORT void
+_GLX_PUBLIC void
 glXDestroyWindow(Display * dpy, GLXWindow win)
 {
    WARN_ONCE_GLX_1_3(dpy, __func__);
@@ -950,17 +993,17 @@ glXDestroyWindow(Display * dpy, GLXWindow win)
 }
 
 #ifndef GLX_USE_APPLEGL
-_X_EXPORT
+_GLX_PUBLIC
 GLX_ALIAS_VOID(glXDestroyGLXPbufferSGIX,
                (Display * dpy, GLXPbufferSGIX pbuf),
                (dpy, pbuf), glXDestroyPbuffer)
 
-_X_EXPORT
+_GLX_PUBLIC
 GLX_ALIAS_VOID(glXSelectEventSGIX,
                (Display * dpy, GLXDrawable drawable,
                 unsigned long mask), (dpy, drawable, mask), glXSelectEvent)
 
-_X_EXPORT
+_GLX_PUBLIC
 GLX_ALIAS_VOID(glXGetSelectedEventSGIX,
                (Display * dpy, GLXDrawable drawable,
                 unsigned long *mask), (dpy, drawable, mask),

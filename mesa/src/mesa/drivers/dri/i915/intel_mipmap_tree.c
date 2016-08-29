@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2006 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2006 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -60,28 +60,22 @@ target_to_target(GLenum target)
    }
 }
 
-/**
- * @param for_bo Indicates that the caller is
- *        intel_miptree_create_for_bo(). If true, then do not create
- *        \c stencil_mt.
- */
 struct intel_mipmap_tree *
 intel_miptree_create_layout(struct intel_context *intel,
                             GLenum target,
-                            gl_format format,
+                            mesa_format format,
                             GLuint first_level,
                             GLuint last_level,
                             GLuint width0,
                             GLuint height0,
-                            GLuint depth0,
-                            bool for_bo)
+                            GLuint depth0)
 {
    struct intel_mipmap_tree *mt = calloc(sizeof(*mt), 1);
    if (!mt)
       return NULL;
 
-   DBG("%s target %s format %s level %d..%d <-- %p\n", __FUNCTION__,
-       _mesa_lookup_enum_by_nr(target),
+   DBG("%s target %s format %s level %d..%d <-- %p\n", __func__,
+       _mesa_enum_to_string(target),
        _mesa_get_format_name(format),
        first_level, last_level, mt);
 
@@ -130,7 +124,7 @@ intel_miptree_create_layout(struct intel_context *intel,
  */
 static uint32_t
 intel_miptree_choose_tiling(struct intel_context *intel,
-                            gl_format format,
+                            mesa_format format,
                             uint32_t width0,
                             enum intel_miptree_tiling_mode requested,
                             struct intel_mipmap_tree *mt)
@@ -166,7 +160,7 @@ intel_miptree_choose_tiling(struct intel_context *intel,
 struct intel_mipmap_tree *
 intel_miptree_create(struct intel_context *intel,
 		     GLenum target,
-		     gl_format format,
+		     mesa_format format,
 		     GLuint first_level,
 		     GLuint last_level,
 		     GLuint width0,
@@ -181,8 +175,7 @@ intel_miptree_create(struct intel_context *intel,
 
    mt = intel_miptree_create_layout(intel, target, format,
 				      first_level, last_level, width0,
-				      height0, depth0,
-				      false);
+				      height0, depth0);
    /*
     * pitch == 0 || height == 0  indicates the null texture
     */
@@ -236,7 +229,7 @@ intel_miptree_create(struct intel_context *intel,
 struct intel_mipmap_tree *
 intel_miptree_create_for_bo(struct intel_context *intel,
                             drm_intel_bo *bo,
-                            gl_format format,
+                            mesa_format format,
                             uint32_t offset,
                             uint32_t width,
                             uint32_t height,
@@ -262,10 +255,11 @@ intel_miptree_create_for_bo(struct intel_context *intel,
 
    mt = intel_miptree_create_layout(intel, GL_TEXTURE_2D, format,
                                     0, 0,
-                                    width, height, 1,
-                                    true);
-   if (!mt)
+                                    width, height, 1);
+   if (!mt) {
+      free(region);
       return mt;
+   }
 
    region->cpp = mt->cpp;
    region->width = width;
@@ -293,7 +287,7 @@ intel_miptree_create_for_bo(struct intel_context *intel,
 struct intel_mipmap_tree*
 intel_miptree_create_for_dri2_buffer(struct intel_context *intel,
                                      unsigned dri_attachment,
-                                     gl_format format,
+                                     mesa_format format,
                                      struct intel_region *region)
 {
    struct intel_mipmap_tree *mt = NULL;
@@ -322,9 +316,42 @@ intel_miptree_create_for_dri2_buffer(struct intel_context *intel,
    return mt;
 }
 
+/**
+ * For a singlesample image buffer, this simply wraps the given region with a miptree.
+ *
+ * For a multisample image buffer, this wraps the given region with
+ * a singlesample miptree, then creates a multisample miptree into which the
+ * singlesample miptree is embedded as a child.
+ */
+struct intel_mipmap_tree*
+intel_miptree_create_for_image_buffer(struct intel_context *intel,
+                                      enum __DRIimageBufferMask buffer_type,
+                                      mesa_format format,
+                                      uint32_t num_samples,
+                                      struct intel_region *region)
+{
+   struct intel_mipmap_tree *mt = NULL;
+
+   /* Only the front and back buffers, which are color buffers, are allocated
+    * through the image loader.
+    */
+   assert(_mesa_get_format_base_format(format) == GL_RGB ||
+          _mesa_get_format_base_format(format) == GL_RGBA);
+
+   mt = intel_miptree_create_for_bo(intel,
+                                    region->bo,
+                                    format,
+                                    0,
+                                    region->width,
+                                    region->height,
+                                    region->pitch,
+                                    region->tiling);
+   return mt;
+}
+
 struct intel_mipmap_tree*
 intel_miptree_create_for_renderbuffer(struct intel_context *intel,
-                                      gl_format format,
+                                      mesa_format format,
                                       uint32_t width,
                                       uint32_t height)
 {
@@ -346,7 +373,7 @@ intel_miptree_reference(struct intel_mipmap_tree **dst,
 
    if (src) {
       src->refcount++;
-      DBG("%s %p refcount now %d\n", __FUNCTION__, src, src->refcount);
+      DBG("%s %p refcount now %d\n", __func__, src, src->refcount);
    }
 
    *dst = src;
@@ -359,11 +386,11 @@ intel_miptree_release(struct intel_mipmap_tree **mt)
    if (!*mt)
       return;
 
-   DBG("%s %p refcount will be %d\n", __FUNCTION__, *mt, (*mt)->refcount - 1);
+   DBG("%s %p refcount will be %d\n", __func__, *mt, (*mt)->refcount - 1);
    if (--(*mt)->refcount <= 0) {
       GLuint i;
 
-      DBG("%s deleting %p\n", __FUNCTION__, *mt);
+      DBG("%s deleting %p\n", __func__, *mt);
 
       intel_region_release(&((*mt)->region));
 
@@ -414,7 +441,7 @@ intel_miptree_match_image(struct intel_mipmap_tree *mt,
     */
    assert(target_to_target(image->TexObject->Target) == mt->target);
 
-   gl_format mt_format = mt->format;
+   mesa_format mt_format = mt->format;
 
    if (image->TexFormat != mt_format)
       return false;
@@ -464,7 +491,7 @@ intel_miptree_set_level_info(struct intel_mipmap_tree *mt,
    mt->level[level].level_x = x;
    mt->level[level].level_y = y;
 
-   DBG("%s level %d size: %d,%d,%d offset %d,%d\n", __FUNCTION__,
+   DBG("%s level %d size: %d,%d,%d offset %d,%d\n", __func__,
        level, w, h, d, x, y);
 
    assert(mt->level[level].slice == NULL);
@@ -489,7 +516,7 @@ intel_miptree_set_image_offset(struct intel_mipmap_tree *mt,
    mt->level[level].slice[img].y_offset = mt->level[level].level_y + y;
 
    DBG("%s level %d img %d pos %d,%d\n",
-       __FUNCTION__, level, img,
+       __func__, level, img,
        mt->level[level].slice[img].x_offset,
        mt->level[level].slice[img].y_offset);
 }
@@ -594,7 +621,7 @@ intel_miptree_copy_slice(struct intel_context *intel,
 			 int depth)
 
 {
-   gl_format format = src_mt->format;
+   mesa_format format = src_mt->format;
    uint32_t width = src_mt->level[level].width;
    uint32_t height = src_mt->level[level].height;
    int slice;
@@ -688,8 +715,7 @@ intel_miptree_map_raw(struct intel_context *intel, struct intel_mipmap_tree *mt)
 }
 
 void
-intel_miptree_unmap_raw(struct intel_context *intel,
-                        struct intel_mipmap_tree *mt)
+intel_miptree_unmap_raw(struct intel_mipmap_tree *mt)
 {
    drm_intel_bo_unmap(mt->region->bo);
 }
@@ -730,20 +756,16 @@ intel_miptree_map_gtt(struct intel_context *intel,
       map->ptr = base + y * map->stride + x * mt->cpp;
    }
 
-   DBG("%s: %d,%d %dx%d from mt %p (%s) %d,%d = %p/%d\n", __FUNCTION__,
+   DBG("%s: %d,%d %dx%d from mt %p (%s) %d,%d = %p/%d\n", __func__,
        map->x, map->y, map->w, map->h,
        mt, _mesa_get_format_name(mt->format),
        x, y, map->ptr, map->stride);
 }
 
 static void
-intel_miptree_unmap_gtt(struct intel_context *intel,
-			struct intel_mipmap_tree *mt,
-			struct intel_miptree_map *map,
-			unsigned int level,
-			unsigned int slice)
+intel_miptree_unmap_gtt(struct intel_mipmap_tree *mt)
 {
-   intel_miptree_unmap_raw(intel, mt);
+   intel_miptree_unmap_raw(mt);
 }
 
 static void
@@ -776,7 +798,7 @@ intel_miptree_map_blit(struct intel_context *intel,
    intel_batchbuffer_flush(intel);
    map->ptr = intel_miptree_map_raw(intel, map->mt);
 
-   DBG("%s: %d,%d %dx%d from mt %p (%s) %d,%d = %p/%d\n", __FUNCTION__,
+   DBG("%s: %d,%d %dx%d from mt %p (%s) %d,%d = %p/%d\n", __func__,
        map->x, map->y, map->w, map->h,
        mt, _mesa_get_format_name(mt->format),
        level, slice, map->ptr, map->stride);
@@ -798,7 +820,7 @@ intel_miptree_unmap_blit(struct intel_context *intel,
 {
    struct gl_context *ctx = &intel->ctx;
 
-   intel_miptree_unmap_raw(intel, map->mt);
+   intel_miptree_unmap_raw(map->mt);
 
    if (map->mode & GL_MAP_WRITE_BIT) {
       bool ok = intel_miptree_blit(intel,
@@ -908,13 +930,13 @@ intel_miptree_unmap(struct intel_context *intel,
    if (!map)
       return;
 
-   DBG("%s: mt %p (%s) level %d slice %d\n", __FUNCTION__,
+   DBG("%s: mt %p (%s) level %d slice %d\n", __func__,
        mt, _mesa_get_format_name(mt->format), level, slice);
 
    if (map->mt) {
       intel_miptree_unmap_blit(intel, mt, map, level, slice);
    } else {
-      intel_miptree_unmap_gtt(intel, mt, map, level, slice);
+      intel_miptree_unmap_gtt(mt);
    }
 
    intel_miptree_release_map(mt, level, slice);

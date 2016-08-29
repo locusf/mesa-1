@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -34,12 +34,14 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_context.h"
 #include "util/u_inlines.h"
+#include "util/u_draw.h"
 #include "util/u_prim.h"
 
 #include "sp_context.h"
 #include "sp_query.h"
 #include "sp_state.h"
 #include "sp_texture.h"
+#include "sp_screen.h"
 
 #include "draw/draw_context.h"
 
@@ -67,6 +69,11 @@ softpipe_draw_vbo(struct pipe_context *pipe,
    if (!softpipe_check_render_cond(sp))
       return;
 
+   if (info->indirect) {
+      util_draw_indirect(pipe, info);
+      return;
+   }
+
    sp->reduced_api_prim = u_reduced_prim(info->mode);
 
    if (sp->dirty) {
@@ -81,7 +88,7 @@ softpipe_draw_vbo(struct pipe_context *pipe,
          if (!sp->vertex_buffer[i].buffer) {
             continue;
          }
-         buf = softpipe_resource(sp->vertex_buffer[i].buffer)->data;
+         buf = softpipe_resource_data(sp->vertex_buffer[i].buffer);
          size = sp->vertex_buffer[i].buffer->width0;
       }
       draw_set_mapped_vertex_buffer(draw, i, buf, size);
@@ -92,7 +99,7 @@ softpipe_draw_vbo(struct pipe_context *pipe,
       unsigned available_space = ~0;
       mapped_indices = sp->index_buffer.user_buffer;
       if (!mapped_indices) {
-         mapped_indices = softpipe_resource(sp->index_buffer.buffer)->data;
+         mapped_indices = softpipe_resource_data(sp->index_buffer.buffer);
          if (sp->index_buffer.buffer->width0 > sp->index_buffer.offset)
             available_space =
                (sp->index_buffer.buffer->width0 - sp->index_buffer.offset);
@@ -107,12 +114,24 @@ softpipe_draw_vbo(struct pipe_context *pipe,
 
 
    for (i = 0; i < sp->num_so_targets; i++) {
-      void *buf = softpipe_resource(sp->so_targets[i]->target.buffer)->data;
-      sp->so_targets[i]->mapping = buf;
+      void *buf = 0;
+      if (sp->so_targets[i]) {
+         buf = softpipe_resource(sp->so_targets[i]->target.buffer)->data;
+         sp->so_targets[i]->mapping = buf;
+      }
    }
 
    draw_set_mapped_so_targets(draw, sp->num_so_targets,
                               sp->so_targets);
+
+   if (softpipe_screen(sp->pipe.screen)->use_llvm) {
+      softpipe_prepare_vertex_sampling(sp,
+                                       sp->num_sampler_views[PIPE_SHADER_VERTEX],
+                                       sp->sampler_views[PIPE_SHADER_VERTEX]);
+      softpipe_prepare_geometry_sampling(sp,
+                                         sp->num_sampler_views[PIPE_SHADER_GEOMETRY],
+                                         sp->sampler_views[PIPE_SHADER_GEOMETRY]);
+   }
 
    if (sp->gs && !sp->gs->shader.tokens) {
       /* we have an empty geometry shader with stream output, so
@@ -136,6 +155,11 @@ softpipe_draw_vbo(struct pipe_context *pipe,
    }
 
    draw_set_mapped_so_targets(draw, 0, NULL);
+
+   if (softpipe_screen(sp->pipe.screen)->use_llvm) {
+      softpipe_cleanup_vertex_sampling(sp);
+      softpipe_cleanup_geometry_sampling(sp);
+   }
 
    /*
     * TODO: Flush only when a user vertex/index buffer is present

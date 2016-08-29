@@ -20,11 +20,14 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
-AM_CPPFLAGS = \
-	$(GALLIUM_CFLAGS)
+AM_CFLAGS = \
+	$(GALLIUM_WINSYS_CFLAGS)
 
 noinst_LTLIBRARIES = libswdri.la
 
-libswdri_la_SOURCES = dri_sw_winsys.c
+libswdri_la_SOURCES = $(C_SOURCES)
+
+EXTRA_DIST = SConscript

@@ -47,19 +47,25 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#ifdef _WIN32
 #include <stdint.h>
-#endif
+#include <pthread.h>
 #include "GL/glxproto.h"
 #include "glxconfig.h"
 #include "glxhash.h"
-#if defined( HAVE_PTHREAD )
-# include <pthread.h>
-#endif
+#include "util/macros.h"
 
 #include "glxextensions.h"
 
-#define ARRAY_SIZE(a) (sizeof (a) / sizeof ((a)[0]))
+#if defined(USE_LIBGLVND_GLX)
+#define _GLX_PUBLIC _X_HIDDEN
+#else
+#define _GLX_PUBLIC _X_EXPORT
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 #define GLX_MAJOR_VERSION 1       /* current version numbers */
 #define GLX_MINOR_VERSION 4
@@ -125,6 +131,7 @@ struct __GLXDRIscreenRec {
 		     int64_t *msc, int64_t *sbc);
    int (*setSwapInterval)(__GLXDRIdrawable *pdraw, int interval);
    int (*getSwapInterval)(__GLXDRIdrawable *pdraw);
+   int (*getBufferAge)(__GLXDRIdrawable *pdraw);
 };
 
 struct __GLXDRIdrawableRec
@@ -150,6 +157,7 @@ extern __GLXDRIdisplay *dri2CreateDisplay(Display * dpy);
 extern void dri2InvalidateBuffers(Display *dpy, XID drawable);
 extern unsigned dri2GetSwapEventType(Display *dpy, XID drawable);
 
+extern __GLXDRIdisplay *dri3_create_display(Display * dpy);
 
 /*
 ** Functions to obtain driver configuration information from a direct
@@ -210,6 +218,10 @@ typedef struct __GLXattributeMachineRec
    __GLXattribute **stackPointer;
 } __GLXattributeMachine;
 
+struct mesa_glinterop_device_info;
+struct mesa_glinterop_export_in;
+struct mesa_glinterop_export_out;
+
 struct glx_context_vtable {
    void (*destroy)(struct glx_context *ctx);
    int (*bind)(struct glx_context *context, struct glx_context *old,
@@ -224,6 +236,11 @@ struct glx_context_vtable {
 			  int buffer, const int *attrib_list);
    void (*release_tex_image)(Display * dpy, GLXDrawable drawable, int buffer);
    void * (*get_proc_address)(const char *symbol);
+   int (*interop_query_device_info)(struct glx_context *ctx,
+                                    struct mesa_glinterop_device_info *out);
+   int (*interop_export_object)(struct glx_context *ctx,
+                                struct mesa_glinterop_export_in *in,
+                                struct mesa_glinterop_export_out *out);
 };
 
 /**
@@ -474,7 +491,12 @@ struct glx_screen_vtable {
 						 unsigned num_attrib,
 						 const uint32_t *attribs,
 						 unsigned *error);
-
+   int (*query_renderer_integer)(struct glx_screen *psc,
+                                 int attribute,
+                                 unsigned int *value);
+   int (*query_renderer_string)(struct glx_screen *psc,
+                                int attribute,
+                                const char **value);
 };
 
 struct glx_screen
@@ -582,6 +604,7 @@ struct glx_display
    __GLXDRIdisplay *driswDisplay;
    __GLXDRIdisplay *driDisplay;
    __GLXDRIdisplay *dri2Display;
+   __GLXDRIdisplay *dri3Display;
 #endif
 };
 
@@ -623,7 +646,6 @@ extern void __glXPreferEGL(int state);
 extern int __glXDebug;
 
 /* This is per-thread storage in an MT environment */
-#if defined( HAVE_PTHREAD )
 
 extern void __glXSetCurrentContext(struct glx_context * c);
 
@@ -640,14 +662,6 @@ extern struct glx_context *__glXGetCurrentContext(void);
 
 # endif /* defined( GLX_USE_TLS ) */
 
-#else
-
-extern struct glx_context *__glXcurrentContext;
-#define __glXGetCurrentContext() __glXcurrentContext
-#define __glXSetCurrentContext(gc) __glXcurrentContext = gc
-
-#endif /* defined( HAVE_PTHREAD ) */
-
 extern void __glXSetCurrentContextNull(void);
 
 
@@ -655,14 +669,9 @@ extern void __glXSetCurrentContextNull(void);
 ** Global lock for all threads in this address space using the GLX
 ** extension
 */
-#if defined( HAVE_PTHREAD )
 extern pthread_mutex_t __glXmutex;
 #define __glXLock()    pthread_mutex_lock(&__glXmutex)
 #define __glXUnlock()  pthread_mutex_unlock(&__glXmutex)
-#else
-#define __glXLock()
-#define __glXUnlock()
-#endif
 
 /*
 ** Setup for a command.  Initialize the extension for dpy if necessary.
@@ -759,9 +768,6 @@ extern char *__glXQueryServerString(Display * dpy, int opcode,
 extern char *__glXGetString(Display * dpy, int opcode,
                             CARD32 screen, CARD32 name);
 
-extern char *__glXstrdup(const char *str);
-
-
 extern const char __glXGLClientVersion[];
 extern const char __glXGLClientExtensions[];
 
@@ -774,7 +780,7 @@ extern GLboolean __glXGetMscRateOML(Display * dpy, GLXDrawable drawable,
 
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
 extern GLboolean
-__glxGetMscRate(__GLXDRIdrawable *glxDraw,
+__glxGetMscRate(struct glx_screen *psc,
 		int32_t * numerator, int32_t * denominator);
 
 /* So that dri2.c:DRI2WireToEvent() can access
@@ -827,5 +833,9 @@ indirect_create_context_attribs(struct glx_screen *base,
                                 unsigned num_attribs,
                                 const uint32_t *attribs,
                                 unsigned *error);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* !__GLX_client_h__ */

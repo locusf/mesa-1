@@ -23,16 +23,20 @@
 include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
+AM_CFLAGS = \
+	$(GALLIUM_DRIVER_CFLAGS) \
+	$(RADEON_CFLAGS) \
+	$(LLVM_CFLAGS)
+
 noinst_LTLIBRARIES = libradeonsi.la
 
-AM_CPPFLAGS = \
-	-I$(top_srcdir)/src/gallium/drivers/radeon \
-	-I$(top_srcdir)/src/gallium/drivers \
-	-I$(top_srcdir)/include \
-	$(GALLIUM_CFLAGS)
-AM_CFLAGS = $(LLVM_CFLAGS)
+libradeonsi_la_SOURCES = $(C_SOURCES) $(GENERATED_SOURCES)
 
-libradeonsi_la_SOURCES = $(C_SOURCES)
-libradeonsi_la_LIBADD = \
-	../radeon/libradeon.la \
-	../radeon/libllvmradeon.la
+sid_tables.h: $(srcdir)/sid_tables.py $(srcdir)/sid.h
+	$(AM_V_GEN) $(PYTHON2) $(srcdir)/sid_tables.py $(srcdir)/sid.h > $@
+
+EXTRA_DIST = \
+	sid_tables.py
+
+BUILT_SOURCES =\
+	sid_tables.h

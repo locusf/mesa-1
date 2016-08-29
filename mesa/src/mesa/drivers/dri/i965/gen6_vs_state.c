@@ -31,66 +31,42 @@
 #include "brw_util.h"
 #include "program/prog_parameter.h"
 #include "program/prog_statevars.h"
+#include "main/shaderapi.h"
 #include "intel_batchbuffer.h"
 
 static void
 gen6_upload_vs_push_constants(struct brw_context *brw)
 {
-   struct gl_context *ctx = &brw->ctx;
+   struct brw_stage_state *stage_state = &brw->vs.base;
+
    /* _BRW_NEW_VERTEX_PROGRAM */
    const struct brw_vertex_program *vp =
       brw_vertex_program_const(brw->vertex_program);
+   /* BRW_NEW_VS_PROG_DATA */
+   const struct brw_stage_prog_data *prog_data = &brw->vs.prog_data->base.base;
 
-   /* Updates the ParamaterValues[i] pointers for all parameters of the
-    * basic type of PROGRAM_STATE_VAR.
-    */
-   /* XXX: Should this happen somewhere before to get our state flag set? */
-   _mesa_load_state_parameters(ctx, vp->program.Base.Parameters);
+   _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_VERTEX);
+   gen6_upload_push_constants(brw, &vp->program.Base, prog_data,
+                              stage_state, AUB_TRACE_VS_CONSTANTS);
 
-   /* CACHE_NEW_VS_PROG */
-   if (brw->vs.prog_data->base.nr_params == 0) {
-      brw->vs.push_const_size = 0;
-   } else {
-      int params_uploaded;
-      float *param;
-      int i;
+   if (brw->gen >= 7) {
+      if (brw->gen == 7 && !brw->is_haswell && !brw->is_baytrail)
+         gen7_emit_vs_workaround_flush(brw);
 
-      param = brw_state_batch(brw, AUB_TRACE_VS_CONSTANTS,
-			      brw->vs.prog_data->base.nr_params * sizeof(float),
-			      32, &brw->vs.push_const_offset);
-
-      /* _NEW_PROGRAM_CONSTANTS
-       *
-       * Also _NEW_TRANSFORM -- we may reference clip planes other than as a
-       * side effect of dereferencing uniforms, so _NEW_PROGRAM_CONSTANTS
-       * wouldn't be set for them.
-      */
-      for (i = 0; i < brw->vs.prog_data->base.nr_params; i++) {
-         param[i] = *brw->vs.prog_data->base.param[i];
-      }
-      params_uploaded = brw->vs.prog_data->base.nr_params / 4;
-
-      if (0) {
-	 printf("VS constant buffer:\n");
-	 for (i = 0; i < params_uploaded; i++) {
-	    float *buf = param + i * 4;
-	    printf("%d: %f %f %f %f\n",
-		   i, buf[0], buf[1], buf[2], buf[3]);
-	 }
-      }
-
-      brw->vs.push_const_size = (params_uploaded + 1) / 2;
-      /* We can only push 32 registers of constants at a time. */
-      assert(brw->vs.push_const_size <= 32);
+      gen7_upload_constant_state(brw, stage_state, true /* active */,
+                                 _3DSTATE_CONSTANT_VS);
    }
 }
 
 const struct brw_tracked_state gen6_vs_push_constants = {
    .dirty = {
-      .mesa  = _NEW_TRANSFORM | _NEW_PROGRAM_CONSTANTS,
-      .brw   = (BRW_NEW_BATCH |
-		BRW_NEW_VERTEX_PROGRAM),
-      .cache = CACHE_NEW_VS_PROG,
+      .mesa  = _NEW_PROGRAM_CONSTANTS |
+               _NEW_TRANSFORM,
+      .brw   = BRW_NEW_BATCH |
+               BRW_NEW_BLORP |
+               BRW_NEW_PUSH_CONSTANT_ALLOCATION |
+               BRW_NEW_VERTEX_PROGRAM |
+               BRW_NEW_VS_PROG_DATA,
    },
    .emit = gen6_upload_vs_push_constants,
 };
@@ -98,7 +74,7 @@ const struct brw_tracked_state gen6_vs_push_constants = {
 static void
 upload_vs_state(struct brw_context *brw)
 {
-   struct gl_context *ctx = &brw->ctx;
+   const struct brw_stage_state *stage_state = &brw->vs.base;
    uint32_t floating_point_mode = 0;
 
    /* From the BSpec, 3D Pipeline > Geometry > Vertex Shader > State,
@@ -109,12 +85,11 @@ upload_vs_state(struct brw_context *brw)
     *   flush can be executed by sending a PIPE_CONTROL command with CS
     *   stall bit set and a post sync operation.
     *
-    * Although we don't disable the VS during normal drawing, BLORP sometimes
-    * disables it.  To be safe, do the flush here just in case.
+    * We've already done such a flush at the start of state upload, so we
+    * don't need to do another one here.
     */
-   intel_emit_post_sync_nonzero_flush(brw);
 
-   if (brw->vs.push_const_size == 0) {
+   if (stage_state->push_const_size == 0) {
       /* Disable the push constant buffers. */
       BEGIN_BATCH(5);
       OUT_BATCH(_3DSTATE_CONSTANT_VS << 16 | (5 - 2));
@@ -131,35 +106,35 @@ upload_vs_state(struct brw_context *brw)
       /* Pointer to the VS constant buffer.  Covered by the set of
        * state flags from gen6_upload_vs_constants
        */
-      OUT_BATCH(brw->vs.push_const_offset +
-		brw->vs.push_const_size - 1);
+      OUT_BATCH(stage_state->push_const_offset +
+		stage_state->push_const_size - 1);
       OUT_BATCH(0);
       OUT_BATCH(0);
       OUT_BATCH(0);
       ADVANCE_BATCH();
    }
 
-   /* Use ALT floating point mode for ARB vertex programs, because they
-    * require 0^0 == 1.
-    */
-   if (ctx->Shader.CurrentVertexProgram == NULL)
+   if (brw->vs.prog_data->base.base.use_alt_mode)
       floating_point_mode = GEN6_VS_FLOATING_POINT_MODE_ALT;
 
    BEGIN_BATCH(6);
    OUT_BATCH(_3DSTATE_VS << 16 | (6 - 2));
-   OUT_BATCH(brw->vs.prog_offset);
+   OUT_BATCH(stage_state->prog_offset);
    OUT_BATCH(floating_point_mode |
-	     ((ALIGN(brw->sampler.count, 4)/4) << GEN6_VS_SAMPLER_COUNT_SHIFT));
+	     ((ALIGN(stage_state->sampler_count, 4)/4) << GEN6_VS_SAMPLER_COUNT_SHIFT) |
+             ((brw->vs.prog_data->base.base.binding_table.size_bytes / 4) <<
+              GEN6_VS_BINDING_TABLE_ENTRY_COUNT_SHIFT));
 
-   if (brw->vs.prog_data->base.total_scratch) {
-      OUT_RELOC(brw->vs.scratch_bo,
+   if (brw->vs.prog_data->base.base.total_scratch) {
+      OUT_RELOC(stage_state->scratch_bo,
 		I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
-		ffs(brw->vs.prog_data->base.total_scratch) - 11);
+		ffs(stage_state->per_thread_scratch) - 11);
    } else {
       OUT_BATCH(0);
    }
 
-   OUT_BATCH((1 << GEN6_VS_DISPATCH_START_GRF_SHIFT) |
+   OUT_BATCH((brw->vs.prog_data->base.base.dispatch_grf_start_reg <<
+              GEN6_VS_DISPATCH_START_GRF_SHIFT) |
 	     (brw->vs.prog_data->base.urb_read_length << GEN6_VS_URB_READ_LENGTH_SHIFT) |
 	     (0 << GEN6_VS_URB_ENTRY_READ_OFFSET_SHIFT));
 
@@ -185,25 +160,22 @@ upload_vs_state(struct brw_context *brw)
     * bug reports that led to this workaround, and may be more than
     * what is strictly required to avoid the issue.
     */
-   intel_emit_post_sync_nonzero_flush(brw);
-
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_PIPE_CONTROL | (4 - 2));
-   OUT_BATCH(PIPE_CONTROL_DEPTH_STALL |
-	     PIPE_CONTROL_INSTRUCTION_FLUSH |
-	     PIPE_CONTROL_STATE_CACHE_INVALIDATE);
-   OUT_BATCH(0); /* address */
-   OUT_BATCH(0); /* write data */
-   ADVANCE_BATCH();
+   brw_emit_pipe_control_flush(brw,
+                               PIPE_CONTROL_DEPTH_STALL |
+                               PIPE_CONTROL_INSTRUCTION_INVALIDATE |
+                               PIPE_CONTROL_STATE_CACHE_INVALIDATE);
 }
 
 const struct brw_tracked_state gen6_vs_state = {
    .dirty = {
-      .mesa  = _NEW_TRANSFORM | _NEW_PROGRAM_CONSTANTS,
-      .brw   = (BRW_NEW_CONTEXT |
-		BRW_NEW_VERTEX_PROGRAM |
-		BRW_NEW_BATCH),
-      .cache = CACHE_NEW_VS_PROG | CACHE_NEW_SAMPLER
+      .mesa  = _NEW_PROGRAM_CONSTANTS |
+               _NEW_TRANSFORM,
+      .brw   = BRW_NEW_BATCH |
+               BRW_NEW_BLORP |
+               BRW_NEW_CONTEXT |
+               BRW_NEW_PUSH_CONSTANT_ALLOCATION |
+               BRW_NEW_VERTEX_PROGRAM |
+               BRW_NEW_VS_PROG_DATA,
    },
    .emit = upload_vs_state,
 };

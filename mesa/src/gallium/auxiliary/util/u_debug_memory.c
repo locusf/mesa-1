@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,7 +29,7 @@
  * @file
  * Memory debugging.
  * 
- * @author José Fonseca <jrfonseca@tungstengraphics.com>
+ * @author José Fonseca <jfonseca@vmware.com>
  */
 
 #include "pipe/p_config.h" 
@@ -42,7 +42,7 @@
 
 #include "util/u_debug.h" 
 #include "util/u_debug_stack.h" 
-#include "util/u_double_list.h" 
+#include "util/list.h"
 
 
 #define DEBUG_MEMORY_MAGIC 0x6e34090aU 
@@ -92,7 +92,7 @@ pipe_static_mutex(list_mutex);
 static unsigned long last_no = 0;
 
 
-static INLINE struct debug_memory_header *
+static inline struct debug_memory_header *
 header_from_data(void *data)
 {
    if(data)
@@ -101,7 +101,7 @@ header_from_data(void *data)
       return NULL;
 }
 
-static INLINE void *
+static inline void *
 data_from_header(struct debug_memory_header *hdr)
 {
    if(hdr)
@@ -110,7 +110,7 @@ data_from_header(struct debug_memory_header *hdr)
       return NULL;
 }
 
-static INLINE struct debug_memory_footer *
+static inline struct debug_memory_footer *
 footer_from_header(struct debug_memory_header *hdr)
 {
    if(hdr)
@@ -128,7 +128,7 @@ debug_malloc(const char *file, unsigned line, const char *function,
    struct debug_memory_footer *ftr;
    
    hdr = os_malloc(sizeof(*hdr) + size + sizeof(*ftr));
-   if(!hdr) {
+   if (!hdr) {
       debug_printf("%s:%u:%s: out of memory when trying to allocate %lu bytes\n",
                    file, line, function,
                    (long unsigned)size);
@@ -167,7 +167,7 @@ debug_free(const char *file, unsigned line, const char *function,
    struct debug_memory_header *hdr;
    struct debug_memory_footer *ftr;
    
-   if(!ptr)
+   if (!ptr)
       return;
    
    hdr = header_from_data(ptr);
@@ -213,7 +213,7 @@ debug_calloc(const char *file, unsigned line, const char *function,
              size_t count, size_t size )
 {
    void *ptr = debug_malloc( file, line, function, count * size );
-   if( ptr )
+   if (ptr)
       memset( ptr, 0, count * size );
    return ptr;
 }
@@ -226,7 +226,7 @@ debug_realloc(const char *file, unsigned line, const char *function,
    struct debug_memory_footer *old_ftr, *new_ftr;
    void *new_ptr;
    
-   if(!old_ptr)
+   if (!old_ptr)
       return debug_malloc( file, line, function, new_size );
    
    if(!new_size) {
@@ -253,7 +253,7 @@ debug_realloc(const char *file, unsigned line, const char *function,
 
    /* alloc new */
    new_hdr = os_malloc(sizeof(*new_hdr) + new_size + sizeof(*new_ftr));
-   if(!new_hdr) {
+   if (!new_hdr) {
       debug_printf("%s:%u:%s: out of memory when trying to allocate %lu bytes\n",
                    file, line, function,
                    (long unsigned)new_size);

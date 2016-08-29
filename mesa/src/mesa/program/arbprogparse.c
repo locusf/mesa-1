@@ -60,6 +60,7 @@ having three separate program parameter arrays.
 #include "prog_parameter.h"
 #include "prog_statevars.h"
 #include "prog_instruction.h"
+#include "prog_optimize.h"
 #include "program_parser.h"
 
 
@@ -72,7 +73,7 @@ _mesa_parse_arb_fragment_program(struct gl_context* ctx, GLenum target,
    struct asm_parser_state state;
    GLuint i;
 
-   ASSERT(target == GL_FRAGMENT_PROGRAM_ARB);
+   assert(target == GL_FRAGMENT_PROGRAM_ARB);
 
    memset(&prog, 0, sizeof(prog));
    memset(&state, 0, sizeof(state));
@@ -165,7 +166,7 @@ _mesa_parse_arb_vertex_program(struct gl_context *ctx, GLenum target,
    struct gl_program prog;
    struct asm_parser_state state;
 
-   ASSERT(target == GL_VERTEX_PROGRAM_ARB);
+   assert(target == GL_VERTEX_PROGRAM_ARB);
 
    memset(&prog, 0, sizeof(prog));
    memset(&state, 0, sizeof(state));
@@ -176,6 +177,9 @@ _mesa_parse_arb_vertex_program(struct gl_context *ctx, GLenum target,
       _mesa_error(ctx, GL_INVALID_OPERATION, "glProgramString(bad program)");
       return;
    }
+
+   if ((ctx->_Shader->Flags & GLSL_NO_OPT) == 0)
+      _mesa_optimize_program(ctx, &prog);
 
    free(program->Base.String);
 

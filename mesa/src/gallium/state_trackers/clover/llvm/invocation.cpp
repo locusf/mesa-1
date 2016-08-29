@@ -1,5 +1,9 @@
 //
-// Copyright 2012 Francisco Jerez
+// Copyright 2012-2016 Francisco Jerez
+// Copyright 2012-2016 Advanced Micro Devices, Inc.
+// Copyright 2014-2016 Jan Vesely
+// Copyright 2014-2015 Serge Martin
+// Copyright 2015 Zoltan Gilian
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
@@ -20,142 +24,122 @@
 // OTHER DEALINGS IN THE SOFTWARE.
 //
 
-#include "core/compiler.hpp"
+#include <llvm/IR/DiagnosticPrinter.h>
+#include <llvm/IR/DiagnosticInfo.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+#include <llvm-c/Target.h>
 
-#include <clang/Frontend/CompilerInstance.h>
+#include <clang/CodeGen/CodeGenAction.h>
+#include <clang/Lex/PreprocessorOptions.h>
 #include <clang/Frontend/TextDiagnosticBuffer.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
-#include <clang/CodeGen/CodeGenAction.h>
-#include <llvm/Bitcode/BitstreamWriter.h>
-#include <llvm/Bitcode/ReaderWriter.h>
-#include <llvm/Linker.h>
-#if HAVE_LLVM < 0x0303
-#include <llvm/DerivedTypes.h>
-#include <llvm/LLVMContext.h>
-#include <llvm/Module.h>
-#else
-#include <llvm/IR/DerivedTypes.h>
-#include <llvm/IR/LLVMContext.h>
-#include <llvm/IR/Module.h>
-#include <llvm/Support/SourceMgr.h>
-#include <llvm/IRReader/IRReader.h>
-#endif
-#include <llvm/PassManager.h>
-#include <llvm/Support/TargetSelect.h>
-#include <llvm/Support/MemoryBuffer.h>
-#if HAVE_LLVM < 0x0303
-#include <llvm/Support/PathV1.h>
-#endif
-#include <llvm/Transforms/IPO.h>
-#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+#include <clang/Basic/TargetInfo.h>
 
-#if HAVE_LLVM < 0x0302
-#include <llvm/Target/TargetData.h>
-#elif HAVE_LLVM < 0x0303
-#include <llvm/DataLayout.h>
-#else
-#include <llvm/IR/DataLayout.h>
-#endif
+// We need to include internal headers last, because the internal headers
+// include CL headers which have #define's like:
+//
+//#define cl_khr_gl_sharing 1
+//#define cl_khr_icd 1
+//
+// Which will break the compilation of clang/Basic/OpenCLOptions.h
 
-#include "pipe/p_state.h"
-#include "util/u_memory.h"
+#include "core/error.hpp"
+#include "llvm/codegen.hpp"
+#include "llvm/compat.hpp"
+#include "llvm/invocation.hpp"
+#include "llvm/metadata.hpp"
+#include "llvm/util.hpp"
+#include "util/algorithm.hpp"
 
-#include <iostream>
-#include <iomanip>
-#include <fstream>
-#include <cstdio>
-#include <sstream>
 
 using namespace clover;
+using namespace clover::llvm;
+
+using ::llvm::Function;
+using ::llvm::LLVMContext;
+using ::llvm::Module;
+using ::llvm::raw_string_ostream;
 
 namespace {
-#if 0
    void
-   build_binary(const std::string &source, const std::string &target,
-                const std::string &name) {
-      clang::CompilerInstance c;
-      clang::EmitObjAction act(&llvm::getGlobalContext());
-      std::string log;
-      llvm::raw_string_ostream s_log(log);
-
-      LLVMInitializeTGSITarget();
-      LLVMInitializeTGSITargetInfo();
-      LLVMInitializeTGSITargetMC();
-      LLVMInitializeTGSIAsmPrinter();
-
-      c.getFrontendOpts().Inputs.push_back(
-         std::make_pair(clang::IK_OpenCL, name));
-      c.getHeaderSearchOpts().UseBuiltinIncludes = false;
-      c.getHeaderSearchOpts().UseStandardIncludes = false;
-      c.getLangOpts().NoBuiltin = true;
-      c.getTargetOpts().Triple = target;
-      c.getInvocation().setLangDefaults(clang::IK_OpenCL);
-      c.createDiagnostics(0, NULL, new clang::TextDiagnosticPrinter(
-                             s_log, c.getDiagnosticOpts()));
-
-      c.getPreprocessorOpts().addRemappedFile(
-         name, llvm::MemoryBuffer::getMemBuffer(source));
-
-      if (!c.ExecuteAction(act))
-         throw build_error(log);
+   init_targets() {
+      static bool targets_initialized = false;
+      if (!targets_initialized) {
+         LLVMInitializeAllTargets();
+         LLVMInitializeAllTargetInfos();
+         LLVMInitializeAllTargetMCs();
+         LLVMInitializeAllAsmPrinters();
+         targets_initialized = true;
+      }
    }
 
-   module
-   load_binary(const char *name) {
-      std::ifstream fs((name));
-      std::vector<unsigned char> str((std::istreambuf_iterator<char>(fs)),
-                                     (std::istreambuf_iterator<char>()));
-      compat::istream cs(str);
-      return module::deserialize(cs);
+   void
+   diagnostic_handler(const ::llvm::DiagnosticInfo &di, void *data) {
+      if (di.getSeverity() == ::llvm::DS_Error) {
+         raw_string_ostream os { *reinterpret_cast<std::string *>(data) };
+         ::llvm::DiagnosticPrinterRawOStream printer { os };
+         di.print(printer);
+         throw build_error();
+      }
    }
-#endif
 
-   llvm::Module *
-   compile(const std::string &source, const std::string &name,
-           const std::string &triple, const std::string &processor,
-           const std::string &opts) {
+   std::unique_ptr<LLVMContext>
+   create_context(std::string &r_log) {
+      init_targets();
+      std::unique_ptr<LLVMContext> ctx { new LLVMContext };
+      ctx->setDiagnosticHandler(diagnostic_handler, &r_log);
+      return ctx;
+   }
 
-      clang::CompilerInstance c;
-      clang::CompilerInvocation invocation;
-      clang::EmitLLVMOnlyAction act(&llvm::getGlobalContext());
-      std::string log;
-      llvm::raw_string_ostream s_log(log);
+   std::unique_ptr<clang::CompilerInstance>
+   create_compiler_instance(const target &target,
+                            const std::vector<std::string> &opts,
+                            std::string &r_log) {
+      std::unique_ptr<clang::CompilerInstance> c { new clang::CompilerInstance };
+      clang::DiagnosticsEngine diag { new clang::DiagnosticIDs,
+            new clang::DiagnosticOptions, new clang::TextDiagnosticBuffer };
 
-      // Parse the compiler options:
-      std::vector<std::string> opts_array;
-      std::istringstream ss(opts);
+      // Parse the compiler options.  A file name should be present at the end
+      // and must have the .cl extension in order for the CompilerInvocation
+      // class to recognize it as an OpenCL source file.
+      const std::vector<const char *> copts =
+         map(std::mem_fn(&std::string::c_str), opts);
 
-      while (!ss.eof()) {
-         std::string opt;
-         getline(ss, opt, ' ');
-         opts_array.push_back(opt);
-      }
+      if (!clang::CompilerInvocation::CreateFromArgs(
+             c->getInvocation(), copts.data(), copts.data() + copts.size(), diag))
+         throw invalid_build_options_error();
 
-      opts_array.push_back(name);
+      c->getTargetOpts().CPU = target.cpu;
+      c->getTargetOpts().Triple = target.triple;
+      c->getLangOpts().NoBuiltin = true;
 
-      std::vector<const char *> opts_carray;
-      for (unsigned i = 0; i < opts_array.size(); i++) {
-         opts_carray.push_back(opts_array.at(i).c_str());
-      }
+      // This is a workaround for a Clang bug which causes the number
+      // of warnings and errors to be printed to stderr.
+      // http://www.llvm.org/bugs/show_bug.cgi?id=19735
+      c->getDiagnosticOpts().ShowCarets = false;
 
-      llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs> DiagID;
-      llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions> DiagOpts;
-      clang::TextDiagnosticBuffer *DiagsBuffer;
+      compat::set_lang_defaults(c->getInvocation(), c->getLangOpts(),
+                                clang::IK_OpenCL, ::llvm::Triple(target.triple),
+                                c->getPreprocessorOpts(),
+                                clang::LangStandard::lang_opencl11);
 
-      DiagID = new clang::DiagnosticIDs();
-      DiagOpts = new clang::DiagnosticOptions();
-      DiagsBuffer = new clang::TextDiagnosticBuffer();
+      c->createDiagnostics(new clang::TextDiagnosticPrinter(
+                              *new raw_string_ostream(r_log),
+                              &c->getDiagnosticOpts(), true));
 
-      clang::DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagsBuffer);
-      bool Success;
+      c->setTarget(clang::TargetInfo::CreateTargetInfo(
+                           c->getDiagnostics(), c->getInvocation().TargetOpts));
 
-      Success = clang::CompilerInvocation::CreateFromArgs(c.getInvocation(),
-                                        opts_carray.data(),
-                                        opts_carray.data() + opts_carray.size(),
-                                        Diags);
-      if (!Success) {
-         throw invalid_option_error();
-      }
+      return c;
+   }
+
+   std::unique_ptr<Module>
+   compile(LLVMContext &ctx, clang::CompilerInstance &c,
+           const std::string &name, const std::string &source,
+           const header_map &headers, const std::string &target,
+           const std::string &opts, std::string &r_log) {
       c.getFrontendOpts().ProgramAction = clang::frontend::EmitLLVMOnly;
       c.getHeaderSearchOpts().UseBuiltinIncludes = true;
       c.getHeaderSearchOpts().UseStandardSystemIncludes = true;
@@ -164,95 +148,77 @@ namespace {
       // Add libclc generic search path
       c.getHeaderSearchOpts().AddPath(LIBCLC_INCLUDEDIR,
                                       clang::frontend::Angled,
-                                      false, false
-#if HAVE_LLVM < 0x0303
-                                      , false
-#endif
-                                      );
+                                      false, false);
 
       // Add libclc include
       c.getPreprocessorOpts().Includes.push_back("clc/clc.h");
 
       // clc.h requires that this macro be defined:
       c.getPreprocessorOpts().addMacroDef("cl_clang_storage_class_specifiers");
+      c.getPreprocessorOpts().addRemappedFile(
+              name, ::llvm::MemoryBuffer::getMemBuffer(source).release());
 
-      c.getLangOpts().NoBuiltin = true;
-      c.getTargetOpts().Triple = triple;
-      c.getTargetOpts().CPU = processor;
-#if HAVE_LLVM <= 0x0301
-      c.getInvocation().setLangDefaults(clang::IK_OpenCL);
-#else
-      c.getInvocation().setLangDefaults(c.getLangOpts(), clang::IK_OpenCL,
-                                        clang::LangStandard::lang_opencl11);
-#endif
-      c.createDiagnostics(
-#if HAVE_LLVM < 0x0303
-                          0, NULL,
-#endif
-                          new clang::TextDiagnosticPrinter(
-                                 s_log,
-#if HAVE_LLVM <= 0x0301
-                                 c.getDiagnosticOpts()));
-#else
-                                 &c.getDiagnosticOpts()));
-#endif
+      if (headers.size()) {
+         const std::string tmp_header_path = "/tmp/clover/";
 
-      c.getPreprocessorOpts().addRemappedFile(name,
-                                      llvm::MemoryBuffer::getMemBuffer(source));
+         c.getHeaderSearchOpts().AddPath(tmp_header_path,
+                                         clang::frontend::Angled,
+                                         false, false);
+
+         for (const auto &header : headers)
+            c.getPreprocessorOpts().addRemappedFile(
+               tmp_header_path + header.first,
+               ::llvm::MemoryBuffer::getMemBuffer(header.second).release());
+      }
+
+      // Tell clang to link this file before performing any
+      // optimizations.  This is required so that we can replace calls
+      // to the OpenCL C barrier() builtin with calls to target
+      // intrinsics that have the noduplicate attribute.  This
+      // attribute will prevent Clang from creating illegal uses of
+      // barrier() (e.g. Moving barrier() inside a conditional that is
+      // no executed by all threads) during its optimizaton passes.
+      compat::add_link_bitcode_file(c.getCodeGenOpts(),
+                                    LIBCLC_LIBEXECDIR + target + ".bc");
 
       // Compile the code
+      clang::EmitLLVMOnlyAction act(&ctx);
       if (!c.ExecuteAction(act))
-         throw build_error(log);
+         throw build_error();
 
       return act.takeModule();
    }
+}
 
+module
+clover::llvm::compile_program(const std::string &source,
+                              const header_map &headers,
+                              const std::string &target,
+                              const std::string &opts,
+                              std::string &r_log) {
+   if (has_flag(debug::clc))
+      debug::log(".cl", "// Options: " + opts + '\n' + source);
+
+   auto ctx = create_context(r_log);
+   auto c = create_compiler_instance(target, tokenize(opts + " input.cl"),
+                                     r_log);
+   auto mod = compile(*ctx, *c, "input.cl", source, headers, target, opts,
+                      r_log);
+
+   if (has_flag(debug::llvm))
+      debug::log(".ll", print_module_bitcode(*mod));
+
+   return build_module_library(*mod);
+}
+
+namespace {
    void
-   find_kernels(llvm::Module *mod, std::vector<llvm::Function *> &kernels) {
-      const llvm::NamedMDNode *kernel_node =
-                                 mod->getNamedMetadata("opencl.kernels");
-      // This means there are no kernels in the program.  The spec does not
-      // require that we return an error here, but there will be an error if
-      // the user tries to pass this program to a clCreateKernel() call.
-      if (!kernel_node) {
-         return;
-      }
+   optimize(Module &mod, unsigned optimization_level,
+            bool internalize_symbols) {
+      compat::pass_manager pm;
 
-      for (unsigned i = 0; i < kernel_node->getNumOperands(); ++i) {
-         kernels.push_back(llvm::dyn_cast<llvm::Function>(
-                                    kernel_node->getOperand(i)->getOperand(0)));
-      }
-   }
+      compat::add_data_layout_pass(pm);
 
-   void
-   link(llvm::Module *mod, const std::string &triple,
-        const std::string &processor,
-        const std::vector<llvm::Function *> &kernels) {
-
-      llvm::PassManager PM;
-      llvm::PassManagerBuilder Builder;
-      std::string libclc_path = LIBCLC_LIBEXECDIR + processor + "-"
-                                                  + triple + ".bc";
-      // Link the kernel with libclc
-#if HAVE_LLVM < 0x0303
-      bool isNative;
-      llvm::Linker linker("clover", mod);
-      linker.LinkInFile(llvm::sys::Path(libclc_path), isNative);
-      mod = linker.releaseModule();
-#else
-      std::string err_str;
-      llvm::SMDiagnostic err;
-      llvm::Module *libclc_mod = llvm::ParseIRFile(libclc_path, err,
-                                                   mod->getContext());
-      if (llvm::Linker::LinkModules(mod, libclc_mod,
-                                    llvm::Linker::DestroySource,
-                                    &err_str)) {
-         throw build_error(err_str);
-      }
-#endif
-
-      // Add a function internalizer pass.
-      //
       // By default, the function internalizer pass will look for a function
       // called "main" and then mark all other functions as internal.  Marking
       // functions as internal enables the optimizer to perform optimizations
@@ -265,135 +231,64 @@ namespace {
       // list of kernel functions to the internalizer.  The internalizer will
       // treat the functions in the list as "main" functions and internalize
       // all of the other functions.
-      std::vector<const char*> export_list;
-      for (std::vector<llvm::Function *>::const_iterator I = kernels.begin(),
-                                                         E = kernels.end();
-                                                         I != E; ++I) {
-         llvm::Function *kernel = *I;
-         export_list.push_back(kernel->getName().data());
-      }
-      PM.add(llvm::createInternalizePass(export_list));
+      if (internalize_symbols)
+         compat::add_internalize_pass(pm, map(std::mem_fn(&Function::getName),
+                                              get_kernels(mod)));
 
-      // Run link time optimizations
-      Builder.OptLevel = 2;
-      Builder.populateLTOPassManager(PM, false, true);
-      PM.run(*mod);
+      ::llvm::PassManagerBuilder pmb;
+      pmb.OptLevel = optimization_level;
+      pmb.LibraryInfo = new compat::target_library_info(
+         ::llvm::Triple(mod.getTargetTriple()));
+      pmb.populateModulePassManager(pm);
+      pm.run(mod);
    }
 
-   module
-   build_module_llvm(llvm::Module *mod,
-                     const std::vector<llvm::Function *> &kernels) {
+   std::unique_ptr<Module>
+   link(LLVMContext &ctx, const clang::CompilerInstance &c,
+        const std::vector<module> &modules, std::string &r_log) {
+      std::unique_ptr<Module> mod { new Module("link", ctx) };
+      auto linker = compat::create_linker(*mod);
 
-      module m;
-      struct pipe_llvm_program_header header;
-
-      llvm::SmallVector<char, 1024> llvm_bitcode;
-      llvm::raw_svector_ostream bitcode_ostream(llvm_bitcode);
-      llvm::BitstreamWriter writer(llvm_bitcode);
-      llvm::WriteBitcodeToFile(mod, bitcode_ostream);
-      bitcode_ostream.flush();
-
-      for (unsigned i = 0; i < kernels.size(); ++i) {
-         llvm::Function *kernel_func;
-         std::string kernel_name;
-         compat::vector<module::argument> args;
-
-         kernel_func = kernels[i];
-         kernel_name = kernel_func->getName();
-
-         for (llvm::Function::arg_iterator I = kernel_func->arg_begin(),
-                                      E = kernel_func->arg_end(); I != E; ++I) {
-            llvm::Argument &arg = *I;
-#if HAVE_LLVM < 0x0302
-            llvm::TargetData TD(kernel_func->getParent());
-#else
-            llvm::DataLayout TD(kernel_func->getParent()->getDataLayout());
-#endif
-
-            llvm::Type *arg_type = arg.getType();
-            unsigned arg_size = TD.getTypeStoreSize(arg_type);
-
-            llvm::Type *target_type = arg_type->isIntegerTy() ?
-               TD.getSmallestLegalIntType(mod->getContext(), arg_size * 8) :
-               arg_type;
-            unsigned target_size = TD.getTypeStoreSize(target_type);
-            unsigned target_align = TD.getABITypeAlignment(target_type);
-
-            if (llvm::isa<llvm::PointerType>(arg_type) && arg.hasByValAttr()) {
-               arg_type =
-                  llvm::dyn_cast<llvm::PointerType>(arg_type)->getElementType();
-            }
-
-            if (arg_type->isPointerTy()) {
-               // XXX: Figure out LLVM->OpenCL address space mappings for each
-               // target.  I think we need to ask clang what these are.  For now,
-               // pretend everything is in the global address space.
-               unsigned address_space = llvm::cast<llvm::PointerType>(arg_type)->getAddressSpace();
-               switch (address_space) {
-                  default:
-                     args.push_back(
-                        module::argument(module::argument::global, arg_size,
-                                         target_size, target_align,
-                                         module::argument::zero_ext));
-                     break;
-               }
-
-            } else {
-               llvm::AttributeSet attrs = kernel_func->getAttributes();
-               enum module::argument::ext_type ext_type =
-                  (attrs.hasAttribute(arg.getArgNo() + 1,
-                                     llvm::Attribute::SExt) ?
-                   module::argument::sign_ext :
-                   module::argument::zero_ext);
-
-               args.push_back(
-                  module::argument(module::argument::scalar, arg_size,
-                                   target_size, target_align, ext_type));
-            }
-         }
-
-         m.syms.push_back(module::symbol(kernel_name, 0, i, args ));
+      for (auto &m : modules) {
+         if (compat::link_in_module(*linker,
+                                    parse_module_library(m, ctx, r_log)))
+            throw build_error();
       }
 
-      header.num_bytes = llvm_bitcode.size();
-      std::string data;
-      data.insert(0, (char*)(&header), sizeof(header));
-      data.insert(data.end(), llvm_bitcode.begin(),
-                                  llvm_bitcode.end());
-      m.secs.push_back(module::section(0, module::section::text,
-                                       header.num_bytes, data));
-
-      return m;
+      return std::move(mod);
    }
-} // End anonymous namespace
+}
 
 module
-clover::compile_program_llvm(const compat::string &source,
-                             enum pipe_shader_ir ir,
-                             const compat::string &target,
-                             const compat::string &opts) {
+clover::llvm::link_program(const std::vector<module> &modules,
+                           enum pipe_shader_ir ir, const std::string &target,
+                           const std::string &opts, std::string &r_log) {
+   std::vector<std::string> options = tokenize(opts + " input.cl");
+   const bool create_library = count("-create-library", options);
+   erase_if(equals("-create-library"), options);
 
-   std::vector<llvm::Function *> kernels;
-   size_t processor_str_len = std::string(target.begin()).find_first_of("-");
-   std::string processor(target.begin(), 0, processor_str_len);
-   std::string triple(target.begin(), processor_str_len + 1,
-                      target.size() - processor_str_len - 1);
+   auto ctx = create_context(r_log);
+   auto c = create_compiler_instance(target, options, r_log);
+   auto mod = link(*ctx, *c, modules, r_log);
 
-   // The input file name must have the .cl extension in order for the
-   // CompilerInvocation class to recognize it as an OpenCL source file.
-   llvm::Module *mod = compile(source, "input.cl", triple, processor, opts);
+   optimize(*mod, c->getCodeGenOpts().OptimizationLevel, !create_library);
 
-   find_kernels(mod, kernels);
+   if (has_flag(debug::llvm))
+      debug::log(".ll", print_module_bitcode(*mod));
 
-   link(mod, triple, processor, kernels);
+   if (create_library) {
+      return build_module_library(*mod);
 
-   // Build the clover::module
-   switch (ir) {
-      case PIPE_SHADER_IR_TGSI:
-         //XXX: Handle TGSI
-         assert(0);
-         return module();
-      default:
-         return build_module_llvm(mod, kernels);
+   } else if (ir == PIPE_SHADER_IR_LLVM) {
+      return build_module_bitcode(*mod, *c);
+
+   } else if (ir == PIPE_SHADER_IR_NATIVE) {
+      if (has_flag(debug::native))
+         debug::log(".asm", print_module_native(*mod, target));
+
+      return build_module_native(*mod, target, *c, r_log);
+
+   } else {
+      unreachable("Unsupported IR.");
    }
 }

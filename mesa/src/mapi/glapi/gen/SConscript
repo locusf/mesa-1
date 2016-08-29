@@ -38,7 +38,7 @@ env.CodeGenerate(
     target = '../../../mapi/glapi/glprocs.h',
     script = 'gl_procs.py',
     source = sources,
-    command = python_cmd + ' $SCRIPT -f $SOURCE > $TARGET'
+    command = python_cmd + ' $SCRIPT -c -f $SOURCE > $TARGET'
     )
 
 env.CodeGenerate(
@@ -51,7 +51,7 @@ env.CodeGenerate(
 env.CodeGenerate(
     target = '../../../mesa/main/enums.c',
     script = 'gl_enums.py',
-    source = sources,
+    source = '../registry/gl.xml',
     command = python_cmd + ' $SCRIPT -f $SOURCE > $TARGET'
     )
 

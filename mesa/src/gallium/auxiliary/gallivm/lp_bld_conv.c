@@ -101,7 +101,7 @@ lp_build_half_to_float(struct gallivm_state *gallivm,
    LLVMTypeRef int_vec_type = lp_build_vec_type(gallivm, i32_type);
    LLVMValueRef h;
 
-   if (util_cpu_caps.has_f16c && HAVE_LLVM >= 0x0301 &&
+   if (util_cpu_caps.has_f16c &&
        (src_length == 4 || src_length == 8)) {
       const char *intrinsic = NULL;
       if (src_length == 4) {
@@ -130,6 +130,7 @@ lp_build_half_to_float(struct gallivm_state *gallivm,
  *
  * Convert float32 to half floats, preserving Infs and NaNs,
  * with rounding towards zero (trunc).
+ * XXX: For GL, would prefer rounding towards nearest(-even).
  */
 LLVMValueRef
 lp_build_float_to_half(struct gallivm_state *gallivm,
@@ -143,7 +144,16 @@ lp_build_float_to_half(struct gallivm_state *gallivm,
    struct lp_type i16_type = lp_type_int_vec(16, 16 * length);
    LLVMValueRef result;
 
-   if (util_cpu_caps.has_f16c && HAVE_LLVM >= 0x0301 &&
+   /*
+    * Note: Newer llvm versions (3.6 or so) support fptrunc to 16 bits
+    * directly, without any (x86 or generic) intrinsics.
+    * Albeit the rounding mode cannot be specified (and is undefined,
+    * though in practice on x86 seems to do nearest-even but it may
+    * be dependent on instruction set support), so is essentially
+    * useless.
+    */
+
+   if (util_cpu_caps.has_f16c &&
        (length == 4 || length == 8)) {
       struct lp_type i168_type = lp_type_int_vec(16, 16 * 8);
       unsigned mode = 3; /* same as LP_BUILD_ROUND_TRUNCATE */
@@ -187,7 +197,11 @@ lp_build_float_to_half(struct gallivm_state *gallivm,
         LLVMValueRef index = LLVMConstInt(i32t, i, 0);
         LLVMValueRef f32 = LLVMBuildExtractElement(builder, src, index, "");
 #if 0
-        /* XXX: not really supported by backends */
+        /*
+         * XXX: not really supported by backends.
+         * Even if they would now, rounding mode cannot be specified and
+         * is undefined.
+         */
         LLVMValueRef f16 = lp_build_intrinsic_unary(builder, "llvm.convert.to.fp16", i16t, f32);
 #else
         LLVMValueRef f16 = LLVMBuildCall(builder, func, &f32, 1, "");
@@ -257,6 +271,7 @@ lp_build_clamped_float_to_unsigned_norm(struct gallivm_state *gallivm,
       bias = (double)(1ULL << (mantissa - dst_width));
 
       res = LLVMBuildFMul(builder, src, lp_build_const_vec(gallivm, src_type, scale), "");
+      /* instead of fadd/and could (with sse2) just use lp_build_iround */
       res = LLVMBuildFAdd(builder, res, lp_build_const_vec(gallivm, src_type, bias), "");
       res = LLVMBuildBitCast(builder, res, int_vec_type, "");
       res = LLVMBuildAnd(builder, res,
@@ -265,17 +280,19 @@ lp_build_clamped_float_to_unsigned_norm(struct gallivm_state *gallivm,
    else if (dst_width == (mantissa + 1)) {
       /*
        * The destination width matches exactly what can be represented in
-       * floating point (i.e., mantissa + 1 bits). So do a straight
-       * multiplication followed by casting. No further rounding is necessary.
+       * floating point (i.e., mantissa + 1 bits). Even so correct rounding
+       * still needs to be applied (only for numbers in [0.5-1.0] would
+       * conversion using truncation after scaling be sufficient).
        */
-
       double scale;
+      struct lp_build_context uf32_bld;
 
+      lp_build_context_init(&uf32_bld, gallivm, src_type);
       scale = (double)((1ULL << dst_width) - 1);
 
       res = LLVMBuildFMul(builder, src,
                           lp_build_const_vec(gallivm, src_type, scale), "");
-      res = LLVMBuildFPToSI(builder, res, int_vec_type, "");
+      res = lp_build_iround(&uf32_bld, res);
    }
    else {
       /*
@@ -294,7 +311,7 @@ lp_build_clamped_float_to_unsigned_norm(struct gallivm_state *gallivm,
        * important, we also get exact results for 0.0 and 1.0.
        */
 
-      unsigned n = MIN2(src_type.width - 1, dst_width);
+      unsigned n = MIN2(src_type.width - 1u, dst_width);
 
       double scale = (double)(1ULL << n);
       unsigned lshift = dst_width - n;
@@ -428,7 +445,7 @@ int lp_build_conv_auto(struct gallivm_state *gallivm,
                        unsigned num_srcs,
                        LLVMValueRef *dst)
 {
-   int i;
+   unsigned i;
    int num_dsts = num_srcs;
 
    if (src_type.floating == dst_type->floating &&
@@ -455,7 +472,7 @@ int lp_build_conv_auto(struct gallivm_state *gallivm,
    {
       /* Special case 4x4f --> 1x16ub */
       if (src_type.length == 4 &&
-          util_cpu_caps.has_sse2)
+            (util_cpu_caps.has_sse2 || util_cpu_caps.has_altivec))
       {
          num_dsts = (num_srcs + 3) / 4;
          dst_type->length = num_srcs * 4 >= 16 ? 16 : num_srcs * 4;
@@ -542,7 +559,7 @@ lp_build_conv(struct gallivm_state *gallivm,
        ((dst_type.length == 16 && 4 * num_dsts == num_srcs) ||
         (num_dsts == 1 && dst_type.length * num_srcs == 16 && num_srcs != 3)) &&
 
-       util_cpu_caps.has_sse2)
+       (util_cpu_caps.has_sse2 || util_cpu_caps.has_altivec))
    {
       struct lp_build_context bld;
       struct lp_type int16_type, int32_type;
@@ -742,7 +759,6 @@ lp_build_conv(struct gallivm_state *gallivm,
       }
       else {
          double dst_scale = lp_const_scale(dst_type);
-         LLVMTypeRef tmp_vec_type;
 
          if (dst_scale != 1.0) {
             LLVMValueRef scale = lp_build_const_vec(gallivm, tmp_type, dst_scale);
@@ -750,19 +766,38 @@ lp_build_conv(struct gallivm_state *gallivm,
                tmp[i] = LLVMBuildFMul(builder, tmp[i], scale, "");
          }
 
-         /* Use an equally sized integer for intermediate computations */
-         tmp_type.floating = FALSE;
-         tmp_vec_type = lp_build_vec_type(gallivm, tmp_type);
-         for(i = 0; i < num_tmps; ++i) {
+         /*
+          * these functions will use fptosi in some form which won't work
+          * with 32bit uint dst. Causes lp_test_conv failures though.
+          */
+         if (0)
+            assert(dst_type.sign || dst_type.width < 32);
+
+         if (dst_type.sign && dst_type.norm && !dst_type.fixed) {
+            struct lp_build_context bld;
+
+            lp_build_context_init(&bld, gallivm, tmp_type);
+            for(i = 0; i < num_tmps; ++i) {
+               tmp[i] = lp_build_iround(&bld, tmp[i]);
+            }
+            tmp_type.floating = FALSE;
+         }
+         else {
+            LLVMTypeRef tmp_vec_type;
+
+            tmp_type.floating = FALSE;
+            tmp_vec_type = lp_build_vec_type(gallivm, tmp_type);
+            for(i = 0; i < num_tmps; ++i) {
 #if 0
-            if(dst_type.sign)
-               tmp[i] = LLVMBuildFPToSI(builder, tmp[i], tmp_vec_type, "");
-            else
-               tmp[i] = LLVMBuildFPToUI(builder, tmp[i], tmp_vec_type, "");
+               if(dst_type.sign)
+                  tmp[i] = LLVMBuildFPToSI(builder, tmp[i], tmp_vec_type, "");
+               else
+                  tmp[i] = LLVMBuildFPToUI(builder, tmp[i], tmp_vec_type, "");
 #else
-           /* FIXME: there is no SSE counterpart for LLVMBuildFPToUI */
-            tmp[i] = LLVMBuildFPToSI(builder, tmp[i], tmp_vec_type, "");
+              /* FIXME: there is no SSE counterpart for LLVMBuildFPToUI */
+               tmp[i] = LLVMBuildFPToSI(builder, tmp[i], tmp_vec_type, "");
 #endif
+            }
          }
       }
    }
@@ -771,29 +806,23 @@ lp_build_conv(struct gallivm_state *gallivm,
       unsigned dst_shift = lp_const_shift(dst_type);
       unsigned src_offset = lp_const_offset(src_type);
       unsigned dst_offset = lp_const_offset(dst_type);
+      struct lp_build_context bld;
+      lp_build_context_init(&bld, gallivm, tmp_type);
 
       /* Compensate for different offsets */
-      if (dst_offset > src_offset && src_type.width > dst_type.width) {
+      /* sscaled -> unorm and similar would cause negative shift count, skip */
+      if (dst_offset > src_offset && src_type.width > dst_type.width && src_shift > 0) {
          for (i = 0; i < num_tmps; ++i) {
             LLVMValueRef shifted;
-            LLVMValueRef shift = lp_build_const_int_vec(gallivm, tmp_type, src_shift - 1);
-            if(src_type.sign)
-               shifted = LLVMBuildAShr(builder, tmp[i], shift, "");
-            else
-               shifted = LLVMBuildLShr(builder, tmp[i], shift, "");
 
+            shifted = lp_build_shr_imm(&bld, tmp[i], src_shift - 1);
             tmp[i] = LLVMBuildSub(builder, tmp[i], shifted, "");
          }
       }
 
       if(src_shift > dst_shift) {
-         LLVMValueRef shift = lp_build_const_int_vec(gallivm, tmp_type,
-                                                     src_shift - dst_shift);
          for(i = 0; i < num_tmps; ++i)
-            if(src_type.sign)
-               tmp[i] = LLVMBuildAShr(builder, tmp[i], shift, "");
-            else
-               tmp[i] = LLVMBuildLShr(builder, tmp[i], shift, "");
+            tmp[i] = lp_build_shr_imm(&bld, tmp[i], src_shift - dst_shift);
       }
    }
 
@@ -860,6 +889,18 @@ lp_build_conv(struct gallivm_state *gallivm,
              for(i = 0; i < num_tmps; ++i)
                 tmp[i] = LLVMBuildFMul(builder, tmp[i], scale, "");
           }
+
+          /* the formula above will produce value below -1.0 for most negative
+           * value but everything seems happy with that hence disable for now */
+          if (0 && !src_type.fixed && src_type.norm && src_type.sign) {
+             struct lp_build_context bld;
+
+             lp_build_context_init(&bld, gallivm, dst_type);
+             for(i = 0; i < num_tmps; ++i) {
+                tmp[i] = lp_build_max(&bld, tmp[i],
+                                      lp_build_const_vec(gallivm, dst_type, -1.0f));
+             }
+          }
       }
     }
     else {
@@ -867,14 +908,27 @@ lp_build_conv(struct gallivm_state *gallivm,
        unsigned dst_shift = lp_const_shift(dst_type);
        unsigned src_offset = lp_const_offset(src_type);
        unsigned dst_offset = lp_const_offset(dst_type);
+       struct lp_build_context bld;
+       lp_build_context_init(&bld, gallivm, tmp_type);
 
        if (src_shift < dst_shift) {
           LLVMValueRef pre_shift[LP_MAX_VECTOR_LENGTH];
-          LLVMValueRef shift = lp_build_const_int_vec(gallivm, tmp_type, dst_shift - src_shift);
 
-          for (i = 0; i < num_tmps; ++i) {
-             pre_shift[i] = tmp[i];
-             tmp[i] = LLVMBuildShl(builder, tmp[i], shift, "");
+          if (dst_shift - src_shift < dst_type.width) {
+             for (i = 0; i < num_tmps; ++i) {
+                pre_shift[i] = tmp[i];
+                tmp[i] = lp_build_shl_imm(&bld, tmp[i], dst_shift - src_shift);
+             }
+          }
+          else {
+             /*
+              * This happens for things like sscaled -> unorm conversions. Shift
+              * counts equal to bit width cause undefined results, so hack around it.
+              */
+             for (i = 0; i < num_tmps; ++i) {
+                pre_shift[i] = tmp[i];
+                tmp[i] = lp_build_zero(gallivm, dst_type);
+             }
           }
 
           /* Compensate for different offsets */

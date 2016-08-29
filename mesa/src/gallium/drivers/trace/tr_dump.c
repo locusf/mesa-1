@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -35,7 +35,7 @@
  * is abstracted out of this file, so that we can switch to a binary
  * representation if/when it becomes justified.
  *
- * @author Jose Fonseca <jrfonseca@tungstengraphics.com>
+ * @author Jose Fonseca <jfonseca@vmware.com>
  */
 
 #include "pipe/p_config.h"
@@ -64,7 +64,7 @@ static long unsigned call_no = 0;
 static boolean dumping = FALSE;
 
 
-static INLINE void
+static inline void
 trace_dump_write(const char *buf, size_t size)
 {
    if (stream) {
@@ -73,14 +73,14 @@ trace_dump_write(const char *buf, size_t size)
 }
 
 
-static INLINE void
+static inline void
 trace_dump_writes(const char *s)
 {
    trace_dump_write(s, strlen(s));
 }
 
 
-static INLINE void
+static inline void
 trace_dump_writef(const char *format, ...)
 {
    static char buf[1024];
@@ -93,7 +93,7 @@ trace_dump_writef(const char *format, ...)
 }
 
 
-static INLINE void
+static inline void
 trace_dump_escape(const char *str)
 {
    const unsigned char *p = (const unsigned char *)str;
@@ -117,7 +117,7 @@ trace_dump_escape(const char *str)
 }
 
 
-static INLINE void
+static inline void
 trace_dump_indent(unsigned level)
 {
    unsigned i;
@@ -126,14 +126,14 @@ trace_dump_indent(unsigned level)
 }
 
 
-static INLINE void
+static inline void
 trace_dump_newline(void)
 {
    trace_dump_writes("\n");
 }
 
 
-static INLINE void
+static inline void
 trace_dump_tag(const char *name)
 {
    trace_dump_writes("<");
@@ -142,7 +142,7 @@ trace_dump_tag(const char *name)
 }
 
 
-static INLINE void
+static inline void
 trace_dump_tag_begin(const char *name)
 {
    trace_dump_writes("<");
@@ -150,7 +150,7 @@ trace_dump_tag_begin(const char *name)
    trace_dump_writes(">");
 }
 
-static INLINE void
+static inline void
 trace_dump_tag_begin1(const char *name,
                       const char *attr1, const char *value1)
 {
@@ -164,7 +164,7 @@ trace_dump_tag_begin1(const char *name,
 }
 
 
-static INLINE void
+static inline void
 trace_dump_tag_begin2(const char *name,
                       const char *attr1, const char *value1,
                       const char *attr2, const char *value2)
@@ -183,7 +183,7 @@ trace_dump_tag_begin2(const char *name,
 }
 
 
-static INLINE void
+static inline void
 trace_dump_tag_begin3(const char *name,
                       const char *attr1, const char *value1,
                       const char *attr2, const char *value2,
@@ -207,7 +207,7 @@ trace_dump_tag_begin3(const char *name,
 }
 
 
-static INLINE void
+static inline void
 trace_dump_tag_end(const char *name)
 {
    trace_dump_writes("</");
@@ -218,7 +218,7 @@ trace_dump_tag_end(const char *name)
 void
 trace_dump_trace_flush(void)
 {
-   if(stream) {
+   if (stream) {
       fflush(stream);
    }
 }
@@ -226,7 +226,7 @@ trace_dump_trace_flush(void)
 static void
 trace_dump_trace_close(void)
 {
-   if(stream) {
+   if (stream) {
       trace_dump_writes("</trace>\n");
       if (close_stream) {
          fclose(stream);
@@ -257,10 +257,10 @@ trace_dump_trace_begin(void)
    const char *filename;
 
    filename = debug_get_option("GALLIUM_TRACE", NULL);
-   if(!filename)
+   if (!filename)
       return FALSE;
 
-   if(!stream) {
+   if (!stream) {
 
       if (strcmp(filename, "stderr") == 0) {
          close_stream = FALSE;

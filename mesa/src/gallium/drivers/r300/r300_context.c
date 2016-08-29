@@ -24,7 +24,7 @@
 
 #include "util/u_memory.h"
 #include "util/u_sampler.h"
-#include "util/u_simple_list.h"
+#include "util/simple_list.h"
 #include "util/u_upload_mgr.h"
 #include "os/os_time.h"
 #include "vl/vl_decoder.h"
@@ -36,6 +36,8 @@
 #include "r300_screen.h"
 #include "r300_screen_buffer.h"
 #include "compiler/radeon_regalloc.h"
+
+#include <inttypes.h>
 
 static void r300_release_referenced_objects(struct r300_context *r300)
 {
@@ -92,6 +94,8 @@ static void r300_destroy_context(struct pipe_context* context)
 
     if (r300->cs)
         r300->rws->cs_destroy(r300->cs);
+    if (r300->ctx)
+        r300->rws->ctx_destroy(r300->ctx);
 
     rc_destroy_regalloc_state(&r300->fs_regalloc_state);
 
@@ -123,11 +127,12 @@ static void r300_destroy_context(struct pipe_context* context)
     FREE(r300);
 }
 
-static void r300_flush_callback(void *data, unsigned flags)
+static void r300_flush_callback(void *data, unsigned flags,
+				struct pipe_fence_handle **fence)
 {
     struct r300_context* const cs_context_copy = data;
 
-    r300_flush(&cs_context_copy->context, flags, NULL);
+    r300_flush(&cs_context_copy->context, flags, fence);
 }
 
 #define R300_INIT_ATOM(atomname, atomsize) \
@@ -151,7 +156,6 @@ static boolean r300_setup_atoms(struct r300_context* r300)
     boolean is_rv350 = r300->screen->caps.is_rv350;
     boolean is_r500 = r300->screen->caps.is_r500;
     boolean has_tcl = r300->screen->caps.has_tcl;
-    boolean drm_2_6_0 = r300->screen->info.drm_minor >= 6;
 
     /* Create the actual atom list.
      *
@@ -170,11 +174,11 @@ static boolean r300_setup_atoms(struct r300_context* r300)
     R300_INIT_ATOM(gpu_flush, 9);
     R300_INIT_ATOM(aa_state, 4);
     R300_INIT_ATOM(fb_state, 0);
-    R300_INIT_ATOM(hyperz_state, is_r500 || (is_rv350 && drm_2_6_0) ? 10 : 8);
+    R300_INIT_ATOM(hyperz_state, is_r500 || is_rv350 ? 10 : 8);
     /* ZB (unpipelined), SC. */
     R300_INIT_ATOM(ztop_state, 2);
     /* ZB, FG. */
-    R300_INIT_ATOM(dsa_state, is_r500 ? (drm_2_6_0 ? 10 : 8) : 6);
+    R300_INIT_ATOM(dsa_state, is_r500 ? 10 : 6);
     /* RB3D. */
     R300_INIT_ATOM(blend_state, 8);
     R300_INIT_ATOM(blend_color_state, is_r500 ? 3 : 2);
@@ -348,9 +352,7 @@ static void r300_init_states(struct pipe_context *pipe)
         OUT_CB_REG(R300_ZB_DEPTHCLEARVALUE, 0);
         OUT_CB_REG(R300_SC_HYPERZ, R300_SC_HYPERZ_ADJ_2);
 
-        if (r300->screen->caps.is_r500 ||
-            (r300->screen->caps.is_rv350 &&
-             r300->screen->info.drm_minor >= 6)) {
+        if (r300->screen->caps.is_r500 || r300->screen->caps.is_rv350) {
             OUT_CB_REG(R300_GB_Z_PEQ_CONFIG, 0);
         }
         END_CB;
@@ -358,7 +360,7 @@ static void r300_init_states(struct pipe_context *pipe)
 }
 
 struct pipe_context* r300_create_context(struct pipe_screen* screen,
-                                         void *priv)
+                                         void *priv, unsigned flags)
 {
     struct r300_context* r300 = CALLOC_STRUCT(r300_context);
     struct r300_screen* r300screen = r300_screen(screen);
@@ -379,7 +381,11 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
                      sizeof(struct pipe_transfer), 64,
                      UTIL_SLAB_SINGLETHREADED);
 
-    r300->cs = rws->cs_create(rws, RING_GFX, NULL);
+    r300->ctx = rws->ctx_create(rws);
+    if (!r300->ctx)
+        goto fail;
+
+    r300->cs = rws->cs_create(r300->ctx, RING_GFX, r300_flush_callback, r300);
     if (r300->cs == NULL)
         goto fail;
 
@@ -409,18 +415,16 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
     r300_init_render_functions(r300);
     r300_init_states(&r300->context);
 
-    r300->context.create_video_decoder = vl_create_decoder;
+    r300->context.create_video_codec = vl_create_decoder;
     r300->context.create_video_buffer = vl_video_buffer_create;
 
-    r300->uploader = u_upload_create(&r300->context, 256 * 1024, 4,
-                                     PIPE_BIND_CUSTOM);
+    r300->uploader = u_upload_create(&r300->context, 256 * 1024,
+                                     PIPE_BIND_CUSTOM, PIPE_USAGE_STREAM);
 
     r300->blitter = util_blitter_create(&r300->context);
     if (r300->blitter == NULL)
         goto fail;
     r300->blitter->draw_rectangle = r300_blitter_draw_rectangle;
-
-    rws->cs_set_flush_callback(r300->cs, r300_flush_callback, r300);
 
     /* The KIL opcode needs the first texture unit to be enabled
      * on r3xx-r4xx. In order to calm down the CS checker, we bind this
@@ -451,7 +455,7 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
         memset(&vb, 0, sizeof(vb));
         vb.target = PIPE_BUFFER;
         vb.format = PIPE_FORMAT_R8_UNORM;
-        vb.usage = PIPE_USAGE_STATIC;
+        vb.usage = PIPE_USAGE_DEFAULT;
         vb.width0 = sizeof(float) * 16;
         vb.height0 = 1;
         vb.depth0 = 1;
@@ -483,7 +487,7 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
 #endif
         fprintf(stderr,
                 "r300: DRM version: %d.%d.%d, Name: %s, ID: 0x%04x, GB: %d, Z: %d\n"
-                "r300: GART size: %d MB, VRAM size: %d MB\n"
+                "r300: GART size: %"PRIu64" MB, VRAM size: %"PRIu64" MB\n"
                 "r300: AA compression RAM: %s, Z compression RAM: %s, HiZ RAM: %s\n",
                 r300->screen->info.drm_major,
                 r300->screen->info.drm_minor,

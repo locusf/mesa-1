@@ -42,7 +42,7 @@ intel_miptree_create_for_teximage(struct intel_context *intel,
    intel_miptree_get_dimensions_for_image(&intelImage->base.Base,
                                           &width, &height, &depth);
 
-   DBG("%s\n", __FUNCTION__);
+   DBG("%s\n", __func__);
 
    if (intelImage->base.Base.Level > intelObj->base.BaseLevel &&
        (width == 1 ||
@@ -122,28 +122,28 @@ try_pbo_upload(struct gl_context *ctx,
 
    if (intel->ctx._ImageTransferState ||
        unpack->SkipPixels || unpack->SkipRows) {
-      DBG("%s: image transfer\n", __FUNCTION__);
+      DBG("%s: image transfer\n", __func__);
       return false;
    }
 
    ctx->Driver.AllocTextureImageBuffer(ctx, image);
 
    if (!intelImage->mt) {
-      DBG("%s: no miptree\n", __FUNCTION__);
+      DBG("%s: no miptree\n", __func__);
       return false;
    }
 
    if (!_mesa_format_matches_format_and_type(intelImage->mt->format,
-                                             format, type, false)) {
+                                             format, type, false, NULL)) {
       DBG("%s: format mismatch (upload to %s with format 0x%x, type 0x%x)\n",
-	  __FUNCTION__, _mesa_get_format_name(intelImage->mt->format),
+	  __func__, _mesa_get_format_name(intelImage->mt->format),
 	  format, type);
       return false;
    }
 
    if (image->TexObject->Target == GL_TEXTURE_1D_ARRAY ||
        image->TexObject->Target == GL_TEXTURE_2D_ARRAY) {
-      DBG("%s: no support for array textures\n", __FUNCTION__);
+      DBG("%s: no support for array textures\n", __func__);
       return false;
    }
 
@@ -170,14 +170,14 @@ try_pbo_upload(struct gl_context *ctx,
                            intelImage->mt, image->Level, image->Face,
                            0, 0, false,
                            image->Width, image->Height, GL_COPY)) {
-      DBG("%s: blit failed\n", __FUNCTION__);
+      DBG("%s: blit failed\n", __func__);
       intel_miptree_release(&pbo_mt);
       return false;
    }
 
    intel_miptree_release(&pbo_mt);
 
-   DBG("%s: success\n", __FUNCTION__);
+   DBG("%s: success\n", __func__);
    return true;
 }
 
@@ -188,8 +188,8 @@ intelTexImage(struct gl_context * ctx,
               GLenum format, GLenum type, const void *pixels,
               const struct gl_pixelstore_attrib *unpack)
 {
-   DBG("%s target %s level %d %dx%dx%d\n", __FUNCTION__,
-       _mesa_lookup_enum_by_nr(texImage->TexObject->Target),
+   DBG("%s target %s level %d %dx%dx%d\n", __func__,
+       _mesa_enum_to_string(texImage->TexObject->Target),
        texImage->Level, texImage->Width, texImage->Height, texImage->Depth);
 
    /* Attempt to use the blitter for PBO image uploads.
@@ -200,7 +200,7 @@ intelTexImage(struct gl_context * ctx,
    }
 
    DBG("%s: upload image %dx%dx%d pixels %p\n",
-       __FUNCTION__, texImage->Width, texImage->Height, texImage->Depth,
+       __func__, texImage->Width, texImage->Height, texImage->Depth,
        pixels);
 
    _mesa_store_teximage(ctx, dims, texImage,
@@ -219,7 +219,7 @@ intel_set_texture_image_region(struct gl_context *ctx,
 			       struct intel_region *region,
 			       GLenum target,
 			       GLenum internalFormat,
-			       gl_format format,
+			       mesa_format format,
                                uint32_t offset,
                                GLuint width,
                                GLuint height,
@@ -241,8 +241,7 @@ intel_set_texture_image_region(struct gl_context *ctx,
 
    intel_image->mt = intel_miptree_create_layout(intel, target, image->TexFormat,
                                                  0, 0,
-                                                 width, height, 1,
-                                                 true);
+                                                 width, height, 1);
    if (intel_image->mt == NULL)
        return;
    intel_region_reference(&intel_image->mt->region, region);
@@ -287,7 +286,7 @@ intelSetTexBuffer2(__DRIcontext *pDRICtx, GLint target,
    struct gl_texture_object *texObj;
    struct gl_texture_image *texImage;
    int level = 0, internalFormat = 0;
-   gl_format texFormat = MESA_FORMAT_NONE;
+   mesa_format texFormat = MESA_FORMAT_NONE;
 
    texObj = _mesa_get_current_tex_object(ctx, target);
    intelObj = intel_texture_object(texObj);
@@ -309,15 +308,15 @@ intelSetTexBuffer2(__DRIcontext *pDRICtx, GLint target,
    if (rb->mt->cpp == 4) {
       if (texture_format == __DRI_TEXTURE_FORMAT_RGB) {
          internalFormat = GL_RGB;
-         texFormat = MESA_FORMAT_XRGB8888;
+         texFormat = MESA_FORMAT_B8G8R8X8_UNORM;
       }
       else {
          internalFormat = GL_RGBA;
-         texFormat = MESA_FORMAT_ARGB8888;
+         texFormat = MESA_FORMAT_B8G8R8A8_UNORM;
       }
    } else if (rb->mt->cpp == 2) {
       internalFormat = GL_RGB;
-      texFormat = MESA_FORMAT_RGB565;
+      texFormat = MESA_FORMAT_B5G6R5_UNORM;
    }
 
    _mesa_lock_texture(&intel->ctx, texObj);

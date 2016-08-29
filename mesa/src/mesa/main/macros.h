@@ -31,6 +31,9 @@
 #ifndef MACROS_H
 #define MACROS_H
 
+#include "util/macros.h"
+#include "util/u_math.h"
+#include "util/rounding.h"
 #include "imports.h"
 
 
@@ -129,25 +132,25 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 #define INT_TO_USHORT(i)   ((i) < 0 ? 0 : ((GLushort) ((i) >> 15)))
 #define UINT_TO_USHORT(i)  ((i) < 0 ? 0 : ((GLushort) ((i) >> 16)))
 #define UNCLAMPED_FLOAT_TO_USHORT(us, f)  \
-        us = ( (GLushort) F_TO_I( CLAMP((f), 0.0F, 1.0F) * 65535.0F) )
+        us = ( (GLushort) _mesa_lroundevenf( CLAMP((f), 0.0F, 1.0F) * 65535.0F) )
 #define CLAMPED_FLOAT_TO_USHORT(us, f)  \
-        us = ( (GLushort) F_TO_I( (f) * 65535.0F) )
+        us = ( (GLushort) _mesa_lroundevenf( (f) * 65535.0F) )
 
 #define UNCLAMPED_FLOAT_TO_SHORT(s, f)  \
-        s = ( (GLshort) F_TO_I( CLAMP((f), -1.0F, 1.0F) * 32767.0F) )
+        s = ( (GLshort) _mesa_lroundevenf( CLAMP((f), -1.0F, 1.0F) * 32767.0F) )
 
 /***
  *** UNCLAMPED_FLOAT_TO_UBYTE: clamp float to [0,1] and map to ubyte in [0,255]
  *** CLAMPED_FLOAT_TO_UBYTE: map float known to be in [0,1] to ubyte in [0,255]
  ***/
-#if defined(USE_IEEE) && !defined(DEBUG)
+#ifndef DEBUG
 /* This function/macro is sensitive to precision.  Test very carefully
  * if you change it!
  */
-#define UNCLAMPED_FLOAT_TO_UBYTE(UB, F)					\
+#define UNCLAMPED_FLOAT_TO_UBYTE(UB, FLT)				\
         do {								\
            fi_type __tmp;						\
-           __tmp.f = (F);						\
+           __tmp.f = (FLT);						\
            if (__tmp.i < 0)						\
               UB = (GLubyte) 0;						\
            else if (__tmp.i >= IEEE_ONE)				\
@@ -157,33 +160,62 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
               UB = (GLubyte) __tmp.i;					\
            }								\
         } while (0)
-#define CLAMPED_FLOAT_TO_UBYTE(UB, F)					\
+#define CLAMPED_FLOAT_TO_UBYTE(UB, FLT)					\
         do {								\
            fi_type __tmp;						\
-           __tmp.f = (F) * (255.0F/256.0F) + 32768.0F;			\
+           __tmp.f = (FLT) * (255.0F/256.0F) + 32768.0F;		\
            UB = (GLubyte) __tmp.i;					\
         } while (0)
 #else
 #define UNCLAMPED_FLOAT_TO_UBYTE(ub, f) \
-	ub = ((GLubyte) F_TO_I(CLAMP((f), 0.0F, 1.0F) * 255.0F))
+	ub = ((GLubyte) _mesa_lroundevenf(CLAMP((f), 0.0F, 1.0F) * 255.0F))
 #define CLAMPED_FLOAT_TO_UBYTE(ub, f) \
-	ub = ((GLubyte) F_TO_I((f) * 255.0F))
+	ub = ((GLubyte) _mesa_lroundevenf((f) * 255.0F))
 #endif
 
-static inline GLfloat INT_AS_FLT(GLint i)
-{
-   fi_type tmp;
-   tmp.i = i;
-   return tmp.f;
-}
-
-static inline GLfloat UINT_AS_FLT(GLuint u)
+static fi_type UINT_AS_UNION(GLuint u)
 {
    fi_type tmp;
    tmp.u = u;
-   return tmp.f;
+   return tmp;
 }
 
+static inline fi_type INT_AS_UNION(GLint i)
+{
+   fi_type tmp;
+   tmp.i = i;
+   return tmp;
+}
+
+static inline fi_type FLOAT_AS_UNION(GLfloat f)
+{
+   fi_type tmp;
+   tmp.f = f;
+   return tmp;
+}
+
+/**
+ * Convert a floating point value to an unsigned fixed point value.
+ *
+ * \param frac_bits   The number of bits used to store the fractional part.
+ */
+static inline uint32_t
+U_FIXED(float value, uint32_t frac_bits)
+{
+   value *= (1 << frac_bits);
+   return value < 0.0f ? 0 : (uint32_t) value;
+}
+
+/**
+ * Convert a floating point value to an signed fixed point value.
+ *
+ * \param frac_bits   The number of bits used to store the fractional part.
+ */
+static inline int32_t
+S_FIXED(float value, uint32_t frac_bits)
+{
+   return (int32_t) (value * (1 << frac_bits));
+}
 /*@}*/
 
 
@@ -243,14 +275,6 @@ COPY_4UBV(GLubyte dst[4], const GLubyte src[4])
    /* The GLuint cast might fail if DST or SRC are not dword-aligned (RISC) */
    COPY_4V(dst, src);
 #endif
-}
-
-/** Copy a 4-element float vector */
-static inline void
-COPY_4FV(GLfloat dst[4], const GLfloat src[4])
-{
-   /* memcpy seems to be most efficient */
-   memcpy(dst, src, sizeof(GLfloat) * 4);
 }
 
 /** Copy \p SZ elements into a 4-element vector */
@@ -343,15 +367,6 @@ do {                                   \
       (DST)[2] *= S;                   \
       (DST)[3] *= S;                   \
 } while (0)
-
-/** Assignment */
-#define ASSIGN_4V( V, V0, V1, V2, V3 )  \
-do {                                    \
-    V[0] = V0;                          \
-    V[1] = V1;                          \
-    V[2] = V2;                          \
-    V[3] = V3;                          \
-} while(0)
 
 /*@}*/
 
@@ -591,23 +606,26 @@ do {				\
  * The default values are chosen based on \p type.
  */
 static inline void
-COPY_CLEAN_4V_TYPE_AS_FLOAT(GLfloat dst[4], int sz, const GLfloat src[4],
+COPY_CLEAN_4V_TYPE_AS_UNION(fi_type dst[4], int sz, const fi_type src[4],
                             GLenum type)
 {
    switch (type) {
    case GL_FLOAT:
-      ASSIGN_4V(dst, 0, 0, 0, 1);
+      ASSIGN_4V(dst, FLOAT_AS_UNION(0), FLOAT_AS_UNION(0),
+                FLOAT_AS_UNION(0), FLOAT_AS_UNION(1));
       break;
    case GL_INT:
-      ASSIGN_4V(dst, INT_AS_FLT(0), INT_AS_FLT(0),
-                     INT_AS_FLT(0), INT_AS_FLT(1));
+      ASSIGN_4V(dst, INT_AS_UNION(0), INT_AS_UNION(0),
+                INT_AS_UNION(0), INT_AS_UNION(1));
       break;
    case GL_UNSIGNED_INT:
-      ASSIGN_4V(dst, UINT_AS_FLT(0), UINT_AS_FLT(0),
-                     UINT_AS_FLT(0), UINT_AS_FLT(1));
+      ASSIGN_4V(dst, UINT_AS_UNION(0), UINT_AS_UNION(0),
+                UINT_AS_UNION(0), UINT_AS_UNION(1));
       break;
    default:
-      ASSERT(0);
+      ASSIGN_4V(dst, FLOAT_AS_UNION(0), FLOAT_AS_UNION(0),
+                FLOAT_AS_UNION(0), FLOAT_AS_UNION(1)); /* silence warnings */
+      assert(!"Unexpected type in COPY_CLEAN_4V_TYPE_AS_UNION macro");
    }
    COPY_SZ_4V(dst, sz, src);
 }
@@ -672,8 +690,40 @@ minify(unsigned value, unsigned levels)
  *
  * \sa ROUND_DOWN_TO()
  */
-#define ALIGN(value, alignment)  (((value) + (alignment) - 1) & ~((alignment) - 1))
+static inline uintptr_t
+ALIGN(uintptr_t value, int32_t alignment)
+{
+   assert((alignment > 0) && _mesa_is_pow_two(alignment));
+   return (((value) + (alignment) - 1) & ~((alignment) - 1));
+}
 
+/**
+ * Like ALIGN(), but works with a non-power-of-two alignment.
+ */
+static inline uintptr_t
+ALIGN_NPOT(uintptr_t value, int32_t alignment)
+{
+   assert(alignment > 0);
+   return (value + alignment - 1) / alignment * alignment;
+}
+
+/**
+ * Align a value down to an alignment value
+ *
+ * If \c value is not already aligned to the requested alignment value, it
+ * will be rounded down.
+ *
+ * \param value  Value to be rounded
+ * \param alignment  Alignment value to be used.  This must be a power of two.
+ *
+ * \sa ALIGN()
+ */
+static inline uintptr_t
+ROUND_DOWN_TO(uintptr_t value, int32_t alignment)
+{
+   assert((alignment > 0) && _mesa_is_pow_two(alignment));
+   return ((value) & ~(alignment - 1));
+}
 
 
 /** Cross product of two 3-element vectors */
@@ -738,7 +788,7 @@ NORMALIZE_3FV(GLfloat v[3])
 {
    GLfloat len = (GLfloat) LEN_SQUARED_3FV(v);
    if (len) {
-      len = INV_SQRTF(len);
+      len = 1.0f / sqrtf(len);
       v[0] *= len;
       v[1] *= len;
       v[2] *= len;
@@ -746,23 +796,19 @@ NORMALIZE_3FV(GLfloat v[3])
 }
 
 
-/** Is float value negative? */
-static inline GLboolean
-IS_NEGATIVE(float x)
-{
-   return signbit(x) != 0;
-}
-
 /** Test two floats have opposite signs */
 static inline GLboolean
 DIFFERENT_SIGNS(GLfloat x, GLfloat y)
 {
+#ifdef _MSC_VER
+#pragma warning( push )
+#pragma warning( disable : 6334 ) /* sizeof operator applied to an expression with an operator may yield unexpected results */
+#endif
    return signbit(x) != signbit(y);
+#ifdef _MSC_VER
+#pragma warning( pop )
+#endif
 }
-
-
-/** Compute ceiling of integer quotient of A divided by B. */
-#define CEILING( A, B )  ( (A) % (B) == 0 ? (A)/(B) : (A)/(B)+1 )
 
 
 /** casts to silence warnings with some compilers */
@@ -771,8 +817,8 @@ DIFFERENT_SIGNS(GLfloat x, GLfloat y)
 #define ENUM_TO_DOUBLE(E)  ((GLdouble)(GLint)(E))
 #define ENUM_TO_BOOLEAN(E) ((E) ? GL_TRUE : GL_FALSE)
 
-/* Compute the size of an array */
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
+/* Stringify */
+#define STRINGIFY(x) #x
 
 #endif

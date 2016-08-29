@@ -29,16 +29,15 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
 #include "main/mtypes.h"
-#include "main/colormac.h"
 #include "main/enums.h"
 #include "main/imports.h"
 #include "main/macros.h"
-#include "main/simple_list.h"
+#include "util/simple_list.h"
 
 #include "math/m_xform.h"
 
@@ -189,7 +188,8 @@ static void radeonSetVertexFormat( struct gl_context *ctx )
 			  radeon_cp_vc_frmts[i][0] );
 	       break;
 	    case 3:
-	       if (ctx->Texture.Unit[i]._ReallyEnabled & (TEXTURE_CUBE_BIT) ) {
+	       if (ctx->Texture.Unit[i]._Current &&
+                   ctx->Texture.Unit[i]._Current->Target == GL_TEXTURE_CUBE_MAP) {
 	           EMIT_ATTR( _TNL_ATTRIB_TEX0+i, EMIT_3F,
 			      radeon_cp_vc_frmts[i][1] );
                } else {
@@ -198,7 +198,8 @@ static void radeonSetVertexFormat( struct gl_context *ctx )
                }
                break;
 	    case 4:
-	       if (ctx->Texture.Unit[i]._ReallyEnabled & (TEXTURE_CUBE_BIT) ) {
+	       if (ctx->Texture.Unit[i]._Current &&
+                   ctx->Texture.Unit[i]._Current->Target == GL_TEXTURE_CUBE_MAP) {
 		  EMIT_ATTR( _TNL_ATTRIB_TEX0+i, EMIT_3F,
 			     radeon_cp_vc_frmts[i][1] );
 	       } else {
@@ -225,7 +226,7 @@ static void radeonSetVertexFormat( struct gl_context *ctx )
       rmesa->radeon.swtcl.vertex_size /= 4;
       rmesa->radeon.tnl_index_bitset = index_bitset;
       radeon_print(RADEON_SWRENDER, RADEON_VERBOSE,
-	  "%s: vertex_size= %d floats\n",  __FUNCTION__, rmesa->radeon.swtcl.vertex_size);
+	  "%s: vertex_size= %d floats\n",  __func__, rmesa->radeon.swtcl.vertex_size);
    }
 }
 
@@ -241,7 +242,7 @@ static void radeon_predict_emit_size( r100ContextPtr rmesa )
         if (rcommonEnsureCmdBufSpace(&rmesa->radeon,
                     state_size +
                     (scissor_size + prims_size + vertex_size),
-                    __FUNCTION__))
+                    __func__))
             rmesa->radeon.swtcl.emit_prediction = radeonCountStateEmitSize( &rmesa->radeon );
         else
             rmesa->radeon.swtcl.emit_prediction = state_size;
@@ -351,28 +352,25 @@ void r100_swtcl_flush(struct gl_context *ctx, uint32_t current_offset)
 #define HAVE_LINE_STRIPS 1
 #define HAVE_TRIANGLES   1
 #define HAVE_TRI_STRIPS  1
-#define HAVE_TRI_STRIP_1 0
 #define HAVE_TRI_FANS    1
-#define HAVE_QUADS       0
-#define HAVE_QUAD_STRIPS 0
 #define HAVE_POLYGONS    0
 /* \todo: is it possible to make "ELTS" work with t_vertex code ? */
 #define HAVE_ELTS        0
 
 static const GLuint hw_prim[GL_POLYGON+1] = {
-   RADEON_CP_VC_CNTL_PRIM_TYPE_POINT,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_LINE,
-   0,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_LINE_STRIP,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_STRIP,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_FAN,
-   0,
-   0,
-   0
+   [GL_POINTS] = RADEON_CP_VC_CNTL_PRIM_TYPE_POINT,
+   [GL_LINES] = RADEON_CP_VC_CNTL_PRIM_TYPE_LINE,
+   [GL_LINE_LOOP] = 0,
+   [GL_LINE_STRIP] = RADEON_CP_VC_CNTL_PRIM_TYPE_LINE_STRIP,
+   [GL_TRIANGLES] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
+   [GL_TRIANGLE_STRIP] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_STRIP,
+   [GL_TRIANGLE_FAN] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_FAN,
+   [GL_QUADS] = 0,
+   [GL_QUAD_STRIP] = 0,
+   [GL_POLYGON] = 0
 };
 
-static INLINE void
+static inline void
 radeonDmaPrimitive( r100ContextPtr rmesa, GLenum prim )
 {
    RADEON_NEWPRIM( rmesa );
@@ -416,12 +414,12 @@ static GLboolean radeon_run_render( struct gl_context *ctx,
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct vertex_buffer *VB = &tnl->vb;
-   tnl_render_func *tab = TAG(render_tab_verts);
+   const tnl_render_func *tab = TAG(render_tab_verts);
    GLuint i;
 
-   if (rmesa->radeon.swtcl.RenderIndex != 0 ||   
+   if (rmesa->radeon.swtcl.RenderIndex != 0 ||
        !radeon_dma_validate_render( ctx, VB ))
-      return GL_TRUE;		
+      return GL_TRUE;
 
    radeon_prepare_render(&rmesa->radeon);
    if (rmesa->radeon.NewGLState)
@@ -440,11 +438,11 @@ static GLboolean radeon_run_render( struct gl_context *ctx,
 
       radeon_print(RADEON_SWRENDER, RADEON_NORMAL,
 	  "radeon_render.c: prim %s %d..%d\n",
-		 _mesa_lookup_enum_by_nr(prim & PRIM_MODE_MASK), 
+		 _mesa_enum_to_string(prim & PRIM_MODE_MASK), 
 		 start, start+length);
 
       if (length)
-	 tab[prim & PRIM_MODE_MASK]( ctx, start, start + length, prim );
+         tab[prim & PRIM_MODE_MASK](ctx, start, length, prim);
    }
 
    tnl->Driver.Render.Finish( ctx );
@@ -469,16 +467,16 @@ const struct tnl_pipeline_stage _radeon_render_stage =
 
 
 static const GLuint reduced_hw_prim[GL_POLYGON+1] = {
-   RADEON_CP_VC_CNTL_PRIM_TYPE_POINT,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_LINE,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_LINE,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_LINE,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
-   RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST
+   [GL_POINTS] = RADEON_CP_VC_CNTL_PRIM_TYPE_POINT,
+   [GL_LINES] = RADEON_CP_VC_CNTL_PRIM_TYPE_LINE,
+   [GL_LINE_LOOP] = RADEON_CP_VC_CNTL_PRIM_TYPE_LINE,
+   [GL_LINE_STRIP] = RADEON_CP_VC_CNTL_PRIM_TYPE_LINE,
+   [GL_TRIANGLES] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
+   [GL_TRIANGLE_STRIP] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
+   [GL_TRIANGLE_FAN] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
+   [GL_QUADS] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
+   [GL_QUAD_STRIP] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
+   [GL_POLYGON] = RADEON_CP_VC_CNTL_PRIM_TYPE_TRI_LIST
 };
 
 static void radeonRasterPrimitive( struct gl_context *ctx, GLuint hwprim );
@@ -534,8 +532,8 @@ static struct {
 
 #define DO_FALLBACK  0
 #define DO_OFFSET    0
-#define DO_UNFILLED (IND & RADEON_UNFILLED_BIT)
-#define DO_TWOSIDE  (IND & RADEON_TWOSIDE_BIT)
+#define DO_UNFILLED ((IND & RADEON_UNFILLED_BIT) != 0)
+#define DO_TWOSIDE  ((IND & RADEON_TWOSIDE_BIT) != 0)
 #define DO_FLAT      0
 #define DO_TRI       1
 #define DO_QUAD      1

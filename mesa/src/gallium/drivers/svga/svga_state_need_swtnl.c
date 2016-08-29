@@ -26,68 +26,22 @@
 #include "util/u_inlines.h"
 #include "pipe/p_state.h"
 #include "svga_context.h"
+#include "svga_shader.h"
 #include "svga_state.h"
 #include "svga_debug.h"
 #include "svga_hw_reg.h"
 
 
-/**
- * Given a gallium vertex element format, return the corresponding SVGA3D
- * format.  Return SVGA3D_DECLTYPE_MAX for unsupported gallium formats.
- */
-static INLINE SVGA3dDeclType
-svga_translate_vertex_format(enum pipe_format format)
-{
-   switch (format) {
-   case PIPE_FORMAT_R32_FLOAT:            return SVGA3D_DECLTYPE_FLOAT1;
-   case PIPE_FORMAT_R32G32_FLOAT:         return SVGA3D_DECLTYPE_FLOAT2;
-   case PIPE_FORMAT_R32G32B32_FLOAT:      return SVGA3D_DECLTYPE_FLOAT3;
-   case PIPE_FORMAT_R32G32B32A32_FLOAT:   return SVGA3D_DECLTYPE_FLOAT4;
-   case PIPE_FORMAT_B8G8R8A8_UNORM:       return SVGA3D_DECLTYPE_D3DCOLOR;
-   case PIPE_FORMAT_R8G8B8A8_USCALED:     return SVGA3D_DECLTYPE_UBYTE4;
-   case PIPE_FORMAT_R16G16_SSCALED:       return SVGA3D_DECLTYPE_SHORT2;
-   case PIPE_FORMAT_R16G16B16A16_SSCALED: return SVGA3D_DECLTYPE_SHORT4;
-   case PIPE_FORMAT_R8G8B8A8_UNORM:       return SVGA3D_DECLTYPE_UBYTE4N;
-   case PIPE_FORMAT_R16G16_SNORM:         return SVGA3D_DECLTYPE_SHORT2N;
-   case PIPE_FORMAT_R16G16B16A16_SNORM:   return SVGA3D_DECLTYPE_SHORT4N;
-   case PIPE_FORMAT_R16G16_UNORM:         return SVGA3D_DECLTYPE_USHORT2N;
-   case PIPE_FORMAT_R16G16B16A16_UNORM:   return SVGA3D_DECLTYPE_USHORT4N;
-   case PIPE_FORMAT_R10G10B10X2_USCALED:  return SVGA3D_DECLTYPE_UDEC3;
-   case PIPE_FORMAT_R10G10B10X2_SNORM:    return SVGA3D_DECLTYPE_DEC3N;
-   case PIPE_FORMAT_R16G16_FLOAT:         return SVGA3D_DECLTYPE_FLOAT16_2;
-   case PIPE_FORMAT_R16G16B16A16_FLOAT:   return SVGA3D_DECLTYPE_FLOAT16_4;
-
-   default:
-      /* There are many formats without hardware support.  This case
-       * will be hit regularly, meaning we'll need swvfetch.
-       */
-      return SVGA3D_DECLTYPE_MAX;
-   }
-}
-
-
 static enum pipe_error
 update_need_swvfetch(struct svga_context *svga, unsigned dirty)
 {
-   unsigned i;
-   boolean need_swvfetch = FALSE;
-
    if (!svga->curr.velems) {
       /* No vertex elements bound. */
-      return 0;
+      return PIPE_OK;
    }
 
-   for (i = 0; i < svga->curr.velems->count; i++) {
-      svga->state.sw.ve_format[i] = svga_translate_vertex_format(svga->curr.velems->velem[i].src_format);
-      if (svga->state.sw.ve_format[i] == SVGA3D_DECLTYPE_MAX) {
-         /* Unsupported format - use software fetch */
-         need_swvfetch = TRUE;
-         break;
-      }
-   }
-
-   if (need_swvfetch != svga->state.sw.need_swvfetch) {
-      svga->state.sw.need_swvfetch = need_swvfetch;
+   if (svga->state.sw.need_swvfetch != svga->curr.velems->need_swvfetch) {
+      svga->state.sw.need_swvfetch = svga->curr.velems->need_swvfetch;
       svga->dirty |= SVGA_NEW_NEED_SWVFETCH;
    }
 
@@ -108,6 +62,7 @@ update_need_pipeline(struct svga_context *svga, unsigned dirty)
 {
    boolean need_pipeline = FALSE;
    struct svga_vertex_shader *vs = svga->curr.vs;
+   const char *reason = "";
 
    /* SVGA_NEW_RAST, SVGA_NEW_REDUCED_PRIMITIVE
     */
@@ -122,6 +77,20 @@ update_need_pipeline(struct svga_context *svga, unsigned dirty)
                  svga->curr.rast->need_pipeline_lines_str,
                  svga->curr.rast->need_pipeline_points_str);
       need_pipeline = TRUE;
+
+      switch (svga->curr.reduced_prim) {
+      case PIPE_PRIM_POINTS:
+         reason = svga->curr.rast->need_pipeline_points_str;
+         break;
+      case PIPE_PRIM_LINES:
+         reason = svga->curr.rast->need_pipeline_lines_str;
+         break;
+      case PIPE_PRIM_TRIANGLES:
+         reason = svga->curr.rast->need_pipeline_tris_str;
+         break;
+      default:
+         assert(!"Unexpected reduced prim type");
+      }
    }
 
    /* EDGEFLAGS
@@ -129,6 +98,7 @@ update_need_pipeline(struct svga_context *svga, unsigned dirty)
     if (vs && vs->base.info.writes_edgeflag) {
       SVGA_DBG(DEBUG_SWTNL, "%s: edgeflags\n", __FUNCTION__);
       need_pipeline = TRUE;
+      reason = "edge flags";
    }
 
    /* SVGA_NEW_FS, SVGA_NEW_RAST, SVGA_NEW_REDUCED_PRIMITIVE
@@ -138,7 +108,7 @@ update_need_pipeline(struct svga_context *svga, unsigned dirty)
       unsigned generic_inputs =
          svga->curr.fs ? svga->curr.fs->generic_inputs : 0;
 
-      if (sprite_coord_gen &&
+      if (!svga_have_vgpu10(svga) && sprite_coord_gen &&
           (generic_inputs & ~sprite_coord_gen)) {
          /* The fragment shader is using some generic inputs that are
           * not being replaced by auto-generated point/sprite coords (and
@@ -150,6 +120,7 @@ update_need_pipeline(struct svga_context *svga, unsigned dirty)
           * point stage.
           */
          need_pipeline = TRUE;
+         reason = "point sprite coordinate generation";
       }
    }
 
@@ -161,6 +132,12 @@ update_need_pipeline(struct svga_context *svga, unsigned dirty)
    /* DEBUG */
    if (0 && svga->state.sw.need_pipeline)
       debug_printf("sw.need_pipeline = %d\n", svga->state.sw.need_pipeline);
+
+   if (svga->state.sw.need_pipeline) {
+      assert(reason);
+      pipe_debug_message(&svga->debug.callback, FALLBACK,
+                         "Using semi-fallback for %s", reason);
+   }
 
    return PIPE_OK;
 }

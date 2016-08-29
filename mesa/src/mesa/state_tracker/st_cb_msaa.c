@@ -27,6 +27,7 @@
 
 #include "main/bufferobj.h"
 #include "main/imports.h"
+#include "main/framebuffer.h"
 
 #include "state_tracker/st_cb_msaa.h"
 #include "state_tracker/st_context.h"
@@ -40,15 +41,18 @@ static void
 st_GetSamplePosition(struct gl_context *ctx,
                      struct gl_framebuffer *fb,
                      GLuint index,
-                     GLfloat *outValue)
+                     GLfloat *outPos)
 {
    struct st_context *st = st_context(ctx);
 
-   st_validate_state(st);
+   st_validate_state(st, ST_PIPELINE_RENDER);
 
    if (st->pipe->get_sample_position)
-      st->pipe->get_sample_position(st->pipe, (unsigned) fb->Visual.samples,
-                                    index, outValue);
+      st->pipe->get_sample_position(st->pipe,
+                                    _mesa_geometric_samples(fb),
+                                    index, outPos);
+   else
+      outPos[0] = outPos[1] = 0.5f;
 }
 
 

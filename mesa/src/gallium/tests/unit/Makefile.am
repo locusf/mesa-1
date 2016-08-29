@@ -2,6 +2,8 @@
 
 include $(top_srcdir)/src/gallium/Automake.inc
 
+EXTRA_DIST = SConscript
+
 AM_CFLAGS = \
 	$(GALLIUM_CFLAGS)
 
@@ -11,12 +13,11 @@ AM_CPPFLAGS = \
 
 LDADD = \
 	$(top_builddir)/src/gallium/auxiliary/libgallium.la \
+	$(top_builddir)/src/util/libmesautil.la \
 	$(top_builddir)/src/gallium/drivers/trace/libtrace.la \
 	$(top_builddir)/src/gallium/winsys/sw/null/libws_null.la \
 	$(top_builddir)/src/gallium/drivers/softpipe/libsoftpipe.la \
-	$(DLOPEN_LIBS) \
-	$(PTHREAD_LIBS) \
-	-lm
+	$(GALLIUM_COMMON_LIB_DEPS)
 
 noinst_PROGRAMS = pipe_barrier_test u_cache_test u_half_test \
 	u_format_test u_format_compatible_test translate_test

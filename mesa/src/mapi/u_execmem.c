@@ -32,14 +32,14 @@
  */
 
 
-#include "u_compiler.h"
-#include "u_thread.h"
+#include "c99_compat.h"
+#include "c11/threads.h"
 #include "u_execmem.h"
 
 
 #define EXEC_MAP_SIZE (4*1024)
 
-u_mutex_declare_static(exec_mutex);
+static mtx_t exec_mutex = _MTX_INITIALIZER_NP;
 
 static unsigned int head = 0;
 
@@ -123,7 +123,7 @@ u_execmem_alloc(unsigned int size)
 {
    void *addr = NULL;
 
-   u_mutex_lock(exec_mutex);
+   mtx_lock(&exec_mutex);
 
    if (!init_map())
       goto bail;
@@ -137,7 +137,7 @@ u_execmem_alloc(unsigned int size)
    head += size;
 
 bail:
-   u_mutex_unlock(exec_mutex);
+   mtx_unlock(&exec_mutex);
 
    return addr;
 }

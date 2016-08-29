@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,7 +27,7 @@
 
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
 
 
@@ -38,7 +38,10 @@
 #include "util/u_inlines.h"
 #include "util/u_helpers.h"
 #include "util/u_prim.h"
+#include "util/u_format.h"
 #include "draw_context.h"
+#include "draw_pipe.h"
+#include "draw_prim_assembler.h"
 #include "draw_vs.h"
 #include "draw_gs.h"
 
@@ -50,20 +53,13 @@
 boolean
 draw_get_option_use_llvm(void)
 {
-   static boolean first = TRUE;
-   static boolean value;
-   if (first) {
-      first = FALSE;
-      value = debug_get_bool_option("DRAW_USE_LLVM", TRUE);
-
-#ifdef PIPE_ARCH_X86
-      util_cpu_detect();
-      /* require SSE2 due to LLVM PR6960. XXX Might be fixed by now? */
-      if (!util_cpu_caps.has_sse2)
-         value = FALSE;
-#endif
-   }
-   return value;
+   return debug_get_bool_option("DRAW_USE_LLVM", TRUE);
+}
+#else
+boolean
+draw_get_option_use_llvm(void)
+{
+   return FALSE;
 }
 #endif
 
@@ -72,10 +68,11 @@ draw_get_option_use_llvm(void)
  * Create new draw module context with gallivm state for LLVM JIT.
  */
 static struct draw_context *
-draw_create_context(struct pipe_context *pipe, boolean try_llvm)
+draw_create_context(struct pipe_context *pipe, void *context,
+                    boolean try_llvm)
 {
    struct draw_context *draw = CALLOC_STRUCT( draw_context );
-   if (draw == NULL)
+   if (!draw)
       goto err_out;
 
    /* we need correct cpu caps for disabling denorms in draw_vbo() */
@@ -83,15 +80,17 @@ draw_create_context(struct pipe_context *pipe, boolean try_llvm)
 
 #if HAVE_LLVM
    if (try_llvm && draw_get_option_use_llvm()) {
-      draw->llvm = draw_llvm_create(draw);
-      if (!draw->llvm)
-         goto err_destroy;
+      draw->llvm = draw_llvm_create(draw, (LLVMContextRef)context);
    }
 #endif
 
    draw->pipe = pipe;
 
    if (!draw_init(draw))
+      goto err_destroy;
+
+   draw->ia = draw_prim_assembler_create(draw);
+   if (!draw->ia)
       goto err_destroy;
 
    return draw;
@@ -109,9 +108,18 @@ err_out:
 struct draw_context *
 draw_create(struct pipe_context *pipe)
 {
-   return draw_create_context(pipe, TRUE);
+   return draw_create_context(pipe, NULL, TRUE);
 }
 
+
+#if HAVE_LLVM
+struct draw_context *
+draw_create_with_llvm_context(struct pipe_context *pipe,
+                              void *context)
+{
+   return draw_create_context(pipe, context, TRUE);
+}
+#endif
 
 /**
  * Create a new draw context, without LLVM JIT.
@@ -119,7 +127,7 @@ draw_create(struct pipe_context *pipe)
 struct draw_context *
 draw_create_no_llvm(struct pipe_context *pipe)
 {
-   return draw_create_context(pipe, FALSE);
+   return draw_create_context(pipe, NULL, FALSE);
 }
 
 
@@ -158,6 +166,8 @@ boolean draw_init(struct draw_context *draw)
    draw->quads_always_flatshade_last = !draw->pipe->screen->get_param(
       draw->pipe->screen, PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION);
 
+   draw->floating_point_depth = false;
+
    return TRUE;
 }
 
@@ -172,6 +182,7 @@ boolean draw_init(struct draw_context *draw)
 void draw_new_instance(struct draw_context *draw)
 {
    draw_geometry_shader_new_instance(draw->gs.geometry_shader);
+   draw_prim_assembler_new_instance(draw->ia);
 }
 
 
@@ -205,6 +216,7 @@ void draw_destroy( struct draw_context *draw )
       draw->render->destroy( draw->render );
    */
 
+   draw_prim_assembler_destroy(draw->ia);
    draw_pipeline_destroy( draw );
    draw_pt_destroy( draw );
    draw_vs_destroy( draw );
@@ -226,28 +238,64 @@ void draw_flush( struct draw_context *draw )
 
 
 /**
- * Specify the Minimum Resolvable Depth factor for polygon offset.
+ * Specify the depth stencil format for the draw pipeline. This function
+ * determines the Minimum Resolvable Depth factor for polygon offset.
  * This factor potentially depends on the number of Z buffer bits,
  * the rasterization algorithm and the arithmetic performed on Z
- * values between vertex shading and rasterization.  It will vary
- * from one driver to another.
+ * values between vertex shading and rasterization.
  */
-void draw_set_mrd(struct draw_context *draw, double mrd)
+void draw_set_zs_format(struct draw_context *draw, enum pipe_format format)
 {
-   draw->mrd = mrd;
+   const struct util_format_description *desc = util_format_description(format);
+
+   draw->floating_point_depth =
+      (util_get_depth_format_type(desc) == UTIL_FORMAT_TYPE_FLOAT);
+
+   draw->mrd = util_get_depth_format_mrd(desc);
 }
 
 
-static void update_clip_flags( struct draw_context *draw )
+static bool
+draw_is_vs_window_space(struct draw_context *draw)
 {
-   draw->clip_xy = !draw->driver.bypass_clip_xy;
+   if (draw->vs.vertex_shader) {
+      struct tgsi_shader_info *info = &draw->vs.vertex_shader->info;
+
+      return info->properties[TGSI_PROPERTY_VS_WINDOW_SPACE_POSITION] != 0;
+   }
+   return false;
+}
+
+
+void
+draw_update_clip_flags(struct draw_context *draw)
+{
+   bool window_space = draw_is_vs_window_space(draw);
+
+   draw->clip_xy = !draw->driver.bypass_clip_xy && !window_space;
    draw->guard_band_xy = (!draw->driver.bypass_clip_xy &&
                           draw->driver.guard_band_xy);
    draw->clip_z = (!draw->driver.bypass_clip_z &&
-                   draw->rasterizer && draw->rasterizer->depth_clip);
+                   draw->rasterizer && draw->rasterizer->depth_clip) &&
+                  !window_space;
    draw->clip_user = draw->rasterizer &&
-                     draw->rasterizer->clip_plane_enable != 0;
+                     draw->rasterizer->clip_plane_enable != 0 &&
+                     !window_space;
+   draw->guard_band_points_xy = draw->guard_band_xy ||
+                                (draw->driver.bypass_clip_points &&
+                                (draw->rasterizer &&
+                                 draw->rasterizer->point_tri_clip));
 }
+
+
+void
+draw_update_viewport_flags(struct draw_context *draw)
+{
+   bool window_space = draw_is_vs_window_space(draw);
+
+   draw->bypass_viewport = window_space || draw->identity_viewport;
+}
+
 
 /**
  * Register new primitive rasterization/rendering state.
@@ -262,7 +310,7 @@ void draw_set_rasterizer_state( struct draw_context *draw,
 
       draw->rasterizer = raster;
       draw->rast_handle = rast_handle;
-      update_clip_flags(draw);
+      draw_update_clip_flags(draw);
    }
 }
 
@@ -272,18 +320,24 @@ void draw_set_rasterizer_state( struct draw_context *draw,
  * Some hardware can turn off clipping altogether - in particular any
  * hardware with a TNL unit can do its own clipping, even if it is
  * relying on the draw module for some other reason.
+ * Setting bypass_clip_points to achieve d3d-style point clipping (the driver
+ * will need to do the "vp scissoring") _requires_ the driver to implement
+ * wide points / point sprites itself (points will still be clipped if rasterizer
+ * point_tri_clip isn't set). Only relevant if bypass_clip_xy isn't set.
  */
 void draw_set_driver_clipping( struct draw_context *draw,
                                boolean bypass_clip_xy,
                                boolean bypass_clip_z,
-                               boolean guard_band_xy)
+                               boolean guard_band_xy,
+                               boolean bypass_clip_points)
 {
    draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
 
    draw->driver.bypass_clip_xy = bypass_clip_xy;
    draw->driver.bypass_clip_z = bypass_clip_z;
    draw->driver.guard_band_xy = guard_band_xy;
-   update_clip_flags(draw);
+   draw->driver.bypass_clip_points = bypass_clip_points;
+   draw_update_clip_flags(draw);
 }
 
 
@@ -334,11 +388,10 @@ void draw_set_viewport_states( struct draw_context *draw,
       (viewport->scale[0] == 1.0f &&
        viewport->scale[1] == 1.0f &&
        viewport->scale[2] == 1.0f &&
-       viewport->scale[3] == 1.0f &&
        viewport->translate[0] == 0.0f &&
        viewport->translate[1] == 0.0f &&
-       viewport->translate[2] == 0.0f &&
-       viewport->translate[3] == 0.0f);
+       viewport->translate[2] == 0.0f);
+   draw_update_viewport_flags(draw);
 }
 
 
@@ -503,7 +556,7 @@ draw_alloc_extra_vertex_attrib(struct draw_context *draw,
    num_outputs = draw_current_shader_outputs(draw);
    n = draw->extra_shader_outputs.num;
 
-   assert(n < Elements(draw->extra_shader_outputs.semantic_name));
+   assert(n < ARRAY_SIZE(draw->extra_shader_outputs.semantic_name));
 
    draw->extra_shader_outputs.semantic_name[n] = semantic_name;
    draw->extra_shader_outputs.semantic_index[n] = semantic_index;
@@ -540,6 +593,28 @@ draw_get_shader_info(const struct draw_context *draw)
    }
 }
 
+/**
+ * Prepare outputs slots from the draw module
+ *
+ * Certain parts of the draw module can emit additional
+ * outputs that can be quite useful to the backends, a good
+ * example of it is the process of decomposing primitives
+ * into wireframes (aka. lines) which normally would lose
+ * the face-side information, but using this method we can
+ * inject another shader output which passes the original
+ * face side information to the backend.
+ */
+void
+draw_prepare_shader_outputs(struct draw_context *draw)
+{
+   draw_remove_extra_vertex_attribs(draw);
+   draw_prim_assembler_prepare_outputs(draw->ia);
+   draw_unfilled_prepare_outputs(draw, draw->pipeline.unfilled);
+   if (draw->pipeline.aapoint)
+      draw_aapoint_prepare_outputs(draw, draw->pipeline.aapoint);
+   if (draw->pipeline.aaline)
+      draw_aaline_prepare_outputs(draw, draw->pipeline.aaline);
+}
 
 /**
  * Ask the draw module for the location/slot of the given vertex attribute in
@@ -605,6 +680,40 @@ draw_num_shader_outputs(const struct draw_context *draw)
 
 
 /**
+ * Return total number of the vertex shader outputs.  This function
+ * also counts any extra vertex output attributes that may
+ * be filled in by some draw stages (such as AA point, AA line,
+ * front face).
+ */
+uint
+draw_total_vs_outputs(const struct draw_context *draw)
+{
+   const struct tgsi_shader_info *info = &draw->vs.vertex_shader->info;
+
+   return info->num_outputs + draw->extra_shader_outputs.num;
+}
+
+/**
+ * Return total number of the geometry shader outputs. This function
+ * also counts any extra geometry output attributes that may
+ * be filled in by some draw stages (such as AA point, AA line, front
+ * face).
+ */
+uint
+draw_total_gs_outputs(const struct draw_context *draw)
+{   
+   const struct tgsi_shader_info *info;
+
+   if (!draw->gs.geometry_shader)
+      return 0;
+
+   info = &draw->gs.geometry_shader->info;
+
+   return info->num_outputs + draw->extra_shader_outputs.num;
+}
+
+
+/**
  * Provide TGSI sampler objects for vertex/geometry shaders that use
  * texture fetches.  This state only needs to be set once per context.
  * This might only be used by software drivers for the time being.
@@ -622,7 +731,41 @@ draw_texture_sampler(struct draw_context *draw,
    }
 }
 
+/**
+ * Provide TGSI image objects for vertex/geometry shaders that use
+ * texture fetches.  This state only needs to be set once per context.
+ * This might only be used by software drivers for the time being.
+ */
+void
+draw_image(struct draw_context *draw,
+           uint shader,
+           struct tgsi_image *image)
+{
+   if (shader == PIPE_SHADER_VERTEX) {
+      draw->vs.tgsi.image = image;
+   } else {
+      debug_assert(shader == PIPE_SHADER_GEOMETRY);
+      draw->gs.tgsi.image = image;
+   }
+}
 
+/**
+ * Provide TGSI buffer objects for vertex/geometry shaders that use
+ * load/store/atomic ops.  This state only needs to be set once per context.
+ * This might only be used by software drivers for the time being.
+ */
+void
+draw_buffer(struct draw_context *draw,
+            uint shader,
+            struct tgsi_buffer *buffer)
+{
+   if (shader == PIPE_SHADER_VERTEX) {
+      draw->vs.tgsi.buffer = buffer;
+   } else {
+      debug_assert(shader == PIPE_SHADER_GEOMETRY);
+      draw->gs.tgsi.buffer = buffer;
+   }
+}
 
 
 void draw_set_render( struct draw_context *draw, 
@@ -713,7 +856,7 @@ draw_current_shader_viewport_index_output(const struct draw_context *draw)
 {
    if (draw->gs.geometry_shader)
       return draw->gs.geometry_shader->viewport_index_output;
-   return 0;
+   return draw->vs.vertex_shader->viewport_index_output;
 }
 
 /**
@@ -725,27 +868,31 @@ draw_current_shader_uses_viewport_index(const struct draw_context *draw)
 {
    if (draw->gs.geometry_shader)
       return draw->gs.geometry_shader->info.writes_viewport_index;
-   return FALSE;
+   return draw->vs.vertex_shader->info.writes_viewport_index;
 }
 
 
 /**
  * Return the index of the shader output which will contain the
- * vertex position.
+ * clip vertex position.
+ * Note we don't support clipvertex output in the gs. For clipping
+ * to work correctly hence we return ordinary position output instead.
  */
 uint
 draw_current_shader_clipvertex_output(const struct draw_context *draw)
 {
+   if (draw->gs.geometry_shader)
+      return draw->gs.position_output;
    return draw->vs.clipvertex_output;
 }
 
 uint
-draw_current_shader_clipdistance_output(const struct draw_context *draw, int index)
+draw_current_shader_ccdistance_output(const struct draw_context *draw, int index)
 {
    debug_assert(index < PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
    if (draw->gs.geometry_shader)
-      return draw->gs.geometry_shader->clipdistance_output[index];
-   return draw->vs.clipdistance_output[index];
+      return draw->gs.geometry_shader->ccdistance_output[index];
+   return draw->vs.ccdistance_output[index];
 }
 
 
@@ -755,16 +902,6 @@ draw_current_shader_num_written_clipdistances(const struct draw_context *draw)
    if (draw->gs.geometry_shader)
       return draw->gs.geometry_shader->info.num_written_clipdistance;
    return draw->vs.vertex_shader->info.num_written_clipdistance;
-}
-
-
-uint
-draw_current_shader_culldistance_output(const struct draw_context *draw, int index)
-{
-   debug_assert(index < PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
-   if (draw->gs.geometry_shader)
-      return draw->gs.geometry_shader->culldistance_output[index];
-   return draw->vs.vertex_shader->culldistance_output[index];
 }
 
 uint
@@ -913,6 +1050,8 @@ draw_get_shader_param_no_llvm(unsigned shader, enum pipe_shader_cap param)
 /**
  * XXX: Results for PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS because there are two
  * different ways of setting textures, and drivers typically only support one.
+ * Drivers requesting a draw context explicitly without llvm must call
+ * draw_get_shader_param_no_llvm instead.
  */
 int
 draw_get_shader_param(unsigned shader, enum pipe_shader_cap param)
@@ -962,14 +1101,37 @@ draw_stats_clipper_primitives(struct draw_context *draw,
                               const struct draw_prim_info *prim_info)
 {
    if (draw->collect_statistics) {
-      unsigned start, i;
-      for (start = i = 0;
-           i < prim_info->primitive_count;
-           start += prim_info->primitive_lengths[i], i++)
-      {
+      unsigned i;
+      for (i = 0; i < prim_info->primitive_count; i++) {
          draw->statistics.c_invocations +=
             u_decomposed_prims_for_vertices(prim_info->prim,
                                             prim_info->primitive_lengths[i]);
       }
    }
+}
+
+
+/**
+ * Returns true if the draw module will inject the frontface
+ * info into the outputs.
+ *
+ * Given the specified primitive and rasterizer state
+ * the function will figure out if the draw module
+ * will inject the front-face information into shader
+ * outputs. This is done to preserve the front-facing
+ * info when decomposing primitives into wireframes.
+ */
+boolean
+draw_will_inject_frontface(const struct draw_context *draw)
+{
+   unsigned reduced_prim = u_reduced_prim(draw->pt.prim);
+   const struct pipe_rasterizer_state *rast = draw->rasterizer;
+
+   if (reduced_prim != PIPE_PRIM_TRIANGLES) {
+      return FALSE;
+   }
+
+   return (rast &&
+           (rast->fill_front != PIPE_POLYGON_MODE_FILL ||
+            rast->fill_back != PIPE_POLYGON_MODE_FILL));
 }

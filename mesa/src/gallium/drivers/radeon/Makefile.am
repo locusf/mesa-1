@@ -1,38 +1,36 @@
 include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
-LIBGALLIUM_LIBS=
+
+AM_CFLAGS = \
+	$(GALLIUM_DRIVER_CFLAGS) \
+	$(RADEON_CFLAGS) \
+	-Wstrict-overflow=0
+# ^^ disable warnings about overflows (os_time_timeout)
 
 noinst_LTLIBRARIES = libradeon.la
-
-AM_CFLAGS = $(GALLIUM_CFLAGS) $(RADEON_CFLAGS)
 
 libradeon_la_SOURCES = \
 	$(C_SOURCES)
 
 if NEED_RADEON_LLVM
 
-libllvmradeon_la_LDFLAGS = \
-	$(LLVM_LDFLAGS)
+AM_CFLAGS += \
+	$(LLVM_CFLAGS) \
+	$(LIBELF_CFLAGS)
 
-noinst_LTLIBRARIES += libllvmradeon.la
-
-libllvmradeon_la_CXXFLAGS = \
-	$(GALLIUM_CFLAGS) \
-	$(DEFINES)
-
-libllvmradeon_la_CFLAGS = \
-	$(GALLIUM_CFLAGS) \
-	$(LLVM_CFLAGS)
-
-libllvmradeon_la_SOURCES = \
-	$(LLVM_CPP_FILES) \
+libradeon_la_SOURCES += \
 	$(LLVM_C_FILES)
 
-libllvmradeon_la_LIBADD = \
-	$(LIBGALLIUM_LIBS) \
+libradeon_la_LIBADD = \
 	$(CLOCK_LIB) \
 	$(LLVM_LIBS) \
-	$(ELF_LIB)
+	$(LIBELF_LIBS)
+
+libradeon_la_LDFLAGS = \
+	$(LLVM_LDFLAGS)
 
 endif
+
+EXTRA_DIST = \
+	LLVM_REVISION.txt

@@ -27,26 +27,16 @@
 #ifndef _HGL_SOFTWAREWINSYS_H
 #define _HGL_SOFTWAREWINSYS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-#include "pipe/p_defines.h"
-#include "state_tracker/st_api.h"
-#include "state_tracker/sw_winsys.h"
+struct sw_winsys;
 
+struct sw_winsys* hgl_create_sw_winsys(void);
 
-struct haiku_displaytarget
-{
-	enum pipe_format format;
-	unsigned width;
-	unsigned height;
-	unsigned stride;
-
-	unsigned size;
-
-	void* data;
-};
-
-
-struct sw_winsys* hgl_create_sw_winsys();
-
+#ifdef __cplusplus
+}
+#endif
 
 #endif

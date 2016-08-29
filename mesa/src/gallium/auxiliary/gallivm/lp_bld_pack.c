@@ -164,7 +164,7 @@ lp_build_extract_range(struct gallivm_state *gallivm,
    LLVMValueRef elems[LP_MAX_VECTOR_LENGTH];
    unsigned i;
 
-   assert(size <= Elements(elems));
+   assert(size <= ARRAY_SIZE(elems));
 
    for (i = 0; i < size; ++i)
       elems[i] = lp_build_const_int32(gallivm, i + start);
@@ -193,7 +193,7 @@ lp_build_concat(struct gallivm_state *gallivm,
    LLVMValueRef tmp[LP_MAX_VECTOR_LENGTH/2];
    LLVMValueRef shuffles[LP_MAX_VECTOR_LENGTH];
 
-   assert(src_type.length * num_vectors <= Elements(shuffles));
+   assert(src_type.length * num_vectors <= ARRAY_SIZE(shuffles));
    assert(util_is_power_of_two(num_vectors));
 
    new_length = src_type.length;
@@ -236,7 +236,7 @@ lp_build_concat_n(struct gallivm_state *gallivm,
                   unsigned num_dsts)
 {
    int size = num_srcs / num_dsts;
-   int i;
+   unsigned i;
 
    assert(num_srcs >= num_dsts);
    assert((num_srcs % size) == 0);
@@ -253,6 +253,32 @@ lp_build_concat_n(struct gallivm_state *gallivm,
    }
 
    return size;
+}
+
+
+/**
+ * Un-interleave vector.
+ * This will return a vector consisting of every second element
+ * (depending on lo_hi, beginning at 0 or 1).
+ * The returned vector size (elems and width) will only be half
+ * that of the source vector.
+ */
+LLVMValueRef
+lp_build_uninterleave1(struct gallivm_state *gallivm,
+                       unsigned num_elems,
+                       LLVMValueRef a,
+                       unsigned lo_hi)
+{
+   LLVMValueRef shuffle, elems[LP_MAX_VECTOR_LENGTH];
+   unsigned i;
+   assert(num_elems <= LP_MAX_VECTOR_LENGTH);
+
+   for (i = 0; i < num_elems / 2; ++i)
+      elems[i] = lp_build_const_int32(gallivm, 2*i + lo_hi);
+
+   shuffle = LLVMConstVector(elems, num_elems / 2);
+
+   return LLVMBuildShuffleVector(gallivm->builder, a, a, shuffle, "");
 }
 
 
@@ -455,55 +481,56 @@ lp_build_pack2(struct gallivm_state *gallivm,
    LLVMValueRef res = NULL;
    struct lp_type intr_type = dst_type;
 
-#if HAVE_LLVM < 0x0207
-   intr_type = src_type;
-#endif
-
    assert(!src_type.floating);
    assert(!dst_type.floating);
    assert(src_type.width == dst_type.width * 2);
    assert(src_type.length * 2 == dst_type.length);
 
    /* Check for special cases first */
-   if((util_cpu_caps.has_sse2 || util_cpu_caps.has_altivec) &&
-       src_type.width * src_type.length >= 128) {
+   if ((util_cpu_caps.has_sse2 || util_cpu_caps.has_altivec) &&
+        src_type.width * src_type.length >= 128) {
       const char *intrinsic = NULL;
+      boolean swap_intrinsic_operands = FALSE;
 
       switch(src_type.width) {
       case 32:
          if (util_cpu_caps.has_sse2) {
-           if(dst_type.sign) {
+           if (dst_type.sign) {
               intrinsic = "llvm.x86.sse2.packssdw.128";
-           }
-           else {
+           } else {
               if (util_cpu_caps.has_sse4_1) {
                  intrinsic = "llvm.x86.sse41.packusdw";
-#if HAVE_LLVM < 0x0207
-                 /* llvm < 2.7 has inconsistent signatures except for packusdw */
-                 intr_type = dst_type;
-#endif
               }
            }
          } else if (util_cpu_caps.has_altivec) {
             if (dst_type.sign) {
-              intrinsic = "llvm.ppc.altivec.vpkswus";
-           } else {
-              intrinsic = "llvm.ppc.altivec.vpkuwus";
-           }
+               intrinsic = "llvm.ppc.altivec.vpkswss";
+            } else {
+               intrinsic = "llvm.ppc.altivec.vpkuwus";
+            }
+#ifdef PIPE_ARCH_LITTLE_ENDIAN
+            swap_intrinsic_operands = TRUE;
+#endif
          }
          break;
       case 16:
          if (dst_type.sign) {
             if (util_cpu_caps.has_sse2) {
-              intrinsic = "llvm.x86.sse2.packsswb.128";
+               intrinsic = "llvm.x86.sse2.packsswb.128";
             } else if (util_cpu_caps.has_altivec) {
-              intrinsic = "llvm.ppc.altivec.vpkshss";
+               intrinsic = "llvm.ppc.altivec.vpkshss";
+#ifdef PIPE_ARCH_LITTLE_ENDIAN
+               swap_intrinsic_operands = TRUE;
+#endif
             }
          } else {
             if (util_cpu_caps.has_sse2) {
-              intrinsic = "llvm.x86.sse2.packuswb.128";
+               intrinsic = "llvm.x86.sse2.packuswb.128";
             } else if (util_cpu_caps.has_altivec) {
-	      intrinsic = "llvm.ppc.altivec.vpkshus";
+               intrinsic = "llvm.ppc.altivec.vpkshus";
+#ifdef PIPE_ARCH_LITTLE_ENDIAN
+               swap_intrinsic_operands = TRUE;
+#endif
             }
          }
          break;
@@ -512,7 +539,11 @@ lp_build_pack2(struct gallivm_state *gallivm,
       if (intrinsic) {
          if (src_type.width * src_type.length == 128) {
             LLVMTypeRef intr_vec_type = lp_build_vec_type(gallivm, intr_type);
-            res = lp_build_intrinsic_binary(builder, intrinsic, intr_vec_type, lo, hi);
+            if (swap_intrinsic_operands) {
+               res = lp_build_intrinsic_binary(builder, intrinsic, intr_vec_type, hi, lo);
+            } else {
+               res = lp_build_intrinsic_binary(builder, intrinsic, intr_vec_type, lo, hi);
+            }
             if (dst_vec_type != intr_vec_type) {
                res = LLVMBuildBitCast(builder, res, dst_vec_type, "");
             }
@@ -521,6 +552,8 @@ lp_build_pack2(struct gallivm_state *gallivm,
             int num_split = src_type.width * src_type.length / 128;
             int i;
             int nlen = 128 / src_type.width;
+            int lo_off = swap_intrinsic_operands ? nlen : 0;
+            int hi_off = swap_intrinsic_operands ? 0 : nlen;
             struct lp_type ndst_type = lp_type_unorm(dst_type.width, 128);
             struct lp_type nintr_type = lp_type_unorm(intr_type.width, 128);
             LLVMValueRef tmpres[LP_MAX_VECTOR_WIDTH / 128];
@@ -532,9 +565,9 @@ lp_build_pack2(struct gallivm_state *gallivm,
 
             for (i = 0; i < num_split / 2; i++) {
                tmplo = lp_build_extract_range(gallivm,
-                                              lo, i*nlen*2, nlen);
+                                              lo, i*nlen*2 + lo_off, nlen);
                tmphi = lp_build_extract_range(gallivm,
-                                              lo, i*nlen*2 + nlen, nlen);
+                                              lo, i*nlen*2 + hi_off, nlen);
                tmpres[i] = lp_build_intrinsic_binary(builder, intrinsic,
                                                      nintr_vec_type, tmplo, tmphi);
                if (ndst_vec_type != nintr_vec_type) {
@@ -543,9 +576,9 @@ lp_build_pack2(struct gallivm_state *gallivm,
             }
             for (i = 0; i < num_split / 2; i++) {
                tmplo = lp_build_extract_range(gallivm,
-                                              hi, i*nlen*2, nlen);
+                                              hi, i*nlen*2 + lo_off, nlen);
                tmphi = lp_build_extract_range(gallivm,
-                                              hi, i*nlen*2 + nlen, nlen);
+                                              hi, i*nlen*2 + hi_off, nlen);
                tmpres[i+num_split/2] = lp_build_intrinsic_binary(builder, intrinsic,
                                                                  nintr_vec_type,
                                                                  tmplo, tmphi);
@@ -710,9 +743,6 @@ lp_build_resize(struct gallivm_state *gallivm,
    /* We must not loose or gain channels. Only precision */
    assert(src_type.length * num_srcs == dst_type.length * num_dsts);
 
-   /* We don't support M:N conversion, only 1:N, M:1, or 1:1 */
-   assert(num_srcs == 1 || num_dsts == 1);
-
    assert(src_type.length <= LP_MAX_VECTOR_LENGTH);
    assert(dst_type.length <= LP_MAX_VECTOR_LENGTH);
    assert(num_srcs <= LP_MAX_VECTOR_LENGTH);
@@ -723,6 +753,7 @@ lp_build_resize(struct gallivm_state *gallivm,
        * Truncate bit width.
        */
 
+      /* Conversion must be M:1 */
       assert(num_dsts == 1);
 
       if (src_type.width * src_type.length == dst_type.width * dst_type.length) {
@@ -775,6 +806,7 @@ lp_build_resize(struct gallivm_state *gallivm,
        * Expand bit width.
        */
 
+      /* Conversion must be 1:N */
       assert(num_srcs == 1);
 
       if (src_type.width * src_type.length == dst_type.width * dst_type.length) {
@@ -813,10 +845,11 @@ lp_build_resize(struct gallivm_state *gallivm,
        * No-op
        */
 
-      assert(num_srcs == 1);
-      assert(num_dsts == 1);
+      /* "Conversion" must be N:N */
+      assert(num_srcs == num_dsts);
 
-      tmp[0] = src[0];
+      for(i = 0; i < num_dsts; ++i)
+         tmp[i] = src[i];
    }
 
    for(i = 0; i < num_dsts; ++i)
@@ -848,7 +881,7 @@ lp_build_pad_vector(struct gallivm_state *gallivm,
    undef      = LLVMGetUndef(type);
    src_length = LLVMGetVectorSize(type);
 
-   assert(dst_length <= Elements(elems));
+   assert(dst_length <= ARRAY_SIZE(elems));
    assert(dst_length >= src_length);
 
    if (src_length == dst_length)

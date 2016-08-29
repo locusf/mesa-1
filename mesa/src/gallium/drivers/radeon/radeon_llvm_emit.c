@@ -23,21 +23,52 @@
  * Authors: Tom Stellard <thomas.stellard@amd.com>
  *
  */
+
 #include "radeon_llvm_emit.h"
+#include "radeon_elf_util.h"
+#include "c11/threads.h"
+#include "gallivm/lp_bld_misc.h"
+#include "util/u_debug.h"
 #include "util/u_memory.h"
+#include "pipe/p_shader_tokens.h"
+#include "pipe/p_state.h"
 
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
+#include <llvm-c/Core.h>
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <libelf.h>
-#include <gelf.h>
 
 #define CPU_STRING_LEN 30
 #define FS_STRING_LEN 30
 #define TRIPLE_STRING_LEN 7
+
+/**
+ * Shader types for the LLVM backend.
+ */
+enum radeon_llvm_shader_type {
+	RADEON_LLVM_SHADER_PS = 0,
+	RADEON_LLVM_SHADER_VS = 1,
+	RADEON_LLVM_SHADER_GS = 2,
+	RADEON_LLVM_SHADER_CS = 3,
+};
+
+enum radeon_llvm_calling_convention {
+	RADEON_LLVM_AMDGPU_VS = 87,
+	RADEON_LLVM_AMDGPU_GS = 88,
+	RADEON_LLVM_AMDGPU_PS = 89,
+	RADEON_LLVM_AMDGPU_CS = 90,
+};
+
+void radeon_llvm_add_attribute(LLVMValueRef F, const char *name, int value)
+{
+	char str[16];
+
+	snprintf(str, sizeof(str), "%i", value);
+	LLVMAddTargetDependentFunctionAttr(F, name, str);
+}
 
 /**
  * Set the shader type we want to compile
@@ -46,38 +77,113 @@
  */
 void radeon_llvm_shader_type(LLVMValueRef F, unsigned type)
 {
-  char Str[2];
-  sprintf(Str, "%1d", type);
+	enum radeon_llvm_shader_type llvm_type;
+	enum radeon_llvm_calling_convention calling_conv;
 
-  LLVMAddTargetDependentFunctionAttr(F, "ShaderType", Str);
-}
-
-static void init_r600_target() {
-	static unsigned initialized = 0;
-	if (!initialized) {
-		LLVMInitializeR600TargetInfo();
-		LLVMInitializeR600Target();
-		LLVMInitializeR600TargetMC();
-		LLVMInitializeR600AsmPrinter();
-		initialized = 1;
+	switch (type) {
+	case PIPE_SHADER_VERTEX:
+	case PIPE_SHADER_TESS_CTRL:
+	case PIPE_SHADER_TESS_EVAL:
+		llvm_type = RADEON_LLVM_SHADER_VS;
+		calling_conv = RADEON_LLVM_AMDGPU_VS;
+		break;
+	case PIPE_SHADER_GEOMETRY:
+		llvm_type = RADEON_LLVM_SHADER_GS;
+		calling_conv = RADEON_LLVM_AMDGPU_GS;
+		break;
+	case PIPE_SHADER_FRAGMENT:
+		llvm_type = RADEON_LLVM_SHADER_PS;
+		calling_conv = RADEON_LLVM_AMDGPU_PS;
+		break;
+	case PIPE_SHADER_COMPUTE:
+		llvm_type = RADEON_LLVM_SHADER_CS;
+		calling_conv = RADEON_LLVM_AMDGPU_CS;
+		break;
+	default:
+		unreachable("Unhandle shader type");
 	}
+
+	if (HAVE_LLVM >= 0x309)
+		LLVMSetFunctionCallConv(F, calling_conv);
+	else
+		radeon_llvm_add_attribute(F, "ShaderType", llvm_type);
 }
 
-static LLVMTargetRef get_r600_target() {
+static void init_r600_target()
+{
+	gallivm_init_llvm_targets();
+#if HAVE_LLVM < 0x0307
+	LLVMInitializeR600TargetInfo();
+	LLVMInitializeR600Target();
+	LLVMInitializeR600TargetMC();
+	LLVMInitializeR600AsmPrinter();
+#else
+	LLVMInitializeAMDGPUTargetInfo();
+	LLVMInitializeAMDGPUTarget();
+	LLVMInitializeAMDGPUTargetMC();
+	LLVMInitializeAMDGPUAsmPrinter();
+
+#endif
+}
+
+static once_flag init_r600_target_once_flag = ONCE_FLAG_INIT;
+
+LLVMTargetRef radeon_llvm_get_r600_target(const char *triple)
+{
 	LLVMTargetRef target = NULL;
+	char *err_message = NULL;
 
-	for (target = LLVMGetFirstTarget(); target;
-					target = LLVMGetNextTarget(target)) {
-		if (!strncmp(LLVMGetTargetName(target), "r600", 4)) {
-			break;
+	call_once(&init_r600_target_once_flag, init_r600_target);
+
+	if (LLVMGetTargetFromTriple(triple, &target, &err_message)) {
+		fprintf(stderr, "Cannot find target for triple %s ", triple);
+		if (err_message) {
+			fprintf(stderr, "%s\n", err_message);
 		}
-	}
-
-	if (!target) {
-		fprintf(stderr, "Can't find target r600\n");
+		LLVMDisposeMessage(err_message);
 		return NULL;
 	}
 	return target;
+}
+
+struct radeon_llvm_diagnostics {
+	struct pipe_debug_callback *debug;
+	unsigned retval;
+};
+
+static void radeonDiagnosticHandler(LLVMDiagnosticInfoRef di, void *context)
+{
+	struct radeon_llvm_diagnostics *diag = (struct radeon_llvm_diagnostics *)context;
+	LLVMDiagnosticSeverity severity = LLVMGetDiagInfoSeverity(di);
+	char *description = LLVMGetDiagInfoDescription(di);
+	const char *severity_str = NULL;
+
+	switch (severity) {
+	case LLVMDSError:
+		severity_str = "error";
+		break;
+	case LLVMDSWarning:
+		severity_str = "warning";
+		break;
+	case LLVMDSRemark:
+		severity_str = "remark";
+		break;
+	case LLVMDSNote:
+		severity_str = "note";
+		break;
+	default:
+		severity_str = "unknown";
+	}
+
+	pipe_debug_message(diag->debug, SHADER_INFO,
+			   "LLVM diagnostic (%s): %s", severity_str, description);
+
+	if (severity == LLVMDSError) {
+		diag->retval = 1;
+		fprintf(stderr,"LLVM triggered Diagnostic Handler: %s\n", description);
+	}
+
+	LLVMDisposeMessage(description);
 }
 
 /**
@@ -85,88 +191,51 @@ static LLVMTargetRef get_r600_target() {
  *
  * @returns 0 for success, 1 for failure
  */
-unsigned radeon_llvm_compile(LLVMModuleRef M, struct radeon_llvm_binary *binary,
-					  const char * gpu_family, unsigned dump) {
-
-	LLVMTargetRef target;
-	LLVMTargetMachineRef tm;
-	char cpu[CPU_STRING_LEN];
-	char fs[FS_STRING_LEN];
+unsigned radeon_llvm_compile(LLVMModuleRef M, struct radeon_shader_binary *binary,
+			     LLVMTargetMachineRef tm,
+			     struct pipe_debug_callback *debug)
+{
+	struct radeon_llvm_diagnostics diag;
 	char *err;
+	LLVMContextRef llvm_ctx;
 	LLVMMemoryBufferRef out_buffer;
 	unsigned buffer_size;
 	const char *buffer_data;
-	char triple[TRIPLE_STRING_LEN];
-	char *elf_buffer;
-	Elf *elf;
-	Elf_Scn *section = NULL;
-	size_t section_str_index;
-	LLVMBool r;
+	LLVMBool mem_err;
 
-	init_r600_target();
+	diag.debug = debug;
+	diag.retval = 0;
 
-	target = get_r600_target();
-	if (!target) {
-		return 1;
-	}
+	/* Setup Diagnostic Handler*/
+	llvm_ctx = LLVMGetModuleContext(M);
 
-	strncpy(cpu, gpu_family, CPU_STRING_LEN);
-	memset(fs, 0, sizeof(fs));
-	if (dump) {
-		LLVMDumpModule(M);
-		strncpy(fs, "+DumpCode", FS_STRING_LEN);
-	}
-	strncpy(triple, "r600--", TRIPLE_STRING_LEN);
-	tm = LLVMCreateTargetMachine(target, triple, cpu, fs,
-				  LLVMCodeGenLevelDefault, LLVMRelocDefault,
-						  LLVMCodeModelDefault);
+	LLVMContextSetDiagnosticHandler(llvm_ctx, radeonDiagnosticHandler, &diag);
 
-	r = LLVMTargetMachineEmitToMemoryBuffer(tm, M, LLVMObjectFile, &err,
+	/* Compile IR*/
+	mem_err = LLVMTargetMachineEmitToMemoryBuffer(tm, M, LLVMObjectFile, &err,
 								 &out_buffer);
-	if (r) {
-		fprintf(stderr, "%s", err);
+
+	/* Process Errors/Warnings */
+	if (mem_err) {
+		fprintf(stderr, "%s: %s", __FUNCTION__, err);
+		pipe_debug_message(debug, SHADER_INFO,
+				   "LLVM emit error: %s", err);
 		FREE(err);
-		return 1;
+		diag.retval = 1;
+		goto out;
 	}
 
+	/* Extract Shader Code*/
 	buffer_size = LLVMGetBufferSize(out_buffer);
 	buffer_data = LLVMGetBufferStart(out_buffer);
 
-	/* One of the libelf implementations
-	 * (http://www.mr511.de/software/english.htm) requires calling
-	 * elf_version() before elf_memory().
-	 */
-	elf_version(EV_CURRENT);
-	elf_buffer = MALLOC(buffer_size);
-	memcpy(elf_buffer, buffer_data, buffer_size);
+	radeon_elf_read(buffer_data, buffer_size, binary);
 
-	elf = elf_memory(elf_buffer, buffer_size);
-
-	elf_getshdrstrndx(elf, &section_str_index);
-
-	while ((section = elf_nextscn(elf, section))) {
-		const char *name;
-		Elf_Data *section_data = NULL;
-		GElf_Shdr section_header;
-		if (gelf_getshdr(section, &section_header) != &section_header) {
-			fprintf(stderr, "Failed to read ELF section header\n");
-			return 1;
-		}
-		name = elf_strptr(elf, section_str_index, section_header.sh_name);
-		if (!strcmp(name, ".text")) {
-			section_data = elf_getdata(section, section_data);
-			binary->code_size = section_data->d_size;
-			binary->code = MALLOC(binary->code_size * sizeof(unsigned char));
-			memcpy(binary->code, section_data->d_buf, binary->code_size);
-		} else if (!strcmp(name, ".AMDGPU.config")) {
-			section_data = elf_getdata(section, section_data);
-			binary->config_size = section_data->d_size;
-			binary->config = MALLOC(binary->config_size * sizeof(unsigned char));
-			memcpy(binary->config, section_data->d_buf, binary->config_size);
-		}
-	}
-
+	/* Clean up */
 	LLVMDisposeMemoryBuffer(out_buffer);
-	LLVMDisposeTargetMachine(tm);
-	return 0;
+
+out:
+	if (diag.retval != 0)
+		pipe_debug_message(debug, SHADER_INFO, "LLVM compile failed");
+	return diag.retval;
 }

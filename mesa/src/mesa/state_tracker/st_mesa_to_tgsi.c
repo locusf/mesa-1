@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007-2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007-2008 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -44,11 +44,10 @@
 #include "util/u_debug.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "st_glsl_to_tgsi.h" /* for _mesa_sysval_to_semantic */
 
 
-#define PROGRAM_ANY_CONST ((1 << PROGRAM_LOCAL_PARAM) |  \
-                           (1 << PROGRAM_ENV_PARAM) |    \
-                           (1 << PROGRAM_STATE_VAR) |    \
+#define PROGRAM_ANY_CONST ((1 << PROGRAM_STATE_VAR) |    \
                            (1 << PROGRAM_CONSTANT) |     \
                            (1 << PROGRAM_UNIFORM))
 
@@ -92,17 +91,9 @@ struct st_translate {
    unsigned insn_size;
    unsigned insn_count;
 
-   unsigned procType;  /**< TGSI_PROCESSOR_VERTEX/FRAGMENT */
+   unsigned procType;  /**< PIPE_SHADER_VERTEX/FRAGMENT */
 
    boolean error;
-};
-
-
-/** Map Mesa's SYSTEM_VALUE_x to TGSI_SEMANTIC_x */
-static unsigned mesa_sysval_to_semantic[SYSTEM_VALUE_MAX] = {
-   TGSI_SEMANTIC_FACE,
-   TGSI_SEMANTIC_VERTEXID,
-   TGSI_SEMANTIC_INSTANCEID
 };
 
 
@@ -174,14 +165,14 @@ dst_register( struct st_translate *t,
       return t->temps[index];
 
    case PROGRAM_OUTPUT:
-      if (t->procType == TGSI_PROCESSOR_VERTEX)
+      if (t->procType == PIPE_SHADER_VERTEX)
          assert(index < VARYING_SLOT_MAX);
-      else if (t->procType == TGSI_PROCESSOR_FRAGMENT)
+      else if (t->procType == PIPE_SHADER_FRAGMENT)
          assert(index < FRAG_RESULT_MAX);
       else
          assert(index < VARYING_SLOT_MAX);
 
-      assert(t->outputMapping[index] < Elements(t->outputs));
+      assert(t->outputMapping[index] < ARRAY_SIZE(t->outputs));
 
       return t->outputs[t->outputMapping[index]];
 
@@ -209,13 +200,11 @@ src_register( struct st_translate *t,
 
    case PROGRAM_TEMPORARY:
       assert(index >= 0);
-      assert(index < Elements(t->temps));
+      assert(index < ARRAY_SIZE(t->temps));
       if (ureg_dst_is_undef(t->temps[index]))
          t->temps[index] = ureg_DECL_temporary( t->ureg );
       return ureg_src(t->temps[index]);
 
-   case PROGRAM_ENV_PARAM:
-   case PROGRAM_LOCAL_PARAM:
    case PROGRAM_UNIFORM:
       assert(index >= 0);
       return t->constants[index];
@@ -227,18 +216,18 @@ src_register( struct st_translate *t,
          return t->constants[index];
 
    case PROGRAM_INPUT:
-      assert(t->inputMapping[index] < Elements(t->inputs));
+      assert(t->inputMapping[index] < ARRAY_SIZE(t->inputs));
       return t->inputs[t->inputMapping[index]];
 
    case PROGRAM_OUTPUT:
-      assert(t->outputMapping[index] < Elements(t->outputs));
+      assert(t->outputMapping[index] < ARRAY_SIZE(t->outputs));
       return ureg_src(t->outputs[t->outputMapping[index]]); /* not needed? */
 
    case PROGRAM_ADDRESS:
       return ureg_src(t->address[index]);
 
    case PROGRAM_SYSTEM_VALUE:
-      assert(index < Elements(t->systemValues));
+      assert(index < ARRAY_SIZE(t->systemValues));
       return t->systemValues[index];
 
    default:
@@ -252,39 +241,71 @@ src_register( struct st_translate *t,
  * Map mesa texture target to TGSI texture target.
  */
 unsigned
-st_translate_texture_target( GLuint textarget,
-                          GLboolean shadow )
+st_translate_texture_target(GLuint textarget, GLboolean shadow)
 {
    if (shadow) {
-      switch( textarget ) {
-      case TEXTURE_1D_INDEX:   return TGSI_TEXTURE_SHADOW1D;
-      case TEXTURE_2D_INDEX:   return TGSI_TEXTURE_SHADOW2D;
-      case TEXTURE_RECT_INDEX: return TGSI_TEXTURE_SHADOWRECT;
-      case TEXTURE_1D_ARRAY_INDEX: return TGSI_TEXTURE_SHADOW1D_ARRAY;
-      case TEXTURE_2D_ARRAY_INDEX: return TGSI_TEXTURE_SHADOW2D_ARRAY;
-      case TEXTURE_CUBE_INDEX: return TGSI_TEXTURE_SHADOWCUBE;
-      case TEXTURE_CUBE_ARRAY_INDEX: return TGSI_TEXTURE_SHADOWCUBE_ARRAY;
-      default: break;
+      switch (textarget) {
+      case TEXTURE_1D_INDEX:
+         return TGSI_TEXTURE_SHADOW1D;
+      case TEXTURE_2D_INDEX:
+         return TGSI_TEXTURE_SHADOW2D;
+      case TEXTURE_RECT_INDEX:
+         return TGSI_TEXTURE_SHADOWRECT;
+      case TEXTURE_1D_ARRAY_INDEX:
+         return TGSI_TEXTURE_SHADOW1D_ARRAY;
+      case TEXTURE_2D_ARRAY_INDEX:
+         return TGSI_TEXTURE_SHADOW2D_ARRAY;
+      case TEXTURE_CUBE_INDEX:
+         return TGSI_TEXTURE_SHADOWCUBE;
+      case TEXTURE_CUBE_ARRAY_INDEX:
+         return TGSI_TEXTURE_SHADOWCUBE_ARRAY;
+      default:
+         break;
       }
    }
 
-   switch( textarget ) {
-   case TEXTURE_2D_MULTISAMPLE_INDEX: return TGSI_TEXTURE_2D_MSAA;
-   case TEXTURE_2D_MULTISAMPLE_ARRAY_INDEX: return TGSI_TEXTURE_2D_ARRAY_MSAA;
-   case TEXTURE_BUFFER_INDEX: return TGSI_TEXTURE_BUFFER;
-   case TEXTURE_1D_INDEX:   return TGSI_TEXTURE_1D;
-   case TEXTURE_2D_INDEX:   return TGSI_TEXTURE_2D;
-   case TEXTURE_3D_INDEX:   return TGSI_TEXTURE_3D;
-   case TEXTURE_CUBE_INDEX: return TGSI_TEXTURE_CUBE;
-   case TEXTURE_CUBE_ARRAY_INDEX: return TGSI_TEXTURE_CUBE_ARRAY;
-   case TEXTURE_RECT_INDEX: return TGSI_TEXTURE_RECT;
-   case TEXTURE_1D_ARRAY_INDEX:   return TGSI_TEXTURE_1D_ARRAY;
-   case TEXTURE_2D_ARRAY_INDEX:   return TGSI_TEXTURE_2D_ARRAY;
-   case TEXTURE_EXTERNAL_INDEX:   return TGSI_TEXTURE_2D;
+   switch (textarget) {
+   case TEXTURE_2D_MULTISAMPLE_INDEX:
+      return TGSI_TEXTURE_2D_MSAA;
+   case TEXTURE_2D_MULTISAMPLE_ARRAY_INDEX:
+      return TGSI_TEXTURE_2D_ARRAY_MSAA;
+   case TEXTURE_BUFFER_INDEX:
+      return TGSI_TEXTURE_BUFFER;
+   case TEXTURE_1D_INDEX:
+      return TGSI_TEXTURE_1D;
+   case TEXTURE_2D_INDEX:
+      return TGSI_TEXTURE_2D;
+   case TEXTURE_3D_INDEX:
+      return TGSI_TEXTURE_3D;
+   case TEXTURE_CUBE_INDEX:
+      return TGSI_TEXTURE_CUBE;
+   case TEXTURE_CUBE_ARRAY_INDEX:
+      return TGSI_TEXTURE_CUBE_ARRAY;
+   case TEXTURE_RECT_INDEX:
+      return TGSI_TEXTURE_RECT;
+   case TEXTURE_1D_ARRAY_INDEX:
+      return TGSI_TEXTURE_1D_ARRAY;
+   case TEXTURE_2D_ARRAY_INDEX:
+      return TGSI_TEXTURE_2D_ARRAY;
+   case TEXTURE_EXTERNAL_INDEX:
+      return TGSI_TEXTURE_2D;
    default:
-      debug_assert( 0 );
+      debug_assert(!"unexpected texture target index");
       return TGSI_TEXTURE_1D;
    }
+}
+
+
+/**
+ * Translate a (1 << TEXTURE_x_INDEX) bit into a TGSI_TEXTURE_x enum.
+ */
+static unsigned
+translate_texture_index(GLbitfield texBit, bool shadow)
+{
+   int index = ffs(texBit);
+   assert(index > 0);
+   assert(index - 1 < NUM_TEXTURE_TARGETS);
+   return st_translate_texture_target(index - 1, shadow);
 }
 
 
@@ -294,8 +315,7 @@ st_translate_texture_target( GLuint textarget,
 static struct ureg_dst
 translate_dst( struct st_translate *t,
                const struct prog_dst_register *DstReg,
-               boolean saturate,
-               boolean clamp_color)
+               boolean saturate)
 {
    struct ureg_dst dst = dst_register( t, 
                                        DstReg->File,
@@ -306,27 +326,6 @@ translate_dst( struct st_translate *t,
    
    if (saturate)
       dst = ureg_saturate( dst );
-   else if (clamp_color && DstReg->File == PROGRAM_OUTPUT) {
-      /* Clamp colors for ARB_color_buffer_float. */
-      switch (t->procType) {
-      case TGSI_PROCESSOR_VERTEX:
-         /* XXX if the geometry shader is present, this must be done there
-          * instead of here. */
-         if (DstReg->Index == VARYING_SLOT_COL0 ||
-             DstReg->Index == VARYING_SLOT_COL1 ||
-             DstReg->Index == VARYING_SLOT_BFC0 ||
-             DstReg->Index == VARYING_SLOT_BFC1) {
-            dst = ureg_saturate(dst);
-         }
-         break;
-
-      case TGSI_PROCESSOR_FRAGMENT:
-         if (DstReg->Index >= FRAG_RESULT_COLOR) {
-            dst = ureg_saturate(dst);
-         }
-         break;
-      }
-   }
 
    if (DstReg->RelAddr)
       dst = ureg_dst_indirect( dst, ureg_src(t->address[0]) );
@@ -344,15 +343,6 @@ translate_src( struct st_translate *t,
 {
    struct ureg_src src = src_register( t, SrcReg->File, SrcReg->Index );
 
-   if (t->procType == TGSI_PROCESSOR_GEOMETRY && SrcReg->HasIndex2) {
-      src = src_register( t, SrcReg->File, SrcReg->Index2 );
-      if (SrcReg->RelAddr2)
-         src = ureg_src_dimension_indirect( src, ureg_src(t->address[0]),
-                                            SrcReg->Index);
-      else
-         src = ureg_src_dimension( src, SrcReg->Index);
-   }
-
    src = ureg_swizzle( src,
                        GET_SWZ( SrcReg->Swizzle, 0 ) & 0x3,
                        GET_SWZ( SrcReg->Swizzle, 1 ) & 0x3,
@@ -361,9 +351,6 @@ translate_src( struct st_translate *t,
 
    if (SrcReg->Negate == NEGATE_XYZW)
       src = ureg_negate(src);
-
-   if (SrcReg->Abs) 
-      src = ureg_abs(src);
 
    if (SrcReg->RelAddr) {
       src = ureg_src_indirect( src, ureg_src(t->address[0]));
@@ -508,24 +495,6 @@ static void emit_swz( struct st_translate *t,
 }
 
 
-/**
- * Negate the value of DDY to match GL semantics where (0,0) is the
- * lower-left corner of the window.
- * Note that the GL_ARB_fragment_coord_conventions extension will
- * effect this someday.
- */
-static void emit_ddy( struct st_translate *t,
-                      struct ureg_dst dst,
-                      const struct prog_src_register *SrcReg )
-{
-   struct ureg_program *ureg = t->ureg;
-   struct ureg_src src = translate_src( t, SrcReg );
-   src = ureg_negate( src );
-   ureg_DDY( ureg, dst, src );
-}
-
-
-
 static unsigned
 translate_opcode( unsigned op )
 {
@@ -586,9 +555,6 @@ translate_opcode( unsigned op )
       return TGSI_OPCODE_TRUNC;
    case OPCODE_KIL:
       return TGSI_OPCODE_KILL_IF;
-   case OPCODE_KIL_NV:
-      /* XXX we don't support condition codes in TGSI */
-      return TGSI_OPCODE_KILL;
    case OPCODE_LG2:
       return TGSI_OPCODE_LG2;
    case OPCODE_LOG:
@@ -617,20 +583,12 @@ translate_opcode( unsigned op )
       return TGSI_OPCODE_RET;
    case OPCODE_SCS:
       return TGSI_OPCODE_SCS;
-   case OPCODE_SEQ:
-      return TGSI_OPCODE_SEQ;
    case OPCODE_SGE:
       return TGSI_OPCODE_SGE;
-   case OPCODE_SGT:
-      return TGSI_OPCODE_SGT;
    case OPCODE_SIN:
       return TGSI_OPCODE_SIN;
-   case OPCODE_SLE:
-      return TGSI_OPCODE_SLE;
    case OPCODE_SLT:
       return TGSI_OPCODE_SLT;
-   case OPCODE_SNE:
-      return TGSI_OPCODE_SNE;
    case OPCODE_SSG:
       return TGSI_OPCODE_SSG;
    case OPCODE_SUB:
@@ -660,8 +618,7 @@ static void
 compile_instruction(
    struct gl_context *ctx,
    struct st_translate *t,
-   const struct prog_instruction *inst,
-   boolean clamp_dst_color_output)
+   const struct prog_instruction *inst)
 {
    struct ureg_program *ureg = t->ureg;
    GLuint i;
@@ -676,8 +633,7 @@ compile_instruction(
    if (num_dst) 
       dst[0] = translate_dst( t, 
                               &inst->DstReg,
-                              inst->SaturateMode,
-                              clamp_dst_color_output);
+                              inst->Saturate);
 
    for (i = 0; i < num_src; i++) 
       src[i] = translate_src( t, &inst->SrcReg[i] );
@@ -749,10 +705,6 @@ compile_instruction(
        */
       ureg_MOV( ureg, dst[0], ureg_imm1f(ureg, 0.5) );
       break;
-		 
-   case OPCODE_DDY:
-      emit_ddy( t, dst[0], &inst->SrcReg[0] );
-      break;
 
    case OPCODE_RSQ:
       ureg_RSQ( ureg, dst[0], ureg_abs(src[0]) );
@@ -774,10 +726,11 @@ compile_instruction(
  * a FBO is bound (STATE_FB_WPOS_Y_TRANSFORM).
  */
 static void
-emit_wpos_adjustment( struct st_translate *t,
-                      const struct gl_program *program,
-                      boolean invert,
-                      GLfloat adjX, GLfloat adjY[2])
+emit_wpos_adjustment(struct gl_context *ctx,
+                     struct st_translate *t,
+                     const struct gl_program *program,
+                     boolean invert,
+                     GLfloat adjX, GLfloat adjY[2])
 {
    struct ureg_program *ureg = t->ureg;
 
@@ -797,7 +750,11 @@ emit_wpos_adjustment( struct st_translate *t,
 
    struct ureg_src wpostrans = ureg_DECL_constant( ureg, wposTransConst );
    struct ureg_dst wpos_temp = ureg_DECL_temporary( ureg );
-   struct ureg_src wpos_input = t->inputs[t->inputMapping[VARYING_SLOT_POS]];
+   struct ureg_src *wpos =
+      ctx->Const.GLSLFragCoordIsSysVal ?
+         &t->systemValues[SYSTEM_VALUE_FRAG_COORD] :
+         &t->inputs[t->inputMapping[VARYING_SLOT_POS]];
+   struct ureg_src wpos_input = *wpos;
 
    /* First, apply the coordinate shift: */
    if (adjX || adjY[0] || adjY[1]) {
@@ -848,12 +805,12 @@ emit_wpos_adjustment( struct st_translate *t,
 
    /* Use wpos_temp as position input from here on:
     */
-   t->inputs[t->inputMapping[VARYING_SLOT_POS]] = ureg_src(wpos_temp);
+   *wpos = ureg_src(wpos_temp);
 }
 
 
 /**
- * Emit fragment position/ooordinate code.
+ * Emit fragment position/coordinate code.
  */
 static void
 emit_wpos(struct st_context *st,
@@ -873,7 +830,7 @@ emit_wpos(struct st_context *st,
     *
     * The bias of the y-coordinate depends on whether y-inversion takes place
     * (adjY[1]) or not (adjY[0]), which is in turn dependent on whether we are
-    * drawing to an FBO (causes additional inversion), and whether the the pipe
+    * drawing to an FBO (causes additional inversion), and whether the pipe
     * driver origin and the requested origin differ (the latter condition is
     * stored in the 'invert' variable).
     *
@@ -902,7 +859,8 @@ emit_wpos(struct st_context *st,
       }
       else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT)) {
          /* the driver supports lower-left origin, need to invert Y */
-         ureg_property_fs_coord_origin(ureg, TGSI_FS_COORD_ORIGIN_LOWER_LEFT);
+         ureg_property(ureg, TGSI_PROPERTY_FS_COORD_ORIGIN,
+                       TGSI_FS_COORD_ORIGIN_LOWER_LEFT);
          invert = TRUE;
       }
       else
@@ -912,7 +870,8 @@ emit_wpos(struct st_context *st,
       /* Fragment shader wants origin in lower-left */
       if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT))
          /* the driver supports lower-left origin */
-         ureg_property_fs_coord_origin(ureg, TGSI_FS_COORD_ORIGIN_LOWER_LEFT);
+         ureg_property(ureg, TGSI_PROPERTY_FS_COORD_ORIGIN,
+                       TGSI_FS_COORD_ORIGIN_LOWER_LEFT);
       else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT))
          /* the driver supports upper-left origin, need to invert Y */
          invert = TRUE;
@@ -925,7 +884,8 @@ emit_wpos(struct st_context *st,
       if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER)) {
          /* the driver supports pixel center integer */
          adjY[1] = 1.0f;
-         ureg_property_fs_coord_pixel_center(ureg, TGSI_FS_COORD_PIXEL_CENTER_INTEGER);
+         ureg_property(ureg, TGSI_PROPERTY_FS_COORD_PIXEL_CENTER,
+                       TGSI_FS_COORD_PIXEL_CENTER_INTEGER);
       }
       else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER)) {
          /* the driver supports pixel center half integer, need to bias X,Y */
@@ -944,7 +904,8 @@ emit_wpos(struct st_context *st,
       else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER)) {
          /* the driver supports pixel center integer, need to bias X,Y */
          adjX = adjY[0] = adjY[1] = 0.5f;
-         ureg_property_fs_coord_pixel_center(ureg, TGSI_FS_COORD_PIXEL_CENTER_INTEGER);
+         ureg_property(ureg, TGSI_PROPERTY_FS_COORD_PIXEL_CENTER,
+                       TGSI_FS_COORD_PIXEL_CENTER_INTEGER);
       }
       else
          assert(0);
@@ -952,44 +913,7 @@ emit_wpos(struct st_context *st,
 
    /* we invert after adjustment so that we avoid the MOV to temporary,
     * and reuse the adjustment ADD instead */
-   emit_wpos_adjustment(t, program, invert, adjX, adjY);
-}
-
-
-/**
- * OpenGL's fragment gl_FrontFace input is 1 for front-facing, 0 for back.
- * TGSI uses +1 for front, -1 for back.
- * This function converts the TGSI value to the GL value.  Simply clamping/
- * saturating the value to [0,1] does the job.
- */
-static void
-emit_face_var( struct st_translate *t,
-               const struct gl_program *program )
-{
-   struct ureg_program *ureg = t->ureg;
-   struct ureg_dst face_temp = ureg_DECL_temporary( ureg );
-   struct ureg_src face_input = t->inputs[t->inputMapping[VARYING_SLOT_FACE]];
-
-   /* MOV_SAT face_temp, input[face]
-    */
-   face_temp = ureg_saturate( face_temp );
-   ureg_MOV( ureg, face_temp, face_input );
-
-   /* Use face_temp as face input from here on:
-    */
-   t->inputs[t->inputMapping[VARYING_SLOT_FACE]] = ureg_src(face_temp);
-}
-
-
-static void
-emit_edgeflags( struct st_translate *t,
-                 const struct gl_program *program )
-{
-   struct ureg_program *ureg = t->ureg;
-   struct ureg_dst edge_dst = t->outputs[t->outputMapping[VARYING_SLOT_EDGE]];
-   struct ureg_src edge_src = t->inputs[t->inputMapping[VERT_ATTRIB_EDGEFLAG]];
-
-   ureg_MOV( ureg, edge_dst, edge_src );
+   emit_wpos_adjustment(st->ctx, t, program, invert, adjX, adjY);
 }
 
 
@@ -1026,16 +950,14 @@ st_translate_mesa_program(
    GLuint numOutputs,
    const GLuint outputMapping[],
    const ubyte outputSemanticName[],
-   const ubyte outputSemanticIndex[],
-   boolean passthrough_edgeflags,
-   boolean clamp_color)
+   const ubyte outputSemanticIndex[])
 {
    struct st_translate translate, *t;
    unsigned i;
    enum pipe_error ret = PIPE_OK;
 
-   assert(numInputs <= Elements(t->inputs));
-   assert(numOutputs <= Elements(t->outputs));
+   assert(numInputs <= ARRAY_SIZE(t->inputs));
+   assert(numOutputs <= ARRAY_SIZE(t->outputs));
 
    t = &translate;
    memset(t, 0, sizeof *t);
@@ -1050,7 +972,7 @@ st_translate_mesa_program(
    /*
     * Declare input attributes.
     */
-   if (procType == TGSI_PROCESSOR_FRAGMENT) {
+   if (procType == PIPE_SHADER_FRAGMENT) {
       for (i = 0; i < numInputs; i++) {
          t->inputs[i] = ureg_DECL_fs_input(ureg,
                                            inputSemanticName[i],
@@ -1063,10 +985,6 @@ st_translate_mesa_program(
           * emitting constant references, below:
           */
          emit_wpos(st_context(ctx), t, program, ureg);
-      }
-
-      if (program->InputsRead & VARYING_BIT_FACE) {
-         emit_face_var( t, program );
       }
 
       /*
@@ -1100,12 +1018,11 @@ st_translate_mesa_program(
          }
       }
    }
-   else if (procType == TGSI_PROCESSOR_GEOMETRY) {
+   else if (procType == PIPE_SHADER_GEOMETRY) {
       for (i = 0; i < numInputs; i++) {
-         t->inputs[i] = ureg_DECL_gs_input(ureg,
-                                           i,
-                                           inputSemanticName[i],
-                                           inputSemanticIndex[i]);
+         t->inputs[i] = ureg_DECL_input(ureg,
+                                        inputSemanticName[i],
+                                        inputSemanticIndex[i], 0, 1);
       }
 
       for (i = 0; i < numOutputs; i++) {
@@ -1115,7 +1032,7 @@ st_translate_mesa_program(
       }
    }
    else {
-      assert(procType == TGSI_PROCESSOR_VERTEX);
+      assert(procType == PIPE_SHADER_VERTEX);
 
       for (i = 0; i < numInputs; i++) {
          t->inputs[i] = ureg_DECL_vs_input(ureg, i);
@@ -1125,9 +1042,14 @@ st_translate_mesa_program(
          t->outputs[i] = ureg_DECL_output( ureg,
                                            outputSemanticName[i],
                                            outputSemanticIndex[i] );
+         if (outputSemanticName[i] == TGSI_SEMANTIC_FOG) {
+            /* force register to contain a fog coordinate in the form (F, 0, 0, 1). */
+            ureg_MOV(ureg,
+                     ureg_writemask(t->outputs[i], TGSI_WRITEMASK_YZW),
+                     ureg_imm4f(ureg, 0.0f, 0.0f, 0.0f, 1.0f));
+            t->outputs[i] = ureg_writemask(t->outputs[i], TGSI_WRITEMASK_X);
+	 }
       }
-      if (passthrough_edgeflags)
-         emit_edgeflags( t, program );
    }
 
    /* Declare address register.
@@ -1141,11 +1063,13 @@ st_translate_mesa_program(
     */
    {
       GLbitfield sysInputs = program->SystemValuesRead;
-      unsigned numSys = 0;
+
       for (i = 0; sysInputs; i++) {
          if (sysInputs & (1 << i)) {
-            unsigned semName = mesa_sysval_to_semantic[i];
-            t->systemValues[i] = ureg_DECL_system_value(ureg, numSys, semName, 0);
+            unsigned semName = _mesa_sysval_to_semantic(i);
+
+            t->systemValues[i] = ureg_DECL_system_value(ureg, semName, 0);
+
             if (semName == TGSI_SEMANTIC_INSTANCEID ||
                 semName == TGSI_SEMANTIC_VERTEXID) {
                /* From Gallium perspective, these system values are always
@@ -1157,7 +1081,7 @@ st_translate_mesa_program(
                 */
                struct st_context *st = st_context(ctx);
                struct pipe_screen *pscreen = st->pipe->screen;
-               assert(procType == TGSI_PROCESSOR_VERTEX);
+               assert(procType == PIPE_SHADER_VERTEX);
                assert(pscreen->get_shader_param(pscreen, PIPE_SHADER_VERTEX, PIPE_SHADER_CAP_INTEGERS));
                (void) pscreen;  /* silence non-debug build warnings */
                if (!ctx->Const.NativeIntegers) {
@@ -1166,7 +1090,11 @@ st_translate_mesa_program(
                   t->systemValues[i] = ureg_scalar(ureg_src(temp), 0);
                }
             }
-            numSys++;
+
+            if (procType == PIPE_SHADER_FRAGMENT &&
+                semName == TGSI_SEMANTIC_POSITION)
+               emit_wpos(st_context(ctx), t, program, ureg);
+
             sysInputs &= ~(1 << i);
          }
       }
@@ -1195,8 +1123,6 @@ st_translate_mesa_program(
 
       for (i = 0; i < program->Parameters->NumParameters; i++) {
          switch (program->Parameters->Parameters[i].Type) {
-         case PROGRAM_ENV_PARAM:
-         case PROGRAM_LOCAL_PARAM:
          case PROGRAM_STATE_VAR:
          case PROGRAM_UNIFORM:
             t->constants[i] = ureg_DECL_constant( ureg, i );
@@ -1224,9 +1150,18 @@ st_translate_mesa_program(
    }
 
    /* texture samplers */
-   for (i = 0; i < ctx->Const.FragmentProgram.MaxTextureImageUnits; i++) {
-      if (program->SamplersUsed & (1 << i)) {
+   for (i = 0; i < ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxTextureImageUnits; i++) {
+      if (program->SamplersUsed & (1u << i)) {
+         unsigned target =
+            translate_texture_index(program->TexturesUsed[i],
+                                    !!(program->ShadowSamplers & (1 << i)));
          t->samplers[i] = ureg_DECL_sampler( ureg, i );
+         ureg_DECL_sampler_view(ureg, i, target,
+                                TGSI_RETURN_TYPE_FLOAT,
+                                TGSI_RETURN_TYPE_FLOAT,
+                                TGSI_RETURN_TYPE_FLOAT,
+                                TGSI_RETURN_TYPE_FLOAT);
+
       }
    }
 
@@ -1234,7 +1169,7 @@ st_translate_mesa_program(
     */
    for (i = 0; i < program->NumInstructions; i++) {
       set_insn_start( t, ureg_get_instruction_number( ureg ));
-      compile_instruction( ctx, t, &program->Instructions[i], clamp_color );
+      compile_instruction(ctx, t, &program->Instructions[i]);
    }
 
    /* Fix up all emitted labels:
@@ -1251,19 +1186,8 @@ out:
    free(t->constants);
 
    if (t->error) {
-      debug_printf("%s: translate error flag set\n", __FUNCTION__);
+      debug_printf("%s: translate error flag set\n", __func__);
    }
 
    return ret;
-}
-
-
-/**
- * Tokens cannot be free with free otherwise the builtin gallium
- * malloc debugging will get confused.
- */
-void
-st_free_tokens(const struct tgsi_token *tokens)
-{
-   ureg_free_tokens(tokens);
 }

@@ -1,7 +1,7 @@
 /*
  * Mesa 3-D graphics library
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -32,7 +32,6 @@
 
 
 #include "glheader.h"
-#include "compiler.h" /* for ASSERT */
 #include "context.h"
 #include "mtypes.h"
 #include "imports.h"
@@ -120,7 +119,7 @@ _mesa_cpal_compressed_size(int level, GLenum internalFormat,
    }
 
    info = &formats[internalFormat - GL_PALETTE4_RGB8_OES];
-   ASSERT(info->cpal_format == internalFormat);
+   assert(info->cpal_format == internalFormat);
 
    expect_size = info->palette_size * info->size;
    for (lvl = 0; lvl < num_levels; lvl++) {

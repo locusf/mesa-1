@@ -32,10 +32,11 @@
 #include "tgsi/tgsi_text.h"
 
 #include "svga_context.h"
-#include "svga_tgsi.h"
 #include "svga_hw_reg.h"
 #include "svga_cmd.h"
 #include "svga_debug.h"
+#include "svga_shader.h"
+#include "svga_streamout.h"
 
 
 /**
@@ -79,7 +80,7 @@ substitute_vs(unsigned shader_id, const struct tgsi_token *old_tokens)
 
    if (!tgsi_text_translate(text,
                              tokens,
-                             Elements(tokens)))
+                             ARRAY_SIZE(tokens)))
    {
       assert(0);
       return NULL;
@@ -99,8 +100,11 @@ svga_create_vs_state(struct pipe_context *pipe,
 {
    struct svga_context *svga = svga_context(pipe);
    struct svga_vertex_shader *vs = CALLOC_STRUCT(svga_vertex_shader);
+
    if (!vs)
       return NULL;
+
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_CREATEVS);         
 
    /* substitute a debug shader?
     */
@@ -122,12 +126,15 @@ svga_create_vs_state(struct pipe_context *pipe,
 
    vs->base.id = svga->debug.shader_id++;
 
-   if (SVGA_DEBUG & DEBUG_TGSI || 0) {
-      debug_printf("%s id: %u, inputs: %u, outputs: %u\n",
-                   __FUNCTION__, vs->base.id,
-                   vs->base.info.num_inputs, vs->base.info.num_outputs);
+   vs->generic_outputs = svga_get_generic_outputs_mask(&vs->base.info);
+
+   /* check for any stream output declarations */
+   if (templ->stream_output.num_outputs) {
+      vs->base.stream_output = svga_create_stream_output(svga, &vs->base,
+                                                         &templ->stream_output);
    }
 
+   SVGA_STATS_TIME_POP(svga_sws(svga));
    return vs;
 }
 
@@ -137,6 +144,17 @@ svga_bind_vs_state(struct pipe_context *pipe, void *shader)
 {
    struct svga_vertex_shader *vs = (struct svga_vertex_shader *)shader;
    struct svga_context *svga = svga_context(pipe);
+
+   if (vs == svga->curr.vs)
+      return;
+
+   /* If the currently bound vertex shader has a generated geometry shader,
+    * then unbind the geometry shader before binding a new vertex shader.
+    * We need to unbind the geometry shader here because there is no
+    * pipe_shader associated with the generated geometry shader.
+    */
+   if (svga->curr.vs != NULL && svga->curr.vs->gs != NULL)
+      svga->pipe.bind_gs_state(&svga->pipe, NULL);
 
    svga->curr.vs = vs;
    svga->dirty |= SVGA_NEW_VS;
@@ -148,34 +166,45 @@ svga_delete_vs_state(struct pipe_context *pipe, void *shader)
 {
    struct svga_context *svga = svga_context(pipe);
    struct svga_vertex_shader *vs = (struct svga_vertex_shader *)shader;
-   struct svga_shader_result *result, *tmp;
+   struct svga_shader_variant *variant, *tmp;
    enum pipe_error ret;
 
    svga_hwtnl_flush_retry(svga);
 
+   assert(vs->base.parent == NULL);
+
+   /* Check if there is a generated geometry shader to go with this
+    * vertex shader. If there is, then delete the geometry shader as well.
+    */
+   if (vs->gs != NULL) {
+      svga->pipe.delete_gs_state(&svga->pipe, vs->gs);
+   }
+
+   if (vs->base.stream_output != NULL)
+      svga_delete_stream_output(svga, vs->base.stream_output);
+
    draw_delete_vertex_shader(svga->swtnl.draw, vs->draw_shader);
 
-   for (result = vs->base.results; result; result = tmp) {
-      tmp = result->next;
+   for (variant = vs->base.variants; variant; variant = tmp) {
+      tmp = variant->next;
 
-      ret = SVGA3D_DestroyShader(svga->swc, result->id, SVGA3D_SHADERTYPE_VS);
-      if (ret != PIPE_OK) {
-         svga_context_flush(svga, NULL);
-         ret = SVGA3D_DestroyShader(svga->swc, result->id,
-                                    SVGA3D_SHADERTYPE_VS);
-         assert(ret == PIPE_OK);
+      /* Check if deleting currently bound shader */
+      if (variant == svga->state.hw_draw.vs) {
+         ret = svga_set_shader(svga, SVGA3D_SHADERTYPE_VS, NULL);
+         if (ret != PIPE_OK) {
+            svga_context_flush(svga, NULL);
+            ret = svga_set_shader(svga, SVGA3D_SHADERTYPE_VS, NULL);
+            assert(ret == PIPE_OK);
+         }
+         svga->state.hw_draw.vs = NULL;
       }
 
-      util_bitmask_clear(svga->vs_bm, result->id);
-
-      svga_destroy_shader_result(result);
-
-      /*
-       * Remove stale references to this result to ensure a new result on the
-       * same address will be detected as a change.
-       */
-      if (result == svga->state.hw_draw.vs)
-         svga->state.hw_draw.vs = NULL;
+      ret = svga_destroy_shader_variant(svga, SVGA3D_SHADERTYPE_VS, variant);
+      if (ret != PIPE_OK) {
+         svga_context_flush(svga, NULL);
+         ret = svga_destroy_shader_variant(svga, SVGA3D_SHADERTYPE_VS, variant);
+         assert(ret == PIPE_OK);
+      }
    }
 
    FREE((void *)vs->base.tokens);

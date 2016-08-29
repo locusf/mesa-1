@@ -33,6 +33,8 @@
 #include "glapi.h"
 #include "glxclient.h"
 
+#ifndef GLX_USE_APPLEGL
+
 extern struct _glapi_table *__glXNewIndirectAPI(void);
 
 /*
@@ -59,8 +61,9 @@ static Bool
 SendMakeCurrentRequest(Display * dpy, CARD8 opcode,
                        GLXContextID gc_id, GLXContextTag gc_tag,
                        GLXDrawable draw, GLXDrawable read,
-                       xGLXMakeCurrentReply * reply)
+                       GLXContextTag *out_tag)
 {
+   xGLXMakeCurrentReply reply;
    Bool ret;
 
    LockDisplay(dpy);
@@ -112,7 +115,10 @@ SendMakeCurrentRequest(Display * dpy, CARD8 opcode,
       }
    }
 
-   ret = _XReply(dpy, (xReply *) reply, 0, False);
+   ret = _XReply(dpy, (xReply *) &reply, 0, False);
+
+   if (out_tag)
+      *out_tag = reply.contextTag;
 
    UnlockDisplay(dpy);
    SyncHandle();
@@ -124,11 +130,10 @@ static int
 indirect_bind_context(struct glx_context *gc, struct glx_context *old,
 		      GLXDrawable draw, GLXDrawable read)
 {
-   xGLXMakeCurrentReply reply;
    GLXContextTag tag;
-   __GLXattribute *state;
    Display *dpy = gc->psc->dpy;
    int opcode = __glXSetupForCommand(dpy);
+   Bool sent;
 
    if (old != &dummyContext && !old->isDirect && old->psc->dpy == dpy) {
       tag = old->currentContextTag;
@@ -137,21 +142,14 @@ indirect_bind_context(struct glx_context *gc, struct glx_context *old,
       tag = 0;
    }
 
-   SendMakeCurrentRequest(dpy, opcode, gc->xid, tag, draw, read, &reply);
+   sent = SendMakeCurrentRequest(dpy, opcode, gc->xid, tag, draw, read,
+				 &gc->currentContextTag);
 
    if (!IndirectAPI)
       IndirectAPI = __glXNewIndirectAPI();
    _glapi_set_dispatch(IndirectAPI);
 
-   gc->currentContextTag = reply.contextTag;
-   state = gc->client_state_private;
-   if (state->array_state == NULL) {
-      glGetString(GL_EXTENSIONS);
-      glGetString(GL_VERSION);
-      __glXInitVertexArrayState(gc);
-   }
-
-   return Success;
+   return !sent;
 }
 
 static void
@@ -159,18 +157,17 @@ indirect_unbind_context(struct glx_context *gc, struct glx_context *new)
 {
    Display *dpy = gc->psc->dpy;
    int opcode = __glXSetupForCommand(dpy);
-   xGLXMakeCurrentReply reply;
 
    if (gc == new)
       return;
    
-   /* We are either switching to no context, away from a indirect
+   /* We are either switching to no context, away from an indirect
     * context to a direct context or from one dpy to another and have
     * to send a request to the dpy to unbind the previous context.
     */
    if (!new || new->isDirect || new->psc->dpy != dpy) {
       SendMakeCurrentRequest(dpy, opcode, None,
-			     gc->currentContextTag, None, None, &reply);
+			     gc->currentContextTag, None, None, NULL);
       gc->currentContextTag = 0;
    }
 }
@@ -320,15 +317,15 @@ indirect_release_tex_image(Display * dpy, GLXDrawable drawable, int buffer)
 }
 
 static const struct glx_context_vtable indirect_context_vtable = {
-   indirect_destroy_context,
-   indirect_bind_context,
-   indirect_unbind_context,
-   indirect_wait_gl,
-   indirect_wait_x,
-   indirect_use_x_font,
-   indirect_bind_tex_image,
-   indirect_release_tex_image,
-   NULL, /* get_proc_address */
+   .destroy             = indirect_destroy_context,
+   .bind                = indirect_bind_context,
+   .unbind              = indirect_unbind_context,
+   .wait_gl             = indirect_wait_gl,
+   .wait_x              = indirect_wait_x,
+   .use_x_font          = indirect_use_x_font,
+   .bind_tex_image      = indirect_bind_tex_image,
+   .release_tex_image   = indirect_release_tex_image,
+   .get_proc_address    = NULL,
 };
 
 /**
@@ -464,9 +461,11 @@ indirect_create_context_attribs(struct glx_screen *base,
    return indirect_create_context(base, config_base, shareList, renderType);
 }
 
-struct glx_screen_vtable indirect_screen_vtable = {
-   indirect_create_context,
-   indirect_create_context_attribs
+static const struct glx_screen_vtable indirect_screen_vtable = {
+   .create_context         = indirect_create_context,
+   .create_context_attribs = indirect_create_context_attribs,
+   .query_renderer_integer = NULL,
+   .query_renderer_string  = NULL,
 };
 
 _X_HIDDEN struct glx_screen *
@@ -483,3 +482,5 @@ indirect_create_screen(int screen, struct glx_display * priv)
 
    return psc;
 }
+
+#endif

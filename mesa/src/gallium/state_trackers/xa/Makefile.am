@@ -20,17 +20,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
 AM_CFLAGS = \
 	-Wall -pedantic \
 	$(GALLIUM_CFLAGS) \
 	$(VISIBILITY_CFLAGS)
-
-AM_CPPFLAGS = \
-	-I$(top_srcdir)/src/gallium/ \
-	-I$(top_srcdir)/src/gallium/winsys \
-	-I$(top_srcdir)/src/gallium/drivers
 
 xa_includedir = $(includedir)
 xa_include_HEADERS = \
@@ -40,10 +36,6 @@ xa_include_HEADERS = \
 
 noinst_LTLIBRARIES = libxatracker.la
 
-libxatracker_la_SOURCES = \
-	xa_tracker.c \
-	xa_context.c \
-	xa_renderer.c \
-	xa_tgsi.c \
-	xa_yuv.c \
-	xa_composite.c
+libxatracker_la_SOURCES = $(C_SOURCES)
+
+EXTRA_DIST = README xa-indent

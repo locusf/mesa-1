@@ -33,8 +33,9 @@
 #include "glheader.h"
 #include "clear.h"
 #include "context.h"
-#include "colormac.h"
 #include "enums.h"
+#include "fbobject.h"
+#include "get.h"
 #include "macros.h"
 #include "mtypes.h"
 #include "state.h"
@@ -59,10 +60,6 @@ _mesa_ClearIndex( GLfloat c )
  * \param alpha alpha component.
  *
  * \sa glClearColor().
- *
- * Clamps the parameters and updates gl_colorbuffer_attrib::ClearColor.  On a
- * change, flushes the vertices and notifies the driver via the
- * dd_function_table::ClearColor callback.
  */
 void GLAPIENTRY
 _mesa_ClearColor( GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha )
@@ -107,15 +104,41 @@ _mesa_ClearColorIuiEXT(GLuint r, GLuint g, GLuint b, GLuint a)
 
 
 /**
+ * Returns true if color writes are enabled for the given color attachment.
+ *
+ * Beyond checking ColorMask, this uses _mesa_format_has_color_component to
+ * ignore components that don't actually exist in the format (such as X in
+ * XRGB).
+ */
+static bool
+color_buffer_writes_enabled(const struct gl_context *ctx, unsigned idx)
+{
+   struct gl_renderbuffer *rb = ctx->DrawBuffer->_ColorDrawBuffers[idx];
+   GLuint c;
+   GLubyte colorMask = 0;
+
+   if (rb) {
+      for (c = 0; c < 4; c++) {
+         if (_mesa_format_has_color_component(rb->Format, c))
+            colorMask |= ctx->Color.ColorMask[idx][c];
+      }
+   }
+
+   return colorMask != 0;
+}
+
+
+/**
  * Clear buffers.
- * 
+ *
  * \param mask bit-mask indicating the buffers to be cleared.
  *
- * Flushes the vertices and verifies the parameter. If __struct gl_contextRec::NewState
- * is set then calls _mesa_update_state() to update gl_frame_buffer::_Xmin,
- * etc. If the rasterization mode is set to GL_RENDER then requests the driver
- * to clear the buffers, via the dd_function_table::Clear callback.
- */ 
+ * Flushes the vertices and verifies the parameter.
+ * If __struct gl_contextRec::NewState is set then calls _mesa_update_state()
+ * to update gl_frame_buffer::_Xmin, etc.  If the rasterization mode is set to
+ * GL_RENDER then requests the driver to clear the buffers, via the
+ * dd_function_table::Clear callback.
+ */
 void GLAPIENTRY
 _mesa_Clear( GLbitfield mask )
 {
@@ -155,11 +178,6 @@ _mesa_Clear( GLbitfield mask )
       return;
    }
 
-   if (ctx->DrawBuffer->Width == 0 || ctx->DrawBuffer->Height == 0 ||
-       ctx->DrawBuffer->_Xmin >= ctx->DrawBuffer->_Xmax ||
-       ctx->DrawBuffer->_Ymin >= ctx->DrawBuffer->_Ymax)
-      return;
-
    if (ctx->RasterDiscard)
       return;
 
@@ -179,7 +197,11 @@ _mesa_Clear( GLbitfield mask )
       if (mask & GL_COLOR_BUFFER_BIT) {
          GLuint i;
          for (i = 0; i < ctx->DrawBuffer->_NumColorDrawBuffers; i++) {
-            bufferMask |= (1 << ctx->DrawBuffer->_ColorDrawBufferIndexes[i]);
+            GLint buf = ctx->DrawBuffer->_ColorDrawBufferIndexes[i];
+
+            if (buf >= 0 && color_buffer_writes_enabled(ctx, i)) {
+               bufferMask |= 1 << buf;
+            }
          }
       }
 
@@ -198,14 +220,14 @@ _mesa_Clear( GLbitfield mask )
          bufferMask |= BUFFER_BIT_ACCUM;
       }
 
-      ASSERT(ctx->Driver.Clear);
+      assert(ctx->Driver.Clear);
       ctx->Driver.Clear(ctx, bufferMask);
    }
 }
 
 
 /** Returned by make_color_buffer_mask() for errors */
-#define INVALID_MASK ~0x0
+#define INVALID_MASK ~0x0U
 
 
 /**
@@ -219,7 +241,25 @@ make_color_buffer_mask(struct gl_context *ctx, GLint drawbuffer)
    const struct gl_renderbuffer_attachment *att = ctx->DrawBuffer->Attachment;
    GLbitfield mask = 0x0;
 
-   switch (drawbuffer) {
+   /* From the GL 4.0 specification:
+    *	If buffer is COLOR, a particular draw buffer DRAW_BUFFERi is
+    *	specified by passing i as the parameter drawbuffer, and value
+    *	points to a four-element vector specifying the R, G, B, and A
+    *	color to clear that draw buffer to. If the draw buffer is one
+    *	of FRONT, BACK, LEFT, RIGHT, or FRONT_AND_BACK, identifying
+    *	multiple buffers, each selected buffer is cleared to the same
+    *	value.
+    *
+    * Note that "drawbuffer" and "draw buffer" have different meaning.
+    * "drawbuffer" specifies DRAW_BUFFERi, while "draw buffer" is what's
+    * assigned to DRAW_BUFFERi. It could be COLOR_ATTACHMENT0, FRONT, BACK,
+    * etc.
+    */
+   if (drawbuffer < 0 || drawbuffer >= (GLint)ctx->Const.MaxDrawBuffers) {
+      return INVALID_MASK;
+   }
+
+   switch (ctx->DrawBuffer->ColorDrawBuffer[drawbuffer]) {
    case GL_FRONT:
       if (att[BUFFER_FRONT_LEFT].Renderbuffer)
          mask |= BUFFER_BIT_FRONT_LEFT;
@@ -227,6 +267,14 @@ make_color_buffer_mask(struct gl_context *ctx, GLint drawbuffer)
          mask |= BUFFER_BIT_FRONT_RIGHT;
       break;
    case GL_BACK:
+      /* For GLES contexts with a single buffered configuration, we actually
+       * only have a front renderbuffer, so any clear calls to GL_BACK should
+       * affect that buffer. See draw_buffer_enum_to_bitmask for details.
+       */
+      if (_mesa_is_gles(ctx))
+         if (!ctx->DrawBuffer->Visual.doubleBufferMode)
+            if (att[BUFFER_FRONT_LEFT].Renderbuffer)
+               mask |= BUFFER_BIT_FRONT_LEFT;
       if (att[BUFFER_BACK_LEFT].Renderbuffer)
          mask |= BUFFER_BIT_BACK_LEFT;
       if (att[BUFFER_BACK_RIGHT].Renderbuffer)
@@ -255,11 +303,12 @@ make_color_buffer_mask(struct gl_context *ctx, GLint drawbuffer)
          mask |= BUFFER_BIT_BACK_RIGHT;
       break;
    default:
-      if (drawbuffer < 0 || drawbuffer >= (GLint)ctx->Const.MaxDrawBuffers) {
-         mask = INVALID_MASK;
-      }
-      else if (att[BUFFER_COLOR0 + drawbuffer].Renderbuffer) {
-         mask |= (BUFFER_BIT_COLOR0 << drawbuffer);
+      {
+         GLint buf = ctx->DrawBuffer->_ColorDrawBufferIndexes[drawbuffer];
+
+         if (buf >= 0 && att[buf].Renderbuffer) {
+            mask |= 1 << buf;
+         }
       }
    }
 
@@ -298,7 +347,8 @@ _mesa_ClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value)
                      drawbuffer);
          return;
       }
-      else if (ctx->DrawBuffer->Attachment[BUFFER_STENCIL].Renderbuffer && !ctx->RasterDiscard) {
+      else if (ctx->DrawBuffer->Attachment[BUFFER_STENCIL].Renderbuffer
+               && !ctx->RasterDiscard) {
          /* Save current stencil clear value, set to 'value', do the
           * stencil clear and restore the clear value.
           * XXX in the future we may have a new ctx->Driver.ClearBuffer()
@@ -332,30 +382,35 @@ _mesa_ClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value)
          }
       }
       break;
-   case GL_DEPTH:
-      /* Page 264 (page 280 of the PDF) of the OpenGL 3.0 spec says:
-       *
-       *     "The result of ClearBuffer is undefined if no conversion between
-       *     the type of the specified value and the type of the buffer being
-       *     cleared is defined (for example, if ClearBufferiv is called for a
-       *     fixed- or floating-point buffer, or if ClearBufferfv is called
-       *     for a signed or unsigned integer buffer). This is not an error."
-       *
-       * In this case we take "undefined" and "not an error" to mean "ignore."
-       * Note that we still need to generate an error for the invalid
-       * drawbuffer case (see the GL_STENCIL case above).
-       */
-      if (drawbuffer != 0) {
-         _mesa_error(ctx, GL_INVALID_VALUE, "glClearBufferiv(drawbuffer=%d)",
-                     drawbuffer);
-         return;
-      }
-      return;
    default:
+      /* Page 498 of the PDF, section '17.4.3.1 Clearing Individual Buffers'
+       * of the OpenGL 4.5 spec states:
+       *
+       *    "An INVALID_ENUM error is generated by ClearBufferiv and
+       *     ClearNamedFramebufferiv if buffer is not COLOR or STENCIL."
+       */
       _mesa_error(ctx, GL_INVALID_ENUM, "glClearBufferiv(buffer=%s)",
-                  _mesa_lookup_enum_by_nr(buffer));
+                  _mesa_enum_to_string(buffer));
       return;
    }
+}
+
+
+/**
+ * The ClearBuffer framework is so complicated and so riddled with the
+ * assumption that the framebuffer is bound that, for now, we will just fake
+ * direct state access clearing for the user.
+ */
+void GLAPIENTRY
+_mesa_ClearNamedFramebufferiv(GLuint framebuffer, GLenum buffer,
+                              GLint drawbuffer, const GLint *value)
+{
+   GLint oldfb;
+
+   _mesa_GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &oldfb);
+   _mesa_BindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+   _mesa_ClearBufferiv(buffer, drawbuffer, value);
+   _mesa_BindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) oldfb);
 }
 
 
@@ -398,36 +453,35 @@ _mesa_ClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *value)
          }
       }
       break;
-   case GL_DEPTH:
-   case GL_STENCIL:
-      /* Page 264 (page 280 of the PDF) of the OpenGL 3.0 spec says:
-       *
-       *     "The result of ClearBuffer is undefined if no conversion between
-       *     the type of the specified value and the type of the buffer being
-       *     cleared is defined (for example, if ClearBufferiv is called for a
-       *     fixed- or floating-point buffer, or if ClearBufferfv is called
-       *     for a signed or unsigned integer buffer). This is not an error."
-       *
-       * In this case we take "undefined" and "not an error" to mean "ignore."
-       * Even though we could do something sensible for GL_STENCIL, page 263
-       * (page 279 of the PDF) says:
-       *
-       *     "Only ClearBufferiv should be used to clear stencil buffers."
-       *
-       * Note that we still need to generate an error for the invalid
-       * drawbuffer case (see the GL_STENCIL case in _mesa_ClearBufferiv).
-       */
-      if (drawbuffer != 0) {
-         _mesa_error(ctx, GL_INVALID_VALUE, "glClearBufferuiv(drawbuffer=%d)",
-                     drawbuffer);
-         return;
-      }
-      return;
    default:
+      /* Page 498 of the PDF, section '17.4.3.1 Clearing Individual Buffers'
+       * of the OpenGL 4.5 spec states:
+       *
+       *    "An INVALID_ENUM error is generated by ClearBufferuiv and
+       *     ClearNamedFramebufferuiv if buffer is not COLOR."
+       */
       _mesa_error(ctx, GL_INVALID_ENUM, "glClearBufferuiv(buffer=%s)",
-                  _mesa_lookup_enum_by_nr(buffer));
+                  _mesa_enum_to_string(buffer));
       return;
    }
+}
+
+
+/**
+ * The ClearBuffer framework is so complicated and so riddled with the
+ * assumption that the framebuffer is bound that, for now, we will just fake
+ * direct state access clearing for the user.
+ */
+void GLAPIENTRY
+_mesa_ClearNamedFramebufferuiv(GLuint framebuffer, GLenum buffer,
+                               GLint drawbuffer, const GLuint *value)
+{
+   GLint oldfb;
+
+   _mesa_GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &oldfb);
+   _mesa_BindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+   _mesa_ClearBufferuiv(buffer, drawbuffer, value);
+   _mesa_BindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) oldfb);
 }
 
 
@@ -461,7 +515,8 @@ _mesa_ClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value)
                      drawbuffer);
          return;
       }
-      else if (ctx->DrawBuffer->Attachment[BUFFER_DEPTH].Renderbuffer && !ctx->RasterDiscard) {
+      else if (ctx->DrawBuffer->Attachment[BUFFER_DEPTH].Renderbuffer
+               && !ctx->RasterDiscard) {
          /* Save current depth clear value, set to 'value', do the
           * depth clear and restore the clear value.
           * XXX in the future we may have a new ctx->Driver.ClearBuffer()
@@ -496,30 +551,35 @@ _mesa_ClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value)
          }
       }
       break;
-   case GL_STENCIL:
-      /* Page 264 (page 280 of the PDF) of the OpenGL 3.0 spec says:
-       *
-       *     "The result of ClearBuffer is undefined if no conversion between
-       *     the type of the specified value and the type of the buffer being
-       *     cleared is defined (for example, if ClearBufferiv is called for a
-       *     fixed- or floating-point buffer, or if ClearBufferfv is called
-       *     for a signed or unsigned integer buffer). This is not an error."
-       *
-       * In this case we take "undefined" and "not an error" to mean "ignore."
-       * Note that we still need to generate an error for the invalid
-       * drawbuffer case (see the GL_DEPTH case above).
-       */
-      if (drawbuffer != 0) {
-         _mesa_error(ctx, GL_INVALID_VALUE, "glClearBufferfv(drawbuffer=%d)",
-                     drawbuffer);
-         return;
-      }
-      return;
    default:
+      /* Page 498 of the PDF, section '17.4.3.1 Clearing Individual Buffers'
+       * of the OpenGL 4.5 spec states:
+       *
+       *    "An INVALID_ENUM error is generated by ClearBufferfv and
+       *     ClearNamedFramebufferfv if buffer is not COLOR or DEPTH."
+       */
       _mesa_error(ctx, GL_INVALID_ENUM, "glClearBufferfv(buffer=%s)",
-                  _mesa_lookup_enum_by_nr(buffer));
+                  _mesa_enum_to_string(buffer));
       return;
    }
+}
+
+
+/**
+ * The ClearBuffer framework is so complicated and so riddled with the
+ * assumption that the framebuffer is bound that, for now, we will just fake
+ * direct state access clearing for the user.
+ */
+void GLAPIENTRY
+_mesa_ClearNamedFramebufferfv(GLuint framebuffer, GLenum buffer,
+                              GLint drawbuffer, const GLfloat *value)
+{
+   GLint oldfb;
+
+   _mesa_GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &oldfb);
+   _mesa_BindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+   _mesa_ClearBufferfv(buffer, drawbuffer, value);
+   _mesa_BindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) oldfb);
 }
 
 
@@ -539,7 +599,7 @@ _mesa_ClearBufferfi(GLenum buffer, GLint drawbuffer,
 
    if (buffer != GL_DEPTH_STENCIL) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glClearBufferfi(buffer=%s)",
-                  _mesa_lookup_enum_by_nr(buffer));
+                  _mesa_enum_to_string(buffer));
       return;
    }
 
@@ -584,4 +644,22 @@ _mesa_ClearBufferfi(GLenum buffer, GLint drawbuffer,
       ctx->Depth.Clear = clearDepthSave;
       ctx->Stencil.Clear = clearStencilSave;
    }
+}
+
+
+/**
+ * The ClearBuffer framework is so complicated and so riddled with the
+ * assumption that the framebuffer is bound that, for now, we will just fake
+ * direct state access clearing for the user.
+ */
+void GLAPIENTRY
+_mesa_ClearNamedFramebufferfi(GLuint framebuffer, GLenum buffer,
+                              GLint drawbuffer, GLfloat depth, GLint stencil)
+{
+   GLint oldfb;
+
+   _mesa_GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &oldfb);
+   _mesa_BindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+   _mesa_ClearBufferfi(buffer, drawbuffer, depth, stencil);
+   _mesa_BindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) oldfb);
 }

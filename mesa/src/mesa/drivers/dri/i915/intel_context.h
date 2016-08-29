@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -40,16 +40,15 @@ extern "C" {
 	#define virtual virt
 #endif
 
-#include "drm.h"
-#include "intel_bufmgr.h"
-
-#include "intel_screen.h"
-#include "intel_tex_obj.h"
-#include "i915_drm.h"
-
+#include <drm.h>
+#include <intel_bufmgr.h>
+#include <i915_drm.h>
 #ifdef __cplusplus
 	#undef virtual
 #endif
+
+#include "intel_screen.h"
+#include "intel_tex_obj.h"
 
 #include "tnl/t_vertex.h"
 
@@ -226,7 +225,6 @@ struct intel_context
 
    GLfloat polygon_offset_scale;        /* dependent on depth_scale, bpp */
 
-   bool hw_stencil;
    bool hw_stipple;
    bool no_rast;
    bool always_flush_batch;
@@ -249,37 +247,17 @@ struct intel_context
    intel_tri_func draw_tri;
 
    /**
-    * Set if rendering has occured to the drawable's front buffer.
+    * Set if rendering has occurred to the drawable's front buffer.
     *
     * This is used in the DRI2 case to detect that glFlush should also copy
     * the contents of the fake front buffer to the real front buffer.
     */
    bool front_buffer_dirty;
 
-   /**
-    * Track whether front-buffer rendering is currently enabled
-    *
-    * A separate flag is used to track this in order to support MRT more
-    * easily.
-    */
-   bool is_front_buffer_rendering;
-   /**
-    * Track whether front-buffer is the current read target.
-    *
-    * This is closely associated with is_front_buffer_rendering, but may
-    * be set separately.  The DRI2 fake front buffer must be referenced
-    * either way.
-    */
-   bool is_front_buffer_reading;
-
    bool use_early_z;
-
-   int driFd;
 
    __DRIcontext *driContext;
    struct intel_screen *intelScreen;
-   void (*saved_viewport)(struct gl_context * ctx,
-			  GLint x, GLint y, GLsizei width, GLsizei height);
 
    /**
     * Configuration cache
@@ -293,65 +271,11 @@ extern char *__progname;
 #define SUBPIXEL_X 0.125
 #define SUBPIXEL_Y 0.125
 
-/**
- * Align a value down to an alignment value
- *
- * If \c value is not already aligned to the requested alignment value, it
- * will be rounded down.
- *
- * \param value  Value to be rounded
- * \param alignment  Alignment value to be used.  This must be a power of two.
- *
- * \sa ALIGN()
- */
-#define ROUND_DOWN_TO(value, alignment) ((value) & ~(alignment - 1))
-
-static INLINE uint32_t
-U_FIXED(float value, uint32_t frac_bits)
-{
-   value *= (1 << frac_bits);
-   return value < 0 ? 0 : value;
-}
-
-static INLINE uint32_t
-S_FIXED(float value, uint32_t frac_bits)
-{
-   return value * (1 << frac_bits);
-}
-
 #define INTEL_FIREVERTICES(intel)		\
 do {						\
    if ((intel)->prim.flush)			\
       (intel)->prim.flush(intel);		\
 } while (0)
-
-/* ================================================================
- * From linux kernel i386 header files, copes with odd sizes better
- * than COPY_DWORDS would:
- * XXX Put this in src/mesa/main/imports.h ???
- */
-#if defined(i386) || defined(__i386__)
-static INLINE void * __memcpy(void * to, const void * from, size_t n)
-{
-   int d0, d1, d2;
-   __asm__ __volatile__(
-      "rep ; movsl\n\t"
-      "testb $2,%b4\n\t"
-      "je 1f\n\t"
-      "movsw\n"
-      "1:\ttestb $1,%b4\n\t"
-      "je 2f\n\t"
-      "movsb\n"
-      "2:"
-      : "=&c" (d0), "=&D" (d1), "=&S" (d2)
-      :"0" (n/4), "q" (n),"1" ((long) to),"2" ((long) from)
-      : "memory");
-   return (to);
-}
-#else
-#define __memcpy(a,b,c) memcpy(a,b,c)
-#endif
-
 
 /* ================================================================
  * Debugging:
@@ -396,6 +320,7 @@ extern int INTEL_DEBUG;
       dbg_printf(__VA_ARGS__);                                  \
    if (intel->perf_debug)                                       \
       _mesa_gl_debug(&intel->ctx, &msg_id,                      \
+                     MESA_DEBUG_SOURCE_API,                     \
                      MESA_DEBUG_TYPE_PERFORMANCE,               \
                      MESA_DEBUG_SEVERITY_MEDIUM,                \
                      __VA_ARGS__);                              \
@@ -411,6 +336,7 @@ extern int INTEL_DEBUG;
          _warned = true;                                        \
                                                                 \
          _mesa_gl_debug(ctx, &msg_id,                           \
+                        MESA_DEBUG_SOURCE_API,                  \
                         MESA_DEBUG_TYPE_OTHER,                  \
                         MESA_DEBUG_SEVERITY_HIGH, fmt);         \
       }                                                         \
@@ -421,10 +347,15 @@ extern int INTEL_DEBUG;
  * intel_context.c:
  */
 
+extern const char *const i915_vendor_string;
+
+extern const char *i915_get_renderer_string(unsigned deviceID);
+
 extern bool intelInitContext(struct intel_context *intel,
                              int api,
                              unsigned major_version,
                              unsigned minor_version,
+                             uint32_t flags,
                              const struct gl_config * mesaVis,
                              __DRIcontext * driContextPriv,
                              void *sharedContextPrivate,
@@ -521,16 +452,10 @@ void intel_init_texture_formats(struct gl_context *ctx);
  * Inline conversion functions.  
  * These are better-typed than the macros used previously:
  */
-static INLINE struct intel_context *
+static inline struct intel_context *
 intel_context(struct gl_context * ctx)
 {
    return (struct intel_context *) ctx;
-}
-
-static INLINE bool
-is_power_of_two(uint32_t value)
-{
-   return (value & (value - 1)) == 0;
 }
 
 #ifdef __cplusplus

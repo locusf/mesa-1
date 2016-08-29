@@ -1,7 +1,7 @@
 
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -19,7 +19,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -71,8 +71,8 @@ intel_blit_texsubimage(struct gl_context * ctx,
       return false;
 
    DBG("BLT subimage %s target %s level %d offset %d,%d %dx%d\n",
-       __FUNCTION__,
-       _mesa_lookup_enum_by_nr(texImage->TexObject->Target),
+       __func__,
+       _mesa_enum_to_string(texImage->TexObject->Target),
        texImage->Level, xoffset, yoffset, width, height);
 
    pixels = _mesa_validate_pbo_teximage(ctx, 2, width, height, 1,
@@ -102,7 +102,7 @@ intel_blit_texsubimage(struct gl_context * ctx,
       _mesa_error(ctx, GL_OUT_OF_MEMORY, "intelTexSubImage");
    }
 
-   intel_miptree_unmap_raw(intel, temp_mt);
+   intel_miptree_unmap_raw(temp_mt);
 
    bool ret;
 

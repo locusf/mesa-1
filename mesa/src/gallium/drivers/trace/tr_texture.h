@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -85,27 +85,27 @@ struct trace_transfer
 };
 
 
-static INLINE struct trace_resource *
+static inline struct trace_resource *
 trace_resource(struct pipe_resource *texture)
 {
-   if(!texture)
+   if (!texture)
       return NULL;
    (void)trace_screen(texture->screen);
    return (struct trace_resource *)texture;
 }
 
 
-static INLINE struct trace_surface *
+static inline struct trace_surface *
 trace_surface(struct pipe_surface *surface)
 {
-   if(!surface)
+   if (!surface)
       return NULL;
    (void)trace_resource(surface->texture);
    return (struct trace_surface *)surface;
 }
 
 
-static INLINE struct trace_sampler_view *
+static inline struct trace_sampler_view *
 trace_sampler_view(struct pipe_sampler_view *sampler_view)
 {
    if (!sampler_view)
@@ -114,10 +114,10 @@ trace_sampler_view(struct pipe_sampler_view *sampler_view)
 }
 
 
-static INLINE struct trace_transfer *
+static inline struct trace_transfer *
 trace_transfer(struct pipe_transfer *transfer)
 {
-   if(!transfer)
+   if (!transfer)
       return NULL;
    (void)trace_resource(transfer->resource);
    return (struct trace_transfer *)transfer;

@@ -26,14 +26,17 @@
 #include "glheader.h"
 #include "context.h"
 #include "blend.h"
+#include "debug_output.h"
 #include "enable.h"
 #include "enums.h"
+#include "errors.h"
 #include "extensions.h"
 #include "get.h"
 #include "macros.h"
 #include "mtypes.h"
 #include "state.h"
 #include "texcompress.h"
+#include "texstate.h"
 #include "framebuffer.h"
 #include "samplerobj.h"
 #include "stencil.h"
@@ -113,6 +116,7 @@ enum value_type {
    TYPE_FLOATN_3,
    TYPE_FLOATN_4,
    TYPE_DOUBLEN,
+   TYPE_DOUBLEN_2,
    TYPE_MATRIX,
    TYPE_MATRIX_T,
    TYPE_CONST
@@ -131,10 +135,12 @@ enum value_extra {
    EXTRA_VERSION_30,
    EXTRA_VERSION_31,
    EXTRA_VERSION_32,
+   EXTRA_VERSION_40,
    EXTRA_API_GL,
    EXTRA_API_GL_CORE,
    EXTRA_API_ES2,
    EXTRA_API_ES3,
+   EXTRA_API_ES31,
    EXTRA_NEW_BUFFERS, 
    EXTRA_NEW_FRAG_CLAMP,
    EXTRA_VALID_DRAW_BUFFER,
@@ -142,7 +148,14 @@ enum value_extra {
    EXTRA_VALID_CLIP_DISTANCE,
    EXTRA_FLUSH_CURRENT,
    EXTRA_GLSL_130,
-   EXTRA_EXT_UBO_GS4,
+   EXTRA_EXT_UBO_GS,
+   EXTRA_EXT_ATOMICS_GS,
+   EXTRA_EXT_SHADER_IMAGE_GS,
+   EXTRA_EXT_ATOMICS_TESS,
+   EXTRA_EXT_SHADER_IMAGE_TESS,
+   EXTRA_EXT_SSBO_GS,
+   EXTRA_EXT_FB_NO_ATTACH_GS,
+   EXTRA_EXT_ES_GS,
 };
 
 #define NO_EXTRA NULL
@@ -159,6 +172,7 @@ struct value_desc {
 union value {
    GLfloat value_float;
    GLfloat value_float_4[4];
+   GLdouble value_double_2[2];
    GLmatrix *value_matrix;
    GLint value_int;
    GLint value_int_4[4];
@@ -177,7 +191,7 @@ union value {
 #define CONTEXT_FIELD(field, type) \
    LOC_CONTEXT, type, offsetof(struct gl_context, field)
 #define ARRAY_FIELD(field, type) \
-   LOC_ARRAY, type, offsetof(struct gl_array_object, field)
+   LOC_ARRAY, type, offsetof(struct gl_vertex_array_object, field)
 #undef CONST /* already defined through windows.h */
 #define CONST(value) \
    LOC_CONTEXT, TYPE_CONST, value
@@ -272,11 +286,6 @@ static const int extra_flush_current[] = {
    EXTRA_END
 };
 
-static const int extra_EXT_texture_integer[] = {
-   EXT(EXT_texture_integer),
-   EXTRA_END
-};
-
 static const int extra_EXT_texture_integer_and_new_buffers[] = {
    EXT(EXT_texture_integer),
    EXTRA_NEW_BUFFERS,
@@ -303,7 +312,7 @@ static const int extra_ARB_transform_feedback2_api_es3[] = {
 };
 
 static const int extra_ARB_uniform_buffer_object_and_geometry_shader[] = {
-   EXTRA_EXT_UBO_GS4,
+   EXTRA_EXT_UBO_GS,
    EXTRA_END
 };
 
@@ -325,14 +334,88 @@ static const int extra_EXT_framebuffer_sRGB_and_new_buffers[] = {
    EXTRA_END
 };
 
-static const int extra_MESA_texture_array_es3[] = {
-   EXT(MESA_texture_array),
+static const int extra_EXT_packed_float[] = {
+   EXT(EXT_packed_float),
+   EXTRA_NEW_BUFFERS,
+   EXTRA_END
+};
+
+static const int extra_EXT_texture_array_es3[] = {
+   EXT(EXT_texture_array),
    EXTRA_API_ES3,
    EXTRA_END
 };
 
+static const int extra_ARB_shader_atomic_counters_and_geometry_shader[] = {
+   EXTRA_EXT_ATOMICS_GS,
+   EXTRA_END
+};
+
+static const int extra_ARB_shader_image_load_store_and_geometry_shader[] = {
+   EXTRA_EXT_SHADER_IMAGE_GS,
+   EXTRA_END
+};
+
+static const int extra_ARB_shader_atomic_counters_and_tessellation[] = {
+   EXTRA_EXT_ATOMICS_TESS,
+   EXTRA_END
+};
+
+static const int extra_ARB_shader_image_load_store_and_tessellation[] = {
+   EXTRA_EXT_SHADER_IMAGE_TESS,
+   EXTRA_END
+};
+
+/* HACK: remove when ARB_compute_shader is actually supported */
+static const int extra_ARB_compute_shader_es31[] = {
+   EXT(ARB_compute_shader),
+   EXTRA_API_ES31,
+   EXTRA_END
+};
+
+static const int extra_ARB_shader_storage_buffer_object_es31[] = {
+   EXT(ARB_shader_storage_buffer_object),
+   EXTRA_API_ES31,
+   EXTRA_END
+};
+
+static const int extra_ARB_shader_storage_buffer_object_and_geometry_shader[] = {
+   EXTRA_EXT_SSBO_GS,
+   EXTRA_END
+};
+
+static const int extra_ARB_shader_image_load_store_shader_storage_buffer_object_es31[] = {
+   EXT(ARB_shader_image_load_store),
+   EXT(ARB_shader_storage_buffer_object),
+   EXTRA_API_ES31,
+   EXTRA_END
+};
+
+static const int extra_ARB_framebuffer_no_attachments_and_geometry_shader[] = {
+   EXTRA_EXT_FB_NO_ATTACH_GS,
+   EXTRA_END
+};
+
+static const int extra_ARB_viewport_array_or_oes_geometry_shader[] = {
+   EXT(ARB_viewport_array),
+   EXTRA_EXT_ES_GS,
+   EXTRA_END
+};
+
+static const int extra_ARB_gpu_shader5_or_oes_geometry_shader[] = {
+   EXT(ARB_gpu_shader5),
+   EXTRA_EXT_ES_GS,
+   EXTRA_END
+};
+
+static const int extra_ARB_gpu_shader5_or_OES_sample_variables[] = {
+   EXT(ARB_gpu_shader5),
+   EXT(OES_sample_variables),
+   EXTRA_END
+};
+
 EXTRA_EXT(ARB_texture_cube_map);
-EXTRA_EXT(MESA_texture_array);
+EXTRA_EXT(EXT_texture_array);
 EXTRA_EXT(NV_fog_distance);
 EXTRA_EXT(EXT_texture_filter_anisotropic);
 EXTRA_EXT(NV_point_sprite);
@@ -341,7 +424,6 @@ EXTRA_EXT(EXT_stencil_two_side);
 EXTRA_EXT(EXT_depth_bounds_test);
 EXTRA_EXT(ARB_depth_clamp);
 EXTRA_EXT(ATI_fragment_shader);
-EXTRA_EXT(EXT_framebuffer_blit);
 EXTRA_EXT(EXT_provoking_vertex);
 EXTRA_EXT(ARB_fragment_shader);
 EXTRA_EXT(ARB_fragment_program);
@@ -355,17 +437,36 @@ EXTRA_EXT(EXT_pixel_buffer_object);
 EXTRA_EXT(ARB_vertex_program);
 EXTRA_EXT2(NV_point_sprite, ARB_point_sprite);
 EXTRA_EXT2(ARB_vertex_program, ARB_fragment_program);
-EXTRA_EXT(ARB_geometry_shader4);
 EXTRA_EXT(ARB_color_buffer_float);
 EXTRA_EXT(EXT_framebuffer_sRGB);
 EXTRA_EXT(OES_EGL_image_external);
 EXTRA_EXT(ARB_blend_func_extended);
 EXTRA_EXT(ARB_uniform_buffer_object);
 EXTRA_EXT(ARB_timer_query);
-EXTRA_EXT(ARB_map_buffer_alignment);
-EXTRA_EXT(ARB_texture_cube_map_array);
+EXTRA_EXT2(ARB_texture_cube_map_array, OES_texture_cube_map_array);
 EXTRA_EXT(ARB_texture_buffer_range);
 EXTRA_EXT(ARB_texture_multisample);
+EXTRA_EXT(ARB_texture_gather);
+EXTRA_EXT(ARB_shader_atomic_counters);
+EXTRA_EXT(ARB_draw_indirect);
+EXTRA_EXT(ARB_shader_image_load_store);
+EXTRA_EXT(ARB_viewport_array);
+EXTRA_EXT(ARB_query_buffer_object);
+EXTRA_EXT2(ARB_transform_feedback3, ARB_gpu_shader5);
+EXTRA_EXT(INTEL_performance_query);
+EXTRA_EXT(ARB_explicit_uniform_location);
+EXTRA_EXT(ARB_clip_control);
+EXTRA_EXT(EXT_polygon_offset_clamp);
+EXTRA_EXT(ARB_framebuffer_no_attachments);
+EXTRA_EXT(ARB_tessellation_shader);
+EXTRA_EXT(ARB_shader_subroutine);
+EXTRA_EXT(ARB_shader_storage_buffer_object);
+EXTRA_EXT(ARB_indirect_parameters);
+EXTRA_EXT(ATI_meminfo);
+EXTRA_EXT(NVX_gpu_memory_info);
+EXTRA_EXT(ARB_cull_distance);
+EXTRA_EXT(EXT_window_rectangles);
+EXTRA_EXT(KHR_blend_equation_advanced_coherent);
 
 static const int
 extra_ARB_color_buffer_float_or_glcore[] = {
@@ -396,6 +497,18 @@ static const int extra_gl32_es3[] = {
     EXTRA_END,
 };
 
+static const int extra_version_32_OES_geometry_shader[] = {
+    EXTRA_VERSION_32,
+    EXTRA_EXT_ES_GS,
+    EXTRA_END
+};
+
+static const int extra_gl40_ARB_sample_shading[] = {
+   EXTRA_VERSION_40,
+   EXT(ARB_sample_shading),
+   EXTRA_END
+};
+
 static const int
 extra_ARB_vertex_program_api_es2[] = {
    EXT(ARB_vertex_program),
@@ -416,6 +529,13 @@ static const int extra_core_ARB_color_buffer_float_and_new_buffers[] = {
    EXTRA_API_GL_CORE,
    EXT(ARB_color_buffer_float),
    EXTRA_NEW_BUFFERS,
+   EXTRA_END
+};
+
+static const int extra_EXT_shader_framebuffer_fetch[] = {
+   EXTRA_API_ES2,
+   EXTRA_API_ES3,
+   EXT(MESA_shader_framebuffer_fetch),
    EXTRA_END
 };
 
@@ -443,69 +563,6 @@ static const int extra_core_ARB_color_buffer_float_and_new_buffers[] = {
  * collisions for any enum (typical numbers).  And the code is very
  * simple, even though it feels a little magic. */
 
-#ifdef GET_DEBUG
-static void
-print_table_stats(int api)
-{
-   int i, j, collisions[11], count, hash, mask;
-   const struct value_desc *d;
-   const char *api_names[] = {
-      [API_OPENGL_COMPAT] = "GL",
-      [API_OPENGL_CORE] = "GL_CORE",
-      [API_OPENGLES] = "GLES",
-      [API_OPENGLES2] = "GLES2",
-   };
-   const char *api_name;
-
-   api_name = api < Elements(api_names) ? api_names[api] : "N/A";
-   count = 0;
-   mask = Elements(table(api)) - 1;
-   memset(collisions, 0, sizeof collisions);
-
-   for (i = 0; i < Elements(table(api)); i++) {
-      if (!table(api)[i])
-         continue;
-      count++;
-      d = &values[table(api)[i]];
-      hash = (d->pname * prime_factor);
-      j = 0;
-      while (1) {
-         if (values[table(api)[hash & mask]].pname == d->pname)
-            break;
-         hash += prime_step;
-         j++;
-      }
-
-      if (j < 10)
-         collisions[j]++;
-      else
-         collisions[10]++;
-   }
-
-   printf("number of enums for %s: %d (total %ld)\n",
-         api_name, count, Elements(values));
-   for (i = 0; i < Elements(collisions) - 1; i++)
-      if (collisions[i] > 0)
-         printf("  %d enums with %d %scollisions\n",
-               collisions[i], i, i == 10 ? "or more " : "");
-}
-#endif
-
-/**
- * Initialize the enum hash for a given API 
- *
- * This is called from one_time_init() to insert the enum values that
- * are valid for the API in question into the enum hash table.
- *
- * \param the current context, for determining the API in question
- */
-void _mesa_init_get_hash(struct gl_context *ctx)
-{
-#ifdef GET_DEBUG
-   print_table_stats();
-#endif
-}
-
 /**
  * Handle irregular enums
  *
@@ -526,7 +583,7 @@ static void
 find_custom_value(struct gl_context *ctx, const struct value_desc *d, union value *v)
 {
    struct gl_buffer_object **buffer_obj;
-   struct gl_client_array *array;
+   struct gl_vertex_attrib_array *array;
    GLuint unit, *p;
 
    switch (d->pname) {
@@ -540,9 +597,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
    case GL_TEXTURE_1D:
    case GL_TEXTURE_2D:
    case GL_TEXTURE_3D:
-   case GL_TEXTURE_1D_ARRAY_EXT:
-   case GL_TEXTURE_2D_ARRAY_EXT:
-   case GL_TEXTURE_CUBE_MAP_ARB:
+   case GL_TEXTURE_CUBE_MAP:
    case GL_TEXTURE_RECTANGLE_NV:
    case GL_TEXTURE_EXTERNAL_OES:
       v->value_bool = _mesa_IsEnabled(d->pname);
@@ -578,7 +633,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       break;
 
    case GL_EDGE_FLAG:
-      v->value_bool = ctx->Current.Attrib[VERT_ATTRIB_EDGEFLAG][0] == 1.0;
+      v->value_bool = ctx->Current.Attrib[VERT_ATTRIB_EDGEFLAG][0] == 1.0F;
       break;
 
    case GL_READ_BUFFER:
@@ -605,7 +660,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
    case GL_TEXTURE_COORD_ARRAY_SIZE:
    case GL_TEXTURE_COORD_ARRAY_TYPE:
    case GL_TEXTURE_COORD_ARRAY_STRIDE:
-      array = &ctx->Array.ArrayObj->VertexAttrib[VERT_ATTRIB_TEX(ctx->Array.ActiveTexture)];
+      array = &ctx->Array.VAO->VertexAttrib[VERT_ATTRIB_TEX(ctx->Array.ActiveTexture)];
       v->value_int = *(GLuint *) ((char *) array + d->offset);
       break;
 
@@ -629,10 +684,14 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       break;
 
    case GL_SCISSOR_BOX:
-      v->value_int_4[0] = ctx->Scissor.X;
-      v->value_int_4[1] = ctx->Scissor.Y;
-      v->value_int_4[2] = ctx->Scissor.Width;
-      v->value_int_4[3] = ctx->Scissor.Height;
+      v->value_int_4[0] = ctx->Scissor.ScissorArray[0].X;
+      v->value_int_4[1] = ctx->Scissor.ScissorArray[0].Y;
+      v->value_int_4[2] = ctx->Scissor.ScissorArray[0].Width;
+      v->value_int_4[3] = ctx->Scissor.ScissorArray[0].Height;
+      break;
+
+   case GL_SCISSOR_TEST:
+      v->value_bool = ctx->Scissor.EnableFlags & 1;
       break;
 
    case GL_LIST_INDEX:
@@ -649,10 +708,15 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       break;
 
    case GL_VIEWPORT:
-      v->value_int_4[0] = ctx->Viewport.X;
-      v->value_int_4[1] = ctx->Viewport.Y;
-      v->value_int_4[2] = ctx->Viewport.Width;
-      v->value_int_4[3] = ctx->Viewport.Height;
+      v->value_float_4[0] = ctx->ViewportArray[0].X;
+      v->value_float_4[1] = ctx->ViewportArray[0].Y;
+      v->value_float_4[2] = ctx->ViewportArray[0].Width;
+      v->value_float_4[3] = ctx->ViewportArray[0].Height;
+      break;
+
+   case GL_DEPTH_RANGE:
+      v->value_double_2[0] = ctx->ViewportArray[0].Near;
+      v->value_double_2[1] = ctx->ViewportArray[0].Far;
       break;
 
    case GL_ACTIVE_STENCIL_FACE_EXT:
@@ -709,12 +773,10 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
    case GL_COMPRESSED_TEXTURE_FORMATS_ARB:
       v->value_int_n.n = 
 	 _mesa_get_compressed_formats(ctx, v->value_int_n.ints);
-      ASSERT(v->value_int_n.n <= 100);
+      assert(v->value_int_n.n <= (int) ARRAY_SIZE(v->value_int_n.ints));
       break;
 
    case GL_MAX_VARYING_FLOATS_ARB:
-   case GL_MAX_FRAGMENT_INPUT_COMPONENTS:
-   case GL_MAX_VERTEX_OUTPUT_COMPONENTS:
       v->value_int = ctx->Const.MaxVarying * 4;
       break;
 
@@ -736,6 +798,45 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
 	 ctx->Texture.Unit[unit].CurrentTex[d->offset]->Name;
       break;
 
+   /* GL_EXT_packed_float */
+   case GL_RGBA_SIGNED_COMPONENTS_EXT:
+      {
+         /* Note: we only check the 0th color attachment. */
+         const struct gl_renderbuffer *rb =
+            ctx->DrawBuffer->_ColorDrawBuffers[0];
+         if (rb && _mesa_is_format_signed(rb->Format)) {
+            /* Issue 17 of GL_EXT_packed_float:  If a component (such as
+             * alpha) has zero bits, the component should not be considered
+             * signed and so the bit for the respective component should be
+             * zeroed.
+             */
+            GLint r_bits =
+               _mesa_get_format_bits(rb->Format, GL_RED_BITS);
+            GLint g_bits =
+               _mesa_get_format_bits(rb->Format, GL_GREEN_BITS);
+            GLint b_bits =
+               _mesa_get_format_bits(rb->Format, GL_BLUE_BITS);
+            GLint a_bits =
+               _mesa_get_format_bits(rb->Format, GL_ALPHA_BITS);
+            GLint l_bits =
+               _mesa_get_format_bits(rb->Format, GL_TEXTURE_LUMINANCE_SIZE);
+            GLint i_bits =
+               _mesa_get_format_bits(rb->Format, GL_TEXTURE_INTENSITY_SIZE);
+
+            v->value_int_4[0] = r_bits + l_bits + i_bits > 0;
+            v->value_int_4[1] = g_bits + l_bits + i_bits > 0;
+            v->value_int_4[2] = b_bits + l_bits + i_bits > 0;
+            v->value_int_4[3] = a_bits + i_bits > 0;
+         }
+         else {
+            v->value_int_4[0] =
+            v->value_int_4[1] =
+            v->value_int_4[2] =
+            v->value_int_4[3] = 0;
+         }
+      }
+      break;
+
    /* GL_ARB_vertex_buffer_object */
    case GL_VERTEX_ARRAY_BUFFER_BINDING_ARB:
    case GL_NORMAL_ARRAY_BUFFER_BINDING_ARB:
@@ -745,7 +846,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
    case GL_SECONDARY_COLOR_ARRAY_BUFFER_BINDING_ARB:
    case GL_FOG_COORDINATE_ARRAY_BUFFER_BINDING_ARB:
       buffer_obj = (struct gl_buffer_object **)
-	 ((char *) ctx->Array.ArrayObj + d->offset);
+	 ((char *) ctx->Array.VAO + d->offset);
       v->value_int = (*buffer_obj)->Name;
       break;
    case GL_ARRAY_BUFFER_BINDING_ARB:
@@ -753,10 +854,20 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       break;
    case GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING_ARB:
       v->value_int =
-	 ctx->Array.ArrayObj->VertexAttrib[VERT_ATTRIB_TEX(ctx->Array.ActiveTexture)].BufferObj->Name;
+	 ctx->Array.VAO->VertexBinding[VERT_ATTRIB_TEX(ctx->Array.ActiveTexture)].BufferObj->Name;
       break;
    case GL_ELEMENT_ARRAY_BUFFER_BINDING_ARB:
-      v->value_int = ctx->Array.ArrayObj->ElementArrayBufferObj->Name;
+      v->value_int = ctx->Array.VAO->IndexBufferObj->Name;
+      break;
+
+   /* ARB_vertex_array_bgra */
+   case GL_COLOR_ARRAY_SIZE:
+      array = &ctx->Array.VAO->VertexAttrib[VERT_ATTRIB_COLOR0];
+      v->value_int = array->Format == GL_BGRA ? GL_BGRA : array->Size;
+      break;
+   case GL_SECONDARY_COLOR_ARRAY_SIZE:
+      array = &ctx->Array.VAO->VertexAttrib[VERT_ATTRIB_COLOR1];
+      v->value_int = array->Format == GL_BGRA ? GL_BGRA : array->Size;
       break;
 
    /* ARB_copy_buffer */
@@ -786,6 +897,18 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       v->value_int = ctx->TransformFeedback.CurrentObject->Name;
       break;
    case GL_CURRENT_PROGRAM:
+      /* The Changelog of the ARB_separate_shader_objects spec says:
+       *
+       * 24 25 Jul 2011  pbrown  Remove the language erroneously deleting
+       *                         CURRENT_PROGRAM.  In the EXT extension, this
+       *                         token was aliased to ACTIVE_PROGRAM_EXT, and
+       *                         was used to indicate the last program set by
+       *                         either ActiveProgramEXT or UseProgram.  In
+       *                         the ARB extension, the SSO active programs
+       *                         are now program pipeline object state and
+       *                         CURRENT_PROGRAM should still be used to query
+       *                         the last program set by UseProgram (bug 7822).
+       */
       v->value_int =
 	 ctx->Shader.ActiveProgram ? ctx->Shader.ActiveProgram->Name : 0;
       break;
@@ -797,17 +920,17 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
 	 ctx->CurrentRenderbuffer ? ctx->CurrentRenderbuffer->Name : 0;
       break;
    case GL_POINT_SIZE_ARRAY_BUFFER_BINDING_OES:
-      v->value_int = ctx->Array.ArrayObj->VertexAttrib[VERT_ATTRIB_POINT_SIZE].BufferObj->Name;
+      v->value_int = ctx->Array.VAO->VertexBinding[VERT_ATTRIB_POINT_SIZE].BufferObj->Name;
       break;
 
    case GL_FOG_COLOR:
-      if (_mesa_get_clamp_fragment_color(ctx))
+      if (_mesa_get_clamp_fragment_color(ctx, ctx->DrawBuffer))
          COPY_4FV(v->value_float_4, ctx->Fog.Color);
       else
          COPY_4FV(v->value_float_4, ctx->Fog.ColorUnclamped);
       break;
    case GL_COLOR_CLEAR_VALUE:
-      if (_mesa_get_clamp_fragment_color(ctx)) {
+      if (_mesa_get_clamp_fragment_color(ctx, ctx->DrawBuffer)) {
          v->value_float_4[0] = CLAMP(ctx->Color.ClearColor.f[0], 0.0F, 1.0F);
          v->value_float_4[1] = CLAMP(ctx->Color.ClearColor.f[1], 0.0F, 1.0F);
          v->value_float_4[2] = CLAMP(ctx->Color.ClearColor.f[2], 0.0F, 1.0F);
@@ -816,23 +939,23 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
          COPY_4FV(v->value_float_4, ctx->Color.ClearColor.f);
       break;
    case GL_BLEND_COLOR_EXT:
-      if (_mesa_get_clamp_fragment_color(ctx))
+      if (_mesa_get_clamp_fragment_color(ctx, ctx->DrawBuffer))
          COPY_4FV(v->value_float_4, ctx->Color.BlendColor);
       else
          COPY_4FV(v->value_float_4, ctx->Color.BlendColorUnclamped);
       break;
    case GL_ALPHA_TEST_REF:
-      if (_mesa_get_clamp_fragment_color(ctx))
+      if (_mesa_get_clamp_fragment_color(ctx, ctx->DrawBuffer))
          v->value_float = ctx->Color.AlphaRef;
       else
          v->value_float = ctx->Color.AlphaRefUnclamped;
       break;
    case GL_MAX_VERTEX_UNIFORM_VECTORS:
-      v->value_int = ctx->Const.VertexProgram.MaxUniformComponents / 4;
+      v->value_int = ctx->Const.Program[MESA_SHADER_VERTEX].MaxUniformComponents / 4;
       break;
 
    case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
-      v->value_int = ctx->Const.FragmentProgram.MaxUniformComponents / 4;
+      v->value_int = ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxUniformComponents / 4;
       break;
 
    /* GL_ARB_texture_buffer_object */
@@ -862,21 +985,20 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       {
          struct gl_sampler_object *samp =
             ctx->Texture.Unit[ctx->Texture.CurrentUnit].Sampler;
-
-         /*
-          * The sampler object may have been deleted on another context,
-          * so we try to lookup the sampler object before returning its Name.
-          */
-         if (samp && _mesa_lookup_samplerobj(ctx, samp->Name)) {
-            v->value_int = samp->Name;
-         } else {
-            v->value_int = 0;
-         }
+         v->value_int = samp ? samp->Name : 0;
       }
       break;
    /* GL_ARB_uniform_buffer_object */
    case GL_UNIFORM_BUFFER_BINDING:
       v->value_int = ctx->UniformBuffer->Name;
+      break;
+   /* GL_ARB_shader_storage_buffer_object */
+   case GL_SHADER_STORAGE_BUFFER_BINDING:
+      v->value_int = ctx->ShaderStorageBuffer->Name;
+      break;
+   /* GL_ARB_query_buffer_object */
+   case GL_QUERY_BUFFER_BINDING:
+      v->value_int = ctx->QueryBuffer->Name;
       break;
    /* GL_ARB_timer_query */
    case GL_TIMESTAMP:
@@ -885,6 +1007,96 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       }
       else {
          _mesa_problem(ctx, "driver doesn't implement GetTimestamp");
+      }
+      break;
+   /* GL_KHR_DEBUG */
+   case GL_DEBUG_OUTPUT:
+   case GL_DEBUG_OUTPUT_SYNCHRONOUS:
+   case GL_DEBUG_LOGGED_MESSAGES:
+   case GL_DEBUG_NEXT_LOGGED_MESSAGE_LENGTH:
+   case GL_DEBUG_GROUP_STACK_DEPTH:
+      v->value_int = _mesa_get_debug_state_int(ctx, d->pname);
+      break;
+   /* GL_ARB_shader_atomic_counters */
+   case GL_ATOMIC_COUNTER_BUFFER_BINDING:
+      if (ctx->AtomicBuffer) {
+         v->value_int = ctx->AtomicBuffer->Name;
+      } else {
+         v->value_int = 0;
+      }
+      break;
+   /* GL_ARB_draw_indirect */
+   case GL_DRAW_INDIRECT_BUFFER_BINDING:
+      v->value_int = ctx->DrawIndirectBuffer->Name;
+      break;
+   /* GL_ARB_indirect_parameters */
+   case GL_PARAMETER_BUFFER_BINDING_ARB:
+      v->value_int = ctx->ParameterBuffer->Name;
+      break;
+   /* GL_ARB_separate_shader_objects */
+   case GL_PROGRAM_PIPELINE_BINDING:
+      if (ctx->Pipeline.Current) {
+         v->value_int = ctx->Pipeline.Current->Name;
+      } else {
+         v->value_int = 0;
+      }
+      break;
+   /* GL_ARB_compute_shader */
+   case GL_DISPATCH_INDIRECT_BUFFER_BINDING:
+      v->value_int = ctx->DispatchIndirectBuffer->Name;
+      break;
+   /* GL_ARB_multisample */
+   case GL_SAMPLES:
+      v->value_int = _mesa_geometric_samples(ctx->DrawBuffer);
+      break;
+   case GL_SAMPLE_BUFFERS:
+      v->value_int = _mesa_geometric_samples(ctx->DrawBuffer) > 0;
+      break;
+   /* GL_ATI_meminfo & GL_NVX_gpu_memory_info */
+   case GL_VBO_FREE_MEMORY_ATI:
+   case GL_TEXTURE_FREE_MEMORY_ATI:
+   case GL_RENDERBUFFER_FREE_MEMORY_ATI:
+   case GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX:
+   case GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX:
+   case GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX:
+   case GL_GPU_MEMORY_INFO_EVICTION_COUNT_NVX:
+   case GL_GPU_MEMORY_INFO_EVICTED_MEMORY_NVX:
+      {
+         struct gl_memory_info info;
+
+         ctx->Driver.QueryMemoryInfo(ctx, &info);
+
+         if (d->pname == GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX)
+            v->value_int = info.total_device_memory;
+         else if (d->pname == GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX)
+            v->value_int = info.total_device_memory +
+                           info.total_staging_memory;
+         else if (d->pname == GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX)
+            v->value_int = info.avail_device_memory;
+         else if (d->pname == GL_GPU_MEMORY_INFO_EVICTION_COUNT_NVX)
+            v->value_int = info.nr_device_memory_evictions;
+         else if (d->pname == GL_GPU_MEMORY_INFO_EVICTED_MEMORY_NVX)
+            v->value_int = info.device_memory_evicted;
+         else {
+            /* ATI free memory enums.
+             *
+             * Since the GPU memory is (usually) page-table based, every two
+             * consecutive elements are equal. From the GL_ATI_meminfo
+             * specification:
+             *
+             *    "param[0] - total memory free in the pool
+             *     param[1] - largest available free block in the pool
+             *     param[2] - total auxiliary memory free
+             *     param[3] - largest auxiliary free block"
+             *
+             * All three (VBO, TEXTURE, RENDERBUFFER) queries return
+             * the same numbers here.
+             */
+            v->value_int_4[0] = info.avail_device_memory;
+            v->value_int_4[1] = info.avail_device_memory;
+            v->value_int_4[2] = info.avail_staging_memory;
+            v->value_int_4[3] = info.avail_staging_memory;
+         }
       }
       break;
    }
@@ -944,6 +1156,11 @@ check_extra(struct gl_context *ctx, const char *func, const struct value_desc *d
          if (_mesa_is_gles3(ctx))
             api_found = GL_TRUE;
 	 break;
+      case EXTRA_API_ES31:
+         api_check = GL_TRUE;
+         if (_mesa_is_gles31(ctx))
+            api_found = GL_TRUE;
+	 break;
       case EXTRA_API_GL:
          api_check = GL_TRUE;
          if (_mesa_is_desktop_gl(ctx))
@@ -987,10 +1204,51 @@ check_extra(struct gl_context *ctx, const char *func, const struct value_desc *d
          if (ctx->Const.GLSLVersion >= 130)
             api_found = GL_TRUE;
 	 break;
-      case EXTRA_EXT_UBO_GS4:
+      case EXTRA_EXT_UBO_GS:
          api_check = GL_TRUE;
-         api_found = (ctx->Extensions.ARB_uniform_buffer_object &&
-                      ctx->Extensions.ARB_geometry_shader4);
+         if (ctx->Extensions.ARB_uniform_buffer_object &&
+            _mesa_has_geometry_shaders(ctx))
+            api_found = GL_TRUE;
+         break;
+      case EXTRA_EXT_ATOMICS_GS:
+         api_check = GL_TRUE;
+         if (ctx->Extensions.ARB_shader_atomic_counters &&
+            _mesa_has_geometry_shaders(ctx))
+            api_found = GL_TRUE;
+         break;
+      case EXTRA_EXT_SHADER_IMAGE_GS:
+         api_check = GL_TRUE;
+         if (ctx->Extensions.ARB_shader_image_load_store &&
+            _mesa_has_geometry_shaders(ctx))
+            api_found = GL_TRUE;
+         break;
+      case EXTRA_EXT_ATOMICS_TESS:
+         api_check = GL_TRUE;
+         api_found = ctx->Extensions.ARB_shader_atomic_counters &&
+                     _mesa_has_tessellation(ctx);
+         break;
+      case EXTRA_EXT_SHADER_IMAGE_TESS:
+         api_check = GL_TRUE;
+         api_found = ctx->Extensions.ARB_shader_image_load_store &&
+                     _mesa_has_tessellation(ctx);
+         break;
+      case EXTRA_EXT_SSBO_GS:
+         api_check = GL_TRUE;
+         if (ctx->Extensions.ARB_shader_storage_buffer_object &&
+            _mesa_has_geometry_shaders(ctx))
+            api_found = GL_TRUE;
+         break;
+      case EXTRA_EXT_FB_NO_ATTACH_GS:
+         api_check = GL_TRUE;
+         if (ctx->Extensions.ARB_framebuffer_no_attachments &&
+            (_mesa_is_desktop_gl(ctx) ||
+            _mesa_has_OES_geometry_shader(ctx)))
+            api_found = GL_TRUE;
+         break;
+      case EXTRA_EXT_ES_GS:
+         api_check = GL_TRUE;
+         if (_mesa_has_OES_geometry_shader(ctx))
+            api_found = GL_TRUE;
          break;
       case EXTRA_END:
 	 break;
@@ -1004,7 +1262,7 @@ check_extra(struct gl_context *ctx, const char *func, const struct value_desc *d
 
    if (api_check && !api_found) {
       _mesa_error(ctx, GL_INVALID_ENUM, "%s(pname=%s)", func,
-                  _mesa_lookup_enum_by_nr(d->pname));
+                  _mesa_enum_to_string(d->pname));
       return GL_FALSE;
    }
 
@@ -1051,11 +1309,14 @@ find_value(const char *func, GLenum pname, void **p, union value *v)
     * value since it's compatible with GLES2 its entry in table_set[] is at the
     * end.
     */
-   STATIC_ASSERT(Elements(table_set) == API_OPENGL_LAST + 2);
+   STATIC_ASSERT(ARRAY_SIZE(table_set) == API_OPENGL_LAST + 3);
    if (_mesa_is_gles3(ctx)) {
       api = API_OPENGL_LAST + 1;
    }
-   mask = Elements(table(api)) - 1;
+   if (_mesa_is_gles31(ctx)) {
+      api = API_OPENGL_LAST + 2;
+   }
+   mask = ARRAY_SIZE(table(api)) - 1;
    hash = (pname * prime_factor);
    while (1) {
       int idx = table(api)[hash & mask];
@@ -1065,7 +1326,7 @@ find_value(const char *func, GLenum pname, void **p, union value *v)
        * any valid enum. */
       if (unlikely(idx == 0)) {
          _mesa_error(ctx, GL_INVALID_ENUM, "%s(pname=%s)", func,
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
          return &error_value;
       }
 
@@ -1087,7 +1348,7 @@ find_value(const char *func, GLenum pname, void **p, union value *v)
       *p = ((char *) ctx + d->offset);
       return d;
    case LOC_ARRAY:
-      *p = ((char *) ctx->Array.ArrayObj + d->offset);
+      *p = ((char *) ctx->Array.VAO + d->offset);
       return d;
    case LOC_TEXUNIT:
       unit = &ctx->Texture.Unit[ctx->Texture.CurrentUnit];
@@ -1144,6 +1405,8 @@ _mesa_GetBooleanv(GLenum pname, GLboolean *params)
       params[0] = FLOAT_TO_BOOLEAN(((GLfloat *) p)[0]);
       break;
 
+   case TYPE_DOUBLEN_2:
+      params[1] = FLOAT_TO_BOOLEAN(((GLdouble *) p)[1]);
    case TYPE_DOUBLEN:
       params[0] = FLOAT_TO_BOOLEAN(((GLdouble *) p)[0]);
       break;
@@ -1230,6 +1493,8 @@ _mesa_GetFloatv(GLenum pname, GLfloat *params)
       params[0] = ((GLfloat *) p)[0];
       break;
 
+   case TYPE_DOUBLEN_2:
+      params[1] = (GLfloat) (((GLdouble *) p)[1]);
    case TYPE_DOUBLEN:
       params[0] = (GLfloat) (((GLdouble *) p)[0]);
       break;
@@ -1322,6 +1587,8 @@ _mesa_GetIntegerv(GLenum pname, GLint *params)
       params[0] = FLOAT_TO_INT(((GLfloat *) p)[0]);
       break;
 
+   case TYPE_DOUBLEN_2:
+      params[1] = FLOAT_TO_INT(((GLdouble *) p)[1]);
    case TYPE_DOUBLEN:
       params[0] = FLOAT_TO_INT(((GLdouble *) p)[0]);
       break;
@@ -1405,17 +1672,19 @@ _mesa_GetInteger64v(GLenum pname, GLint64 *params)
       break;
 
    case TYPE_FLOATN_4:
-      params[3] = FLOAT_TO_INT64(((GLfloat *) p)[3]);
+      params[3] = FLOAT_TO_INT(((GLfloat *) p)[3]);
    case TYPE_FLOATN_3:
-      params[2] = FLOAT_TO_INT64(((GLfloat *) p)[2]);
+      params[2] = FLOAT_TO_INT(((GLfloat *) p)[2]);
    case TYPE_FLOATN_2:
-      params[1] = FLOAT_TO_INT64(((GLfloat *) p)[1]);
+      params[1] = FLOAT_TO_INT(((GLfloat *) p)[1]);
    case TYPE_FLOATN:
-      params[0] = FLOAT_TO_INT64(((GLfloat *) p)[0]);
+      params[0] = FLOAT_TO_INT(((GLfloat *) p)[0]);
       break;
 
+   case TYPE_DOUBLEN_2:
+      params[1] = FLOAT_TO_INT(((GLdouble *) p)[1]);
    case TYPE_DOUBLEN:
-      params[0] = FLOAT_TO_INT64(((GLdouble *) p)[0]);
+      params[0] = FLOAT_TO_INT(((GLdouble *) p)[0]);
       break;
 
    case TYPE_INT_4:
@@ -1500,6 +1769,8 @@ _mesa_GetDoublev(GLenum pname, GLdouble *params)
       params[0] = ((GLfloat *) p)[0];
       break;
 
+   case TYPE_DOUBLEN_2:
+      params[1] = ((GLdouble *) p)[1];
    case TYPE_DOUBLEN:
       params[0] = ((GLdouble *) p)[0];
       break;
@@ -1552,6 +1823,52 @@ _mesa_GetDoublev(GLenum pname, GLdouble *params)
       shift = d->type - TYPE_BIT_0;
       params[0] = (*(GLbitfield *) p >> shift) & 1;
       break;
+   }
+}
+
+/**
+ * Convert a GL texture binding enum such as GL_TEXTURE_BINDING_2D
+ * into the corresponding Mesa texture target index.
+ * \return TEXTURE_x_INDEX or -1 if binding is invalid
+ */
+static int
+tex_binding_to_index(const struct gl_context *ctx, GLenum binding)
+{
+   switch (binding) {
+   case GL_TEXTURE_BINDING_1D:
+      return _mesa_is_desktop_gl(ctx) ? TEXTURE_1D_INDEX : -1;
+   case GL_TEXTURE_BINDING_2D:
+      return TEXTURE_2D_INDEX;
+   case GL_TEXTURE_BINDING_3D:
+      return ctx->API != API_OPENGLES ? TEXTURE_3D_INDEX : -1;
+   case GL_TEXTURE_BINDING_CUBE_MAP:
+      return ctx->Extensions.ARB_texture_cube_map
+         ? TEXTURE_CUBE_INDEX : -1;
+   case GL_TEXTURE_BINDING_RECTANGLE:
+      return _mesa_is_desktop_gl(ctx) && ctx->Extensions.NV_texture_rectangle
+         ? TEXTURE_RECT_INDEX : -1;
+   case GL_TEXTURE_BINDING_1D_ARRAY:
+      return _mesa_is_desktop_gl(ctx) && ctx->Extensions.EXT_texture_array
+         ? TEXTURE_1D_ARRAY_INDEX : -1;
+   case GL_TEXTURE_BINDING_2D_ARRAY:
+      return (_mesa_is_desktop_gl(ctx) && ctx->Extensions.EXT_texture_array)
+         || _mesa_is_gles3(ctx)
+         ? TEXTURE_2D_ARRAY_INDEX : -1;
+   case GL_TEXTURE_BINDING_BUFFER:
+      return (_mesa_has_ARB_texture_buffer_object(ctx) ||
+              _mesa_has_OES_texture_buffer(ctx)) ?
+             TEXTURE_BUFFER_INDEX : -1;
+   case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY:
+      return _mesa_has_texture_cube_map_array(ctx)
+         ? TEXTURE_CUBE_ARRAY_INDEX : -1;
+   case GL_TEXTURE_BINDING_2D_MULTISAMPLE:
+      return _mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_multisample
+         ? TEXTURE_2D_MULTISAMPLE_INDEX : -1;
+   case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY:
+      return _mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_multisample
+         ? TEXTURE_2D_MULTISAMPLE_ARRAY_INDEX : -1;
+   default:
+      return -1;
    }
 }
 
@@ -1628,6 +1945,42 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       v->value_int_4[3] = ctx->Color.ColorMask[index][ACOMP] ? 1 : 0;
       return TYPE_INT_4;
 
+   case GL_SCISSOR_BOX:
+      if (index >= ctx->Const.MaxViewports)
+         goto invalid_value;
+      v->value_int_4[0] = ctx->Scissor.ScissorArray[index].X;
+      v->value_int_4[1] = ctx->Scissor.ScissorArray[index].Y;
+      v->value_int_4[2] = ctx->Scissor.ScissorArray[index].Width;
+      v->value_int_4[3] = ctx->Scissor.ScissorArray[index].Height;
+      return TYPE_INT_4;
+
+   case GL_WINDOW_RECTANGLE_EXT:
+      if (!ctx->Extensions.EXT_window_rectangles)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxWindowRectangles)
+         goto invalid_value;
+      v->value_int_4[0] = ctx->Scissor.WindowRects[index].X;
+      v->value_int_4[1] = ctx->Scissor.WindowRects[index].Y;
+      v->value_int_4[2] = ctx->Scissor.WindowRects[index].Width;
+      v->value_int_4[3] = ctx->Scissor.WindowRects[index].Height;
+      return TYPE_INT_4;
+
+   case GL_VIEWPORT:
+      if (index >= ctx->Const.MaxViewports)
+         goto invalid_value;
+      v->value_float_4[0] = ctx->ViewportArray[index].X;
+      v->value_float_4[1] = ctx->ViewportArray[index].Y;
+      v->value_float_4[2] = ctx->ViewportArray[index].Width;
+      v->value_float_4[3] = ctx->ViewportArray[index].Height;
+      return TYPE_FLOAT_4;
+
+   case GL_DEPTH_RANGE:
+      if (index >= ctx->Const.MaxViewports)
+         goto invalid_value;
+      v->value_double_2[0] = ctx->ViewportArray[index].Near;
+      v->value_double_2[1] = ctx->ViewportArray[index].Far;
+      return TYPE_DOUBLEN_2;
+
    case GL_TRANSFORM_FEEDBACK_BUFFER_START:
       if (index >= ctx->Const.MaxTransformFeedbackBuffers)
 	 goto invalid_value;
@@ -1666,7 +2019,8 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
 	 goto invalid_value;
       if (!ctx->Extensions.ARB_uniform_buffer_object)
 	 goto invalid_enum;
-      v->value_int = ctx->UniformBufferBindings[index].Offset;
+      v->value_int = ctx->UniformBufferBindings[index].Offset < 0 ? 0 :
+                     ctx->UniformBufferBindings[index].Offset;
       return TYPE_INT;
 
    case GL_UNIFORM_BUFFER_SIZE:
@@ -1674,7 +2028,35 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
 	 goto invalid_value;
       if (!ctx->Extensions.ARB_uniform_buffer_object)
 	 goto invalid_enum;
-      v->value_int = ctx->UniformBufferBindings[index].Size;
+      v->value_int = ctx->UniformBufferBindings[index].Size < 0 ? 0 :
+                     ctx->UniformBufferBindings[index].Size;
+      return TYPE_INT;
+
+   /* ARB_shader_storage_buffer_object */
+   case GL_SHADER_STORAGE_BUFFER_BINDING:
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxShaderStorageBufferBindings)
+         goto invalid_value;
+      v->value_int = ctx->ShaderStorageBufferBindings[index].BufferObject->Name;
+      return TYPE_INT;
+
+   case GL_SHADER_STORAGE_BUFFER_START:
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxShaderStorageBufferBindings)
+         goto invalid_value;
+      v->value_int = ctx->ShaderStorageBufferBindings[index].Offset < 0 ? 0 :
+                     ctx->ShaderStorageBufferBindings[index].Offset;
+      return TYPE_INT;
+
+   case GL_SHADER_STORAGE_BUFFER_SIZE:
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxShaderStorageBufferBindings)
+         goto invalid_value;
+      v->value_int = ctx->ShaderStorageBufferBindings[index].Size < 0 ? 0 :
+                     ctx->ShaderStorageBufferBindings[index].Size;
       return TYPE_INT;
 
    /* ARB_texture_multisample / GL3.2 */
@@ -1685,15 +2067,186 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
          goto invalid_enum;
       v->value_int = ctx->Multisample.SampleMaskValue;
       return TYPE_INT;
+
+   case GL_ATOMIC_COUNTER_BUFFER_BINDING:
+      if (!ctx->Extensions.ARB_shader_atomic_counters)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxAtomicBufferBindings)
+         goto invalid_value;
+      v->value_int = ctx->AtomicBufferBindings[index].BufferObject->Name;
+      return TYPE_INT;
+
+   case GL_ATOMIC_COUNTER_BUFFER_START:
+      if (!ctx->Extensions.ARB_shader_atomic_counters)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxAtomicBufferBindings)
+         goto invalid_value;
+      v->value_int64 = ctx->AtomicBufferBindings[index].Offset;
+      return TYPE_INT64;
+
+   case GL_ATOMIC_COUNTER_BUFFER_SIZE:
+      if (!ctx->Extensions.ARB_shader_atomic_counters)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxAtomicBufferBindings)
+         goto invalid_value;
+      v->value_int64 = ctx->AtomicBufferBindings[index].Size;
+      return TYPE_INT64;
+
+   case GL_VERTEX_BINDING_DIVISOR:
+      if ((!_mesa_is_desktop_gl(ctx) || !ctx->Extensions.ARB_instanced_arrays) &&
+          !_mesa_is_gles31(ctx))
+          goto invalid_enum;
+      if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs)
+          goto invalid_value;
+      v->value_int = ctx->Array.VAO->VertexBinding[VERT_ATTRIB_GENERIC(index)].InstanceDivisor;
+      return TYPE_INT;
+
+   case GL_VERTEX_BINDING_OFFSET:
+      if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles31(ctx))
+          goto invalid_enum;
+      if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs)
+          goto invalid_value;
+      v->value_int = ctx->Array.VAO->VertexBinding[VERT_ATTRIB_GENERIC(index)].Offset;
+      return TYPE_INT;
+
+   case GL_VERTEX_BINDING_STRIDE:
+      if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles31(ctx))
+          goto invalid_enum;
+      if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs)
+          goto invalid_value;
+      v->value_int = ctx->Array.VAO->VertexBinding[VERT_ATTRIB_GENERIC(index)].Stride;
+      return TYPE_INT;
+
+   case GL_VERTEX_BINDING_BUFFER:
+      if (ctx->API == API_OPENGLES2 && ctx->Version < 31)
+         goto invalid_enum;
+      if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs)
+         goto invalid_value;
+      v->value_int = ctx->Array.VAO->VertexBinding[VERT_ATTRIB_GENERIC(index)].BufferObj->Name;
+      return TYPE_INT;
+
+   /* ARB_shader_image_load_store */
+   case GL_IMAGE_BINDING_NAME: {
+      struct gl_texture_object *t;
+
+      if (!ctx->Extensions.ARB_shader_image_load_store)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxImageUnits)
+         goto invalid_value;
+
+      t = ctx->ImageUnits[index].TexObj;
+      v->value_int = (t ? t->Name : 0);
+      return TYPE_INT;
+   }
+
+   case GL_IMAGE_BINDING_LEVEL:
+      if (!ctx->Extensions.ARB_shader_image_load_store)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxImageUnits)
+         goto invalid_value;
+
+      v->value_int = ctx->ImageUnits[index].Level;
+      return TYPE_INT;
+
+   case GL_IMAGE_BINDING_LAYERED:
+      if (!ctx->Extensions.ARB_shader_image_load_store)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxImageUnits)
+         goto invalid_value;
+
+      v->value_int = ctx->ImageUnits[index].Layered;
+      return TYPE_INT;
+
+   case GL_IMAGE_BINDING_LAYER:
+      if (!ctx->Extensions.ARB_shader_image_load_store)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxImageUnits)
+         goto invalid_value;
+
+      v->value_int = ctx->ImageUnits[index].Layer;
+      return TYPE_INT;
+
+   case GL_IMAGE_BINDING_ACCESS:
+      if (!ctx->Extensions.ARB_shader_image_load_store)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxImageUnits)
+         goto invalid_value;
+
+      v->value_int = ctx->ImageUnits[index].Access;
+      return TYPE_INT;
+
+   case GL_IMAGE_BINDING_FORMAT:
+      if (!ctx->Extensions.ARB_shader_image_load_store)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxImageUnits)
+         goto invalid_value;
+
+      v->value_int = ctx->ImageUnits[index].Format;
+      return TYPE_INT;
+
+   /* ARB_direct_state_access */
+   case GL_TEXTURE_BINDING_1D:
+   case GL_TEXTURE_BINDING_1D_ARRAY:
+   case GL_TEXTURE_BINDING_2D:
+   case GL_TEXTURE_BINDING_2D_ARRAY:
+   case GL_TEXTURE_BINDING_2D_MULTISAMPLE:
+   case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY:
+   case GL_TEXTURE_BINDING_3D:
+   case GL_TEXTURE_BINDING_BUFFER:
+   case GL_TEXTURE_BINDING_CUBE_MAP:
+   case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY:
+   case GL_TEXTURE_BINDING_RECTANGLE: {
+      int target;
+
+      if (ctx->API != API_OPENGL_CORE)
+         goto invalid_enum;
+      target = tex_binding_to_index(ctx, pname);
+      if (target < 0)
+         goto invalid_enum;
+      if (index >= _mesa_max_tex_unit(ctx))
+         goto invalid_value;
+
+      v->value_int = ctx->Texture.Unit[index].CurrentTex[target]->Name;
+      return TYPE_INT;
+   }
+
+   case GL_SAMPLER_BINDING: {
+      struct gl_sampler_object *samp;
+
+      if (ctx->API != API_OPENGL_CORE)
+         goto invalid_enum;
+      if (index >= _mesa_max_tex_unit(ctx))
+         goto invalid_value;
+
+      samp = ctx->Texture.Unit[index].Sampler;
+      v->value_int = samp ? samp->Name : 0;
+      return TYPE_INT;
+   }
+
+   case GL_MAX_COMPUTE_WORK_GROUP_COUNT:
+      if (!_mesa_has_compute_shaders(ctx))
+         goto invalid_enum;
+      if (index >= 3)
+         goto invalid_value;
+      v->value_int = ctx->Const.MaxComputeWorkGroupCount[index];
+      return TYPE_INT;
+
+   case GL_MAX_COMPUTE_WORK_GROUP_SIZE:
+      if (!_mesa_has_compute_shaders(ctx))
+         goto invalid_enum;
+      if (index >= 3)
+         goto invalid_value;
+      v->value_int = ctx->Const.MaxComputeWorkGroupSize[index];
+      return TYPE_INT;
    }
 
  invalid_enum:
    _mesa_error(ctx, GL_INVALID_ENUM, "%s(pname=%s)", func,
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
    return TYPE_INVALID;
  invalid_value:
    _mesa_error(ctx, GL_INVALID_VALUE, "%s(pname=%s)", func,
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
    return TYPE_INVALID;
 }
 
@@ -1715,7 +2268,7 @@ _mesa_GetBooleani_v( GLenum pname, GLuint index, GLboolean *params )
       params[3] = INT_TO_BOOLEAN(v.value_int_4[3]);
       break;
    case TYPE_INT64:
-      params[0] = INT64_TO_BOOLEAN(v.value_int);
+      params[0] = INT64_TO_BOOLEAN(v.value_int64);
       break;
    default:
       ; /* nothing - GL error was recorded */
@@ -1730,6 +2283,26 @@ _mesa_GetIntegeri_v( GLenum pname, GLuint index, GLint *params )
       find_value_indexed("glGetIntegeri_v", pname, index, &v);
 
    switch (type) {
+   case TYPE_FLOAT_4:
+   case TYPE_FLOATN_4:
+      params[3] = IROUND(v.value_float_4[3]);
+   case TYPE_FLOAT_3:
+   case TYPE_FLOATN_3:
+      params[2] = IROUND(v.value_float_4[2]);
+   case TYPE_FLOAT_2:
+   case TYPE_FLOATN_2:
+      params[1] = IROUND(v.value_float_4[1]);
+   case TYPE_FLOAT:
+   case TYPE_FLOATN:
+      params[0] = IROUND(v.value_float_4[0]);
+      break;
+
+   case TYPE_DOUBLEN_2:
+      params[1] = IROUND(v.value_double_2[1]);
+   case TYPE_DOUBLEN:
+      params[0] = IROUND(v.value_double_2[0]);
+      break;
+
    case TYPE_INT:
       params[0] = v.value_int;
       break;
@@ -1740,7 +2313,7 @@ _mesa_GetIntegeri_v( GLenum pname, GLuint index, GLint *params )
       params[3] = v.value_int_4[3];
       break;
    case TYPE_INT64:
-      params[0] = INT64_TO_INT(v.value_int);
+      params[0] = INT64_TO_INT(v.value_int64);
       break;
    default:
       ; /* nothing - GL error was recorded */
@@ -1765,10 +2338,154 @@ _mesa_GetInteger64i_v( GLenum pname, GLuint index, GLint64 *params )
       params[3] = v.value_int_4[3];
       break;
    case TYPE_INT64:
-      params[0] = v.value_int;
+      params[0] = v.value_int64;
       break;
    default:
       ; /* nothing - GL error was recorded */
+   }
+}
+
+void GLAPIENTRY
+_mesa_GetFloati_v(GLenum pname, GLuint index, GLfloat *params)
+{
+   int i;
+   GLmatrix *m;
+   union value v;
+   enum value_type type =
+      find_value_indexed("glGetFloati_v", pname, index, &v);
+
+   switch (type) {
+   case TYPE_FLOAT_4:
+   case TYPE_FLOATN_4:
+      params[3] = v.value_float_4[3];
+   case TYPE_FLOAT_3:
+   case TYPE_FLOATN_3:
+      params[2] = v.value_float_4[2];
+   case TYPE_FLOAT_2:
+   case TYPE_FLOATN_2:
+      params[1] = v.value_float_4[1];
+   case TYPE_FLOAT:
+   case TYPE_FLOATN:
+      params[0] = v.value_float_4[0];
+      break;
+
+   case TYPE_DOUBLEN_2:
+      params[1] = (GLfloat) v.value_double_2[1];
+   case TYPE_DOUBLEN:
+      params[0] = (GLfloat) v.value_double_2[0];
+      break;
+
+   case TYPE_INT_4:
+      params[3] = (GLfloat) v.value_int_4[3];
+   case TYPE_INT_3:
+      params[2] = (GLfloat) v.value_int_4[2];
+   case TYPE_INT_2:
+   case TYPE_ENUM_2:
+      params[1] = (GLfloat) v.value_int_4[1];
+   case TYPE_INT:
+   case TYPE_ENUM:
+      params[0] = (GLfloat) v.value_int_4[0];
+      break;
+
+   case TYPE_INT_N:
+      for (i = 0; i < v.value_int_n.n; i++)
+	 params[i] = INT_TO_FLOAT(v.value_int_n.ints[i]);
+      break;
+
+   case TYPE_INT64:
+      params[0] = (GLfloat) v.value_int64;
+      break;
+
+   case TYPE_BOOLEAN:
+      params[0] = BOOLEAN_TO_FLOAT(v.value_bool);
+      break;
+
+   case TYPE_MATRIX:
+      m = *(GLmatrix **) &v;
+      for (i = 0; i < 16; i++)
+	 params[i] = m->m[i];
+      break;
+
+   case TYPE_MATRIX_T:
+      m = *(GLmatrix **) &v;
+      for (i = 0; i < 16; i++)
+	 params[i] = m->m[transpose[i]];
+      break;
+
+   default:
+      ;
+   }
+}
+
+void GLAPIENTRY
+_mesa_GetDoublei_v(GLenum pname, GLuint index, GLdouble *params)
+{
+   int i;
+   GLmatrix *m;
+   union value v;
+   enum value_type type =
+      find_value_indexed("glGetDoublei_v", pname, index, &v);
+
+   switch (type) {
+   case TYPE_FLOAT_4:
+   case TYPE_FLOATN_4:
+      params[3] = (GLdouble) v.value_float_4[3];
+   case TYPE_FLOAT_3:
+   case TYPE_FLOATN_3:
+      params[2] = (GLdouble) v.value_float_4[2];
+   case TYPE_FLOAT_2:
+   case TYPE_FLOATN_2:
+      params[1] = (GLdouble) v.value_float_4[1];
+   case TYPE_FLOAT:
+   case TYPE_FLOATN:
+      params[0] = (GLdouble) v.value_float_4[0];
+      break;
+
+   case TYPE_DOUBLEN_2:
+      params[1] = v.value_double_2[1];
+   case TYPE_DOUBLEN:
+      params[0] = v.value_double_2[0];
+      break;
+
+   case TYPE_INT_4:
+      params[3] = (GLdouble) v.value_int_4[3];
+   case TYPE_INT_3:
+      params[2] = (GLdouble) v.value_int_4[2];
+   case TYPE_INT_2:
+   case TYPE_ENUM_2:
+      params[1] = (GLdouble) v.value_int_4[1];
+   case TYPE_INT:
+   case TYPE_ENUM:
+      params[0] = (GLdouble) v.value_int_4[0];
+      break;
+
+   case TYPE_INT_N:
+      for (i = 0; i < v.value_int_n.n; i++)
+	 params[i] = (GLdouble) INT_TO_FLOAT(v.value_int_n.ints[i]);
+      break;
+
+   case TYPE_INT64:
+      params[0] = (GLdouble) v.value_int64;
+      break;
+
+   case TYPE_BOOLEAN:
+      params[0] = (GLdouble) BOOLEAN_TO_FLOAT(v.value_bool);
+      break;
+
+   case TYPE_MATRIX:
+      m = *(GLmatrix **) &v;
+      for (i = 0; i < 16; i++)
+	 params[i] = (GLdouble) m->m[i];
+      break;
+
+   case TYPE_MATRIX_T:
+      m = *(GLmatrix **) &v;
+      for (i = 0; i < 16; i++)
+	 params[i] = (GLdouble) m->m[transpose[i]];
+      break;
+
+   default:
+      ;
    }
 }
 
@@ -1803,6 +2520,8 @@ _mesa_GetFixedv(GLenum pname, GLfixed *params)
       params[0] = FLOAT_TO_FIXED(((GLfloat *) p)[0]);
       break;
 
+   case TYPE_DOUBLEN_2:
+      params[1] = FLOAT_TO_FIXED(((GLdouble *) p)[1]);
    case TYPE_DOUBLEN:
       params[0] = FLOAT_TO_FIXED(((GLdouble *) p)[0]);
       break;

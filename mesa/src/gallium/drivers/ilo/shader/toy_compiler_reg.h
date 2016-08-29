@@ -118,13 +118,13 @@ enum toy_writemask {
  */
 struct toy_dst {
    unsigned file:3;              /* TOY_FILE_x */
-   unsigned type:3;              /* TOY_TYPE_x */
+   unsigned type:4;              /* TOY_TYPE_x */
    unsigned rect:3;              /* TOY_RECT_x */
    unsigned indirect:1;          /* true or false */
    unsigned indirect_subreg:6;   /* which subreg of a0? */
 
    unsigned writemask:4;         /* TOY_WRITEMASK_x */
-   unsigned pad:12;
+   unsigned pad:11;
 
    uint32_t val32;
 };
@@ -134,7 +134,7 @@ struct toy_dst {
  */
 struct toy_src {
    unsigned file:3;              /* TOY_FILE_x */
-   unsigned type:3;              /* TOY_TYPE_x */
+   unsigned type:4;              /* TOY_TYPE_x */
    unsigned rect:3;              /* TOY_RECT_x */
    unsigned indirect:1;          /* true or false */
    unsigned indirect_subreg:6;   /* which subreg of a0? */
@@ -145,7 +145,7 @@ struct toy_src {
    unsigned swizzle_w:2;         /* TOY_SWIZZLE_x */
    unsigned absolute:1;          /* true or false */
    unsigned negate:1;            /* true or false */
-   unsigned pad:6;
+   unsigned pad:5;
 
    uint32_t val32;
 };
@@ -213,7 +213,7 @@ toy_type_size(enum toy_type type)
 static inline bool
 tdst_is_null(struct toy_dst dst)
 {
-   /* BRW_ARF_NULL happens to be 0 */
+   /* GEN6_ARF_NULL happens to be 0 */
    return (dst.file == TOY_FILE_ARF && dst.val32 == 0);
 }
 
@@ -431,7 +431,7 @@ tdst_imm_w(int16_t w)
 static inline bool
 tsrc_is_null(struct toy_src src)
 {
-   /* BRW_ARF_NULL happens to be 0 */
+   /* GEN6_ARF_NULL happens to be 0 */
    return (src.file == TOY_FILE_ARF && src.val32 == 0);
 }
 

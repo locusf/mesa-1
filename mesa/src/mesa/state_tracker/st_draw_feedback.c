@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -33,6 +33,7 @@
 
 #include "st_context.h"
 #include "st_atom.h"
+#include "st_cb_bitmap.h"
 #include "st_cb_bufferobjects.h"
 #include "st_draw.h"
 #include "st_program.h"
@@ -116,11 +117,13 @@ st_feedback_draw_vbo(struct gl_context *ctx,
 		     GLboolean index_bounds_valid,
                      GLuint min_index,
                      GLuint max_index,
-                     struct gl_transform_feedback_object *tfb_vertcount)
+                     struct gl_transform_feedback_object *tfb_vertcount,
+                     unsigned stream,
+                     struct gl_buffer_object *indirect)
 {
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
-   struct draw_context *draw = st->draw;
+   struct draw_context *draw = st_get_draw_context(st);
    const struct st_vertex_program *vp;
    const struct pipe_shader_state *vs;
    struct pipe_vertex_buffer vbuffers[PIPE_MAX_SHADER_INPUTS];
@@ -133,9 +136,13 @@ st_feedback_draw_vbo(struct gl_context *ctx,
    const GLubyte *low_addr = NULL;
    const void *mapped_indices = NULL;
 
-   assert(draw);
+   if (!draw)
+      return;
 
-   st_validate_state(st);
+   st_flush_bitmap_cache(st);
+   st_invalidate_readpix_cache(st);
+
+   st_validate_state(st, ST_PIPELINE_RENDER);
 
    if (!index_bounds_valid)
       vbo_get_minmax_indices(ctx, prims, ib, &min_index, &max_index, nr_prims);
@@ -155,7 +162,7 @@ st_feedback_draw_vbo(struct gl_context *ctx,
     * code sends state updates to the pipe, not to our private draw module.
     */
    assert(draw);
-   draw_set_viewport_states(draw, 0, 1, &st->state.viewport);
+   draw_set_viewport_states(draw, 0, 1, &st->state.viewport[0]);
    draw_set_clip_state(draw, &st->state.clip);
    draw_set_rasterizer_state(draw, &st->state.rasterizer, NULL);
    draw_bind_vertex_shader(draw, st->vp_variant->draw_shader);
