@@ -165,24 +165,6 @@ Requires(postun): /sbin/ldconfig
 %description libwayland-egl
 Mesa libwayland-egl runtime libraries
 
-%package dri-i915-driver
-Summary:    Mesa-based DRI drivers
-Group:      Graphics/Display and Graphics Adaptation
-Requires:   %{name} = %{version}-%{release}
-Provides:   mesa-dri-drivers = %{version}-%{release}
-
-%description dri-i915-driver
-Mesa-based i915 DRI driver.
-
-%package dri-i965-driver
-Summary:    Mesa-based DRI drivers
-Group:      Graphics/Display and Graphics Adaptation
-Requires:   %{name} = %{version}-%{release}
-Provides:   mesa-dri-drivers = %{version}-%{release}
-
-%description dri-i965-driver
-Mesa-based i965 DRI driver.
-
 %package dri-drivers-devel
 Summary:    Mesa-based DRI development files
 Group:      Development/Libraries
@@ -219,6 +201,7 @@ Mesa libGL development packages
     --enable-gles2=yes \
     --disable-gallium-llvm \
     --disable-gallium-radeon \
+    --disable-gallium-i915 \
     --with-gallium-drivers=""
 
 make %{?jobs:-j%jobs}
@@ -341,14 +324,6 @@ rm -rf $RPM_BUILD_ROOT/usr/lib/debug
 %defattr(-,root,root,-)
 %{_libdir}/libwayland-egl.so.1
 %{_libdir}/libwayland-egl.so.1.*
-
-%files dri-i965-driver
-%defattr(-,root,root,-)
-%{_libdir}/dri/i965_dri.so
-
-%files dri-i915-driver
-%defattr(-,root,root,-)
-%{_libdir}/dri/i915_dri.so
 
 %files libGL-devel
 %defattr(-,root,root,-)
