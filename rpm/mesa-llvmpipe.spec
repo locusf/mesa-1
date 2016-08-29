@@ -193,7 +193,7 @@ Mesa libGL development packages
 %autogen --disable-static \
     --with-dri-drivers= \
     --enable-osmesa=no \
-    --with-egl-platforms=fbdev,wayland \
+    --with-egl-platforms=wayland \
     --disable-glx \
     --disable-xlib-glx \
     --enable-egl=yes \
