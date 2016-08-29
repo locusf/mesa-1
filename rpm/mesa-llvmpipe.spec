@@ -29,6 +29,7 @@ BuildRequires:  bison
 BuildRequires:  flex
 BuildRequires:  llvm-devel
 BuildRequires:  gettext
+BuildRequires:  python-mako
 
 %description
 Mesa is an open-source implementation of the OpenGL specification  -
