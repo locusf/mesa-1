@@ -209,8 +209,6 @@ Mesa libGL development packages
 
 %build
 %autogen --disable-static \
-    --enable-dri \
-    --with-dri-drivers=i915,i965 \
     --enable-osmesa=no \
     --with-egl-platforms=fbdev,wayland \
     --disable-glx \
