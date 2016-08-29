@@ -202,7 +202,7 @@ Mesa libGL development packages
     --disable-gallium-llvm \
     --disable-gallium-radeon \
     --disable-gallium-i915 \
-    --with-gallium-drivers=""
+    --with-gallium-drivers=vc4
 
 make %{?jobs:-j%jobs}
 
